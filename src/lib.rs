@@ -74,6 +74,16 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Generate a unique identifier for the static cache (per function)
     let cache_ident = format_ident!("_CACHE_{}_MAP", ident.to_string().to_uppercase());
 
+    let key_expr = if include_self {
+        quote! {
+            format!("{:?}", (&self, #(#arg_exprs),*))
+        }
+    } else {
+        quote! {
+            format!("{:?}", (#(#arg_exprs),*))
+        }
+    };
+
     // Generate the macro expansion:
     // - Build a tuple containing &self (if applicable) followed by the arguments
     // - Use format!("{:?}", tuple) for the cache key (arguments must implement Debug)
@@ -85,26 +95,8 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #vis #sig {
             // Build the cache key from function arguments
-            let __key = {
-                // If we have self, include it as reference &self to avoid moving
-                #[allow(unused_mut)]
-                let __tuple = if false {
-                    // Unreachable branch for code formatting; real branches below
-                    ()
-                } else {
-                    // Build tuple dynamically: include &self if present, otherwise only args
-                    // Generated code will be either: (&self, arg1, arg2, ...)
-                    // or: (arg1, arg2, ...)
-                    (
-                        #(
-                            #arg_exprs
-                        ),*
-                    )
-                };
-                // If no arguments (and no self), __tuple is (), so format!("{:?}", ()) -> "()"
-                format!("{:?}", __tuple)
-            };
-
+            let __key =  #key_expr;
+            
             // Check cache for existing result
             {
                 let cache_lock = #cache_ident.lock().unwrap();
@@ -129,6 +121,8 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Note: The generated code uses parameter names exactly as they appear in the function signature,
     // so parameters must be valid identifiers or patterns in scope.
     // Additionally, arguments included in the cache key must implement Debug and the return type must implement Clone.
+
+    eprintln!("expanded tokens:\n{}", expanded);
 
     TokenStream::from(expanded)
 }
