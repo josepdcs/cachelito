@@ -31,6 +31,17 @@ fn might_fail(n: i32) -> Result<i32, String> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Calculator;
+
+impl Calculator {
+    #[cache]
+    fn add(&self, a: i32, b: i32) -> i32 {
+        println!("running add({}, {})", a, b);
+        a + b
+    }
+}
+
 fn main() {
     println!("{}", my_cached_fn()); // Execute
     println!("{}", my_cached_fn()); // Use cache
@@ -45,4 +56,8 @@ fn main() {
     println!("might_fail(4) again = {:?}", might_fail(4)); // cached
     println!("might_fail(-1) = {:?}", might_fail(-1)); // not cached
     println!("might_fail(-1) = {:?}", might_fail(-1)); // not cached
+
+    let calc = Calculator;
+    println!("calc.add(5, 3) = {}", calc.add(5, 3)); // Execute
+    println!("calc.add(5, 3) = {}", calc.add(5, 3)); // Use cache
 }

@@ -16,7 +16,7 @@ use syn::{parse_macro_input, FnArg, ItemFn, ReturnType};
 ///
 /// # Examples
 /// ```
-/// use your_crate::cache;
+/// use cachelito::cache;
 ///
 /// #[cache]
 /// fn fibonacci(n: u32) -> u64 {
@@ -101,20 +101,23 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = if is_result {
         // --- Version for functions returning Result<T, E> ---
         quote! {
-            static #cache_ident: ::once_cell::sync::Lazy<
-                ::std::sync::Mutex<::std::collections::HashMap<String, #ret_type>>
-            > = ::once_cell::sync::Lazy::new(|| ::std::sync::Mutex::new(::std::collections::HashMap::new()));
-
             #vis #sig {
+                // Use thread_local! for cache storage (works in both functions and methods)
+                thread_local! {
+                    static #cache_ident: ::std::cell::RefCell<::std::collections::HashMap<String, #ret_type>>
+                        = ::std::cell::RefCell::new(::std::collections::HashMap::new());
+                }
+
                 let __key = #key_expr;
 
                 // Check cache
-                {
-                    let cache_lock = #cache_ident.lock().unwrap();
-                    if let Some(cached) = cache_lock.get(&__key) {
-                        if let Ok(val) = cached {
-                            return Ok(val.clone());
-                        }
+                let cached_result = #cache_ident.with(|cache| {
+                    cache.borrow().get(&__key).cloned()
+                });
+
+                if let Some(cached) = cached_result {
+                    if let Ok(val) = cached {
+                        return Ok(val);
                     }
                 }
 
@@ -123,8 +126,9 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 // Only cache Ok results
                 if let Ok(ref val) = __result {
-                    let mut cache_lock = #cache_ident.lock().unwrap();
-                    cache_lock.insert(__key, Ok(val.clone()));
+                    #cache_ident.with(|cache| {
+                        cache.borrow_mut().insert(__key, Ok(val.clone()));
+                    });
                 }
 
                 __result
@@ -132,30 +136,32 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            static #cache_ident: ::once_cell::sync::Lazy<
-                ::std::sync::Mutex<::std::collections::HashMap<String, #ret_type>>
-            > = ::once_cell::sync::Lazy::new(|| ::std::sync::Mutex::new(::std::collections::HashMap::new()));
-
             #vis #sig {
+                // Use thread_local! for cache storage (works in both functions and methods)
+                thread_local! {
+                    static #cache_ident: ::std::cell::RefCell<::std::collections::HashMap<String, #ret_type>>
+                        = ::std::cell::RefCell::new(::std::collections::HashMap::new());
+                }
+
                 // Build the cache key from function arguments
-                let __key =  #key_expr;
+                let __key = #key_expr;
 
                 // Check cache for existing result
-                {
-                    let cache_lock = #cache_ident.lock().unwrap();
-                    if let Some(cached) = cache_lock.get(&__key) {
-                        return cached.clone();
-                    }
+                let cached_result = #cache_ident.with(|cache| {
+                    cache.borrow().get(&__key).cloned()
+                });
+
+                if let Some(cached) = cached_result {
+                    return cached;
                 }
 
                 // Execute the original function body
                 let __result = (|| #block)();
 
-                // Store result in cache (we clone because we need to return __result)
-                {
-                    let mut cache_lock = #cache_ident.lock().unwrap();
-                    cache_lock.insert(__key, __result.clone());
-                }
+                // Store result in cache
+                #cache_ident.with(|cache| {
+                    cache.borrow_mut().insert(__key, __result.clone());
+                });
 
                 __result
             }
@@ -165,8 +171,6 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Note: The generated code uses parameter names exactly as they appear in the function signature,
     // so parameters must be valid identifiers or patterns in scope.
     // Additionally, arguments included in the cache key must implement Debug and the return type must implement Clone.
-
-    eprintln!("expanded tokens:\n{}", expanded);
 
     TokenStream::from(expanded)
 }
