@@ -1,0 +1,170 @@
+use proc_macro::TokenStream;
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, FnArg, ItemFn, ReturnType};
+
+/// A procedural macro that adds caching functionality to functions.
+///
+/// This macro transforms a function into a cached version that stores results
+/// in a static HashMap based on the function arguments. Subsequent calls with
+/// the same arguments will return the cached result instead of re-executing
+/// the function body.
+///
+/// # Requirements
+/// - Function arguments must implement `Debug` for cache key generation
+/// - Return type must implement `Clone` for cache storage and retrieval
+/// - Function should be pure (same inputs always produce same outputs)
+///
+/// # Examples
+/// ```
+/// use cachelito::cache;
+///
+/// #[cache]
+/// fn fibonacci(n: u32) -> u64 {
+///     if n <= 1 {
+///         return n as u64;
+///     }
+///     fibonacci(n - 1) + fibonacci(n - 2)
+/// }
+///
+/// // First call computes and caches the result
+/// let result1 = fibonacci(10);
+/// // Subsequent calls with same arguments return cached result
+/// let result2 = fibonacci(10);
+/// ```
+///
+/// # Implementation Details
+/// - Creates a thread-safe static HashMap wrapped in `once_cell::Lazy` and `Mutex`
+/// - Uses a tuple of arguments formatted with `Debug` as the cache key
+/// - Automatically handles `self` parameters for methods
+/// - Cache is shared across all calls to the same function
+#[proc_macro_attribute]
+pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the annotated function
+    let input = parse_macro_input!(item as ItemFn);
+
+    let vis = &input.vis;
+    let sig = &input.sig;
+    let ident = &sig.ident;
+    let block = &input.block;
+
+    // Extract only the return type (without "->")
+    let ret_type = match &sig.output {
+        ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote! { () },
+    };
+
+    // Build list of expressions to form the cache key from function arguments
+    // If a receiver (self / &self / &mut self) exists, include it as &self to avoid moving
+    let mut arg_names = Vec::new();
+    let mut has_self = false;
+
+    for arg in sig.inputs.iter() {
+        match arg {
+            FnArg::Receiver(_) => {
+                // Include &self in the cache key
+                has_self = true;
+            }
+            FnArg::Typed(pat_type) => {
+                let pat = &pat_type.pat;
+                arg_names.push(quote! { #pat });
+            }
+        }
+    }
+
+    // Generate a unique identifier for the static cache (per function)
+    let cache_ident = format_ident!("_CACHE_{}_MAP", ident.to_string().to_uppercase());
+
+    // Generate expression that builds the key (tuple of args, including &self if present)
+    let key_expr = if has_self {
+        quote! {
+            format!("{:?}", (&self, #(#arg_names),*))
+        }
+    } else {
+        quote! {
+            format!("{:?}", (#(#arg_names),*))
+        }
+    };
+
+    // Check if the function's return type looks like a Result<T, E>
+    let is_result = quote!(#ret_type)
+        .to_string()
+        .replace(' ', "")
+        .starts_with("Result<")
+        || quote!(#ret_type)
+            .to_string()
+            .replace(' ', "")
+            .starts_with("std::result::Result<");
+
+    // Generate the macro expansion:
+    // - Build a tuple containing &self (if applicable) followed by the arguments
+    // - Use format!("{:?}", tuple) for the cache key (arguments must implement Debug)
+    let expanded = if is_result {
+        // --- Version for functions returning Result<T, E> ---
+        quote! {
+            #vis #sig {
+                thread_local! {
+                    static #cache_ident: ::std::cell::RefCell<::std::collections::HashMap<String, #ret_type>> =
+                        ::std::cell::RefCell::new(::std::collections::HashMap::new());
+                }
+
+                let __key = #key_expr;
+
+                // Check cache
+                let cached_result = #cache_ident.with(|cache| {
+                    cache.borrow().get(&__key).cloned()
+                });
+
+                if let Some(cached) = cached_result {
+                    if let Ok(val) = cached {
+                        return Ok(val);
+                    }
+                }
+
+                // Execute body
+                let __result = (|| #block)();
+
+                // Only cache Ok results
+                if let Ok(ref val) = __result {
+                    #cache_ident.with(|cache| {
+                        cache.borrow_mut().insert(__key, Ok(val.clone()));
+                    });
+                }
+
+                __result
+            }
+        }
+    } else {
+        quote! {
+            #vis #sig {
+                thread_local! {
+                    static #cache_ident: ::std::cell::RefCell<::std::collections::HashMap<String, #ret_type>> =
+                        ::std::cell::RefCell::new(::std::collections::HashMap::new());
+                }
+
+                // Build the cache key from function arguments
+                let __key = #key_expr;
+
+                // Check cache for existing result
+                let cached_result = #cache_ident.with(|cache| {
+                    cache.borrow().get(&__key).cloned()
+                });
+
+                if let Some(cached) = cached_result {
+                    return cached;
+                }
+
+                // Execute the original function body
+                let __result = (|| #block)();
+
+                // Store result in cache
+                #cache_ident.with(|cache| {
+                    cache.borrow_mut().insert(__key, __result.clone());
+                });
+
+                __result
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
