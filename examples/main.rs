@@ -7,7 +7,7 @@ fn my_cached_fn() -> i32 {
 }
 
 #[cache]
-fn sum(a :i32, b :i32) -> i32 {
+fn sum(a: i32, b: i32) -> i32 {
     println!("⏳ Executing (a + b)");
     a + b
 }
@@ -19,6 +19,16 @@ fn fibonacci(n: u32) -> u64 {
         return n as u64;
     }
     fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+#[cache]
+fn might_fail(n: i32) -> Result<i32, String> {
+    println!("executing might_fail({})", n);
+    if n < 0 {
+        Err("negative numbers not allowed".into())
+    } else {
+        Ok(n * 2)
+    }
 }
 
 fn main() {
