@@ -86,10 +86,14 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Check if the function's return type looks like a Result<T, E>
-    let is_result = quote!(#ret_type).to_string().starts_with("Result <")
+    let is_result = quote!(#ret_type)
+        .to_string()
+        .replace(' ', "")
+        .starts_with("Result<")
         || quote!(#ret_type)
             .to_string()
-            .starts_with("std :: result :: Result <");
+            .replace(' ', "")
+            .starts_with("std::result::Result<");
 
     // Generate the macro expansion:
     // - Build a tuple containing &self (if applicable) followed by the arguments
@@ -98,31 +102,29 @@ pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
         // --- Version for functions returning Result<T, E> ---
         quote! {
             static #cache_ident: ::once_cell::sync::Lazy<
-                ::std::sync::Mutex<::std::collections::HashMap<String, std::result::Result<
-                    <#ret_type as std::result::Result<_, _>>::Ok,
-                    <#ret_type as std::result::Result<_, _>>::Err
-                >>>
+                ::std::sync::Mutex<::std::collections::HashMap<String, #ret_type>>
             > = ::once_cell::sync::Lazy::new(|| ::std::sync::Mutex::new(::std::collections::HashMap::new()));
-
 
             #vis #sig {
                 let __key = #key_expr;
 
-                // Try cache lookup
+                // Check cache
                 {
                     let cache_lock = #cache_ident.lock().unwrap();
                     if let Some(cached) = cache_lock.get(&__key) {
-                        return Ok(cached.clone());
+                        if let Ok(val) = cached {
+                            return Ok(val.clone());
+                        }
                     }
                 }
 
-                // Execute original body
+                // Execute body
                 let __result = (|| #block)();
 
-                // If success, store in cache
+                // Only cache Ok results
                 if let Ok(ref val) = __result {
                     let mut cache_lock = #cache_ident.lock().unwrap();
-                    cache_lock.insert(__key, val.clone());
+                    cache_lock.insert(__key, Ok(val.clone()));
                 }
 
                 __result

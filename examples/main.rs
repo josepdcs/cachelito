@@ -40,4 +40,9 @@ fn main() {
 
     println!("{}", fibonacci(10)); // Execute
     println!("{}", fibonacci(10)); // Use cache
+
+    println!("might_fail(4) = {:?}", might_fail(4));
+    println!("might_fail(4) again = {:?}", might_fail(4)); // cached
+    println!("might_fail(-1) = {:?}", might_fail(-1)); // not cached
+    println!("might_fail(-1) = {:?}", might_fail(-1)); // not cached
 }
