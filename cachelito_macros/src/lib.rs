@@ -2,11 +2,85 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, FnArg, ItemFn, ReturnType};
 
-/// Procedural macro that caches function results in a thread-local map.
+/// A procedural macro that adds automatic memoization to functions and methods.
 ///
-/// - Automatically builds cache keys using the `CacheableKey` trait.
-/// - For types without custom keys, you can `impl DefaultCacheableKey`.
-/// - Works with functions returning `Result<T, E>` (only caches `Ok` results).
+/// This macro transforms a function into a cached version that stores results
+/// in a thread-local HashMap based on the function arguments. Subsequent calls
+/// with the same arguments will return the cached result instead of re-executing
+/// the function body.
+///
+/// # Requirements
+///
+/// - **Arguments**: Must implement `CacheableKey` (or `DefaultCacheableKey` + `Debug`)
+/// - **Return type**: Must implement `Clone` for cache storage and retrieval
+/// - **Function purity**: For correct behavior, the function should be pure
+///   (same inputs always produce same outputs with no side effects)
+///
+/// # Cache Behavior
+///
+/// - **Regular functions**: All results are cached
+/// - **Result-returning functions**: Only `Ok` values are cached, `Err` values are not
+/// - **Thread-local storage**: Each thread maintains its own independent cache
+/// - **Methods**: Works with `self`, `&self`, and `&mut self` parameters
+///
+/// # Examples
+///
+/// ## Basic Function Caching
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// #[cache]
+/// fn fibonacci(n: u32) -> u64 {
+///     if n <= 1 {
+///         return n as u64;
+///     }
+///     fibonacci(n - 1) + fibonacci(n - 2)
+/// }
+///
+/// // First call computes and caches the result
+/// let result1 = fibonacci(10);
+/// // Subsequent calls return cached result (instant)
+/// let result2 = fibonacci(10);
+/// ```
+///
+/// ## Method Caching
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// #[derive(Debug, Clone)]
+/// struct Calculator;
+///
+/// impl Calculator {
+///     #[cache]
+///     fn compute(&self, x: f64, y: f64) -> f64 {
+///         x.powf(y)
+///     }
+/// }
+/// ```
+///
+/// ## Result Type Caching (Errors NOT Cached)
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// #[cache]
+/// fn divide(a: i32, b: i32) -> Result<i32, String> {
+///     if b == 0 {
+///         Err("Division by zero".to_string())
+///     } else {
+///         Ok(a / b)
+///     }
+/// }
+/// ```
+///
+/// # Performance Considerations
+///
+/// - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method
+/// - **Thread-local storage**: Each thread has its own cache
+/// - **Memory usage**: The cache grows unbounded
+///
 #[proc_macro_attribute]
 pub fn cache(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
