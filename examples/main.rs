@@ -1,63 +1,54 @@
 use cachelito::cache;
-
-#[cache]
-fn my_cached_fn() -> i32 {
-    println!("⏳ Executing");
-    33
-}
-
-#[cache]
-fn sum(a: i32, b: i32) -> i32 {
-    println!("⏳ Executing (a + b)");
-    a + b
-}
-
-#[cache]
-fn fibonacci(n: u32) -> u64 {
-    println!("⏳ Executing fibonacci({})", n);
-    if n <= 1 {
-        return n as u64;
-    }
-    fibonacci(n - 1) + fibonacci(n - 2)
-}
-
-#[cache]
-fn might_fail(n: i32) -> Result<i32, String> {
-    println!("executing might_fail({})", n);
-    if n < 0 {
-        Err("negative numbers not allowed".into())
-    } else {
-        Ok(n * 2)
-    }
-}
+use cachelito_core::{CacheableKey, DefaultCacheableKey};
 
 #[derive(Debug, Clone)]
-struct Calculator;
+struct Product {
+    id: u32,
+    name: String,
+}
 
-impl Calculator {
-    #[cache]
-    fn add(&self, a: i32, b: i32) -> i32 {
-        println!("running add({}, {})", a, b);
-        a + b
+// Use default cache key implementation
+impl DefaultCacheableKey for Product {}
+
+#[derive(Debug, Clone)]
+struct User {
+    id: u64,
+    name: String,
+}
+
+// Custom cache key implementation
+impl CacheableKey for User {
+    fn to_cache_key(&self) -> String {
+        format!("user:{}:{}", self.id, self.name)
+    }
+}
+
+#[cache]
+fn compute_price(p: Product, tax: f64) -> f64 {
+    println!("Calculating price for {:?}", p);
+    (p.id as f64) * 10.0 * (1.0 + tax)
+}
+
+#[cache]
+fn risky_operation(x: u32) -> Result<u32, String> {
+    println!("Running risky operation for {}", x);
+    if x % 2 == 0 {
+        Ok(x * 2)
+    } else {
+        Err(format!("Odd number: {}", x))
     }
 }
 
 fn main() {
-    println!("{}", my_cached_fn()); // Execute
-    println!("{}", my_cached_fn()); // Use cache
+    let prod = Product {
+        id: 1,
+        name: "Book".to_string(),
+    };
 
-    println!("{}", sum(10, 20)); // Execute
-    println!("{}", sum(10, 20)); // Use cache
+    println!("First call: {}", compute_price(prod.clone(), 0.2));
+    println!("Second call (cached): {}", compute_price(prod.clone(), 0.2));
 
-    println!("{}", fibonacci(10)); // Execute
-    println!("{}", fibonacci(10)); // Use cache
-
-    println!("might_fail(4) = {:?}", might_fail(4));
-    println!("might_fail(4) again = {:?}", might_fail(4)); // cached
-    println!("might_fail(-1) = {:?}", might_fail(-1)); // not cached
-    println!("might_fail(-1) = {:?}", might_fail(-1)); // not cached
-
-    let calc = Calculator;
-    println!("calc.add(5, 3) = {}", calc.add(5, 3)); // Execute
-    println!("calc.add(5, 3) = {}", calc.add(5, 3)); // Use cache
+    println!("Result 1: {:?}", risky_operation(2));
+    println!("Result 2 (cached): {:?}", risky_operation(2));
+    println!("Result 3 (error, not cached): {:?}", risky_operation(3));
 }
