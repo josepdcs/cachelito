@@ -5,6 +5,8 @@
 //! This module provides the fundamental building blocks for cache key generation
 //! and thread-local cache management.
 
+use std::cmp::PartialEq;
+use std::collections::VecDeque;
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, thread::LocalKey};
 
 /// Trait defining how to generate a cache key for a given type.
@@ -149,6 +151,60 @@ impl<T: DefaultCacheableKey, E: DefaultCacheableKey> DefaultCacheableKey for Res
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
 impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
 
+/// Represents the policy used for evicting elements in a cache or similar data structure.
+///
+/// # Variants
+///
+/// * `FIFO` - First In, First Out eviction policy. Elements are evicted in the order
+///   they were added, with the oldest element being removed first.
+/// * `LRU` - Least Recently Used eviction policy. Elements are evicted based on
+///   usage, where the least recently accessed element is removed first.
+///
+/// # Derives
+///
+/// This enum derives the following traits:
+///
+/// * `Clone` - Enables the creation of a duplicate `EvictionPolicy` value.
+/// * `Copy` - Allows `EvictionPolicy` values to be duplicated by simple assignment
+///   without consuming the original value.
+/// * `Debug` - Provides a human-readable string representation of the `EvictionPolicy`
+///   variants for debugging purposes.
+#[derive(Clone, Copy, Debug)]
+pub enum EvictionPolicy {
+    FIFO,
+    LRU,
+}
+/// Returns the default eviction policy (FIFO).
+impl EvictionPolicy {
+    /// Returns the default eviction policy (FIFO).
+    pub const fn default() -> Self {
+        EvictionPolicy::FIFO
+    }
+}
+
+/// Converts a string slice to an `EvictionPolicy`.
+/// The conversion is case-insensitive.
+/// If the string does not match "lru", it defaults to `FIFO`.
+impl From<&str> for EvictionPolicy {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "lru" => EvictionPolicy::LRU,
+            _ => EvictionPolicy::FIFO,
+        }
+    }
+}
+
+/// PartialEq implementation for `EvictionPolicy`.
+impl PartialEq for EvictionPolicy {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (EvictionPolicy::FIFO, EvictionPolicy::FIFO) => true,
+            (EvictionPolicy::LRU, EvictionPolicy::LRU) => true,
+            _ => false,
+        }
+    }
+}
+
 /// Core cache abstraction that stores values in a thread-local HashMap.
 ///
 /// This cache is designed to work with static thread-local maps declared using
@@ -186,6 +242,12 @@ impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap
     pub cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
+    /// Reference to the thread-local storage key for the cache order queue
+    pub order: &'static LocalKey<RefCell<VecDeque<String>>>,
+    /// Maximum number of items to store in the cache
+    pub limit: Option<usize>,
+    /// Eviction policy to use for the cache
+    pub policy: EvictionPolicy,
 }
 
 impl<R: Clone + 'static> ThreadLocalCache<R> {
@@ -208,8 +270,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///
     /// let cache = ThreadLocalCache::new(&CACHE);
     /// ```
-    pub fn new(cache: &'static LocalKey<RefCell<HashMap<String, R>>>) -> Self {
-        ThreadLocalCache { cache }
+    pub const fn new(
+        cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
+        order: &'static LocalKey<RefCell<VecDeque<String>>>,
+        limit: Option<usize>,
+        policy: EvictionPolicy,
+    ) -> Self {
+        Self {
+            cache,
+            order,
+            limit,
+            policy,
+        }
     }
 
     /// Retrieves a value from the cache by key.
@@ -237,8 +309,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
     /// ```
-    pub fn get(&self, key: &str) -> Option<R> {
-        self.cache.with(|c| c.borrow().get(key).cloned())
+    pub fn get(&'static self, key: &str) -> Option<R> {
+        let val = self.cache.with(|c| c.borrow().get(key).cloned());
+        if val.is_some() && self.policy == EvictionPolicy::LRU {
+            self.order.with(|o| {
+                let mut o = o.borrow_mut();
+                if let Some(pos) = o.iter().position(|k| k == key) {
+                    o.remove(pos);
+                    o.push_back(key.to_string());
+                }
+            });
+        }
+        val
     }
 
     /// Inserts a value into the cache with the specified key.
@@ -264,9 +346,28 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
     /// ```
-    pub fn insert(&self, key: &str, value: R) {
-        self.cache.with(|c| {
-            c.borrow_mut().insert(key.to_string(), value);
+    pub fn insert(&'static self, key: String, value: R) {
+        self.cache
+            .with(|c| c.borrow_mut().insert(key.clone(), value));
+        self.order.with(|o| {
+            let mut order = o.borrow_mut();
+            if let Some(pos) = order.iter().position(|k| *k == key) {
+                order.remove(pos);
+            }
+            order.push_back(key.clone());
+
+            if let Some(limit) = self.limit {
+                if order.len() > limit {
+                    let evict_key = match self.policy {
+                        EvictionPolicy::FIFO | EvictionPolicy::LRU => order.pop_front(),
+                    };
+                    if let Some(k) = evict_key {
+                        self.cache.with(|c| {
+                            c.borrow_mut().remove(&k);
+                        });
+                    }
+                }
+            }
         });
     }
 }
@@ -308,6 +409,9 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> ThreadLocalCache<Re
     /// `Result<T, E>`. It intelligently ignores `Err` values, as errors typically
     /// should not be cached (the operation might succeed on retry).
     ///
+    /// Internally, it delegates to [`insert()`] to ensure eviction policy (`FIFO` or `LRU`)
+    /// and cache limits are respected.
+    ///
     /// # Arguments
     ///
     /// * `key` - The cache key
@@ -315,13 +419,11 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> ThreadLocalCache<Re
     ///
     /// # Behavior
     ///
-    /// * If `value` is `Ok(v)`, stores `Ok(v.clone())` in the cache
+    /// * If `value` is `Ok(v)`, stores `Ok(v.clone())` in the cache (with full eviction logic)
     /// * If `value` is `Err(_)`, does nothing (error is not cached)
-    pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
+    pub fn insert_result(&'static self, key: &str, value: &Result<T, E>) {
         if let Ok(val) = value {
-            self.cache.with(|c| {
-                c.borrow_mut().insert(key.to_string(), Ok(val.clone()));
-            });
+            self.insert(key.to_string(), Ok(val.clone()));
         }
     }
 }

@@ -128,6 +128,12 @@ fn risky_operation(x: u32) -> Result<u32, String> {
     }
 }
 
+#[cache(limit = 1)]
+fn slow_add(a: u32, b: u32) -> u32 {
+    println!("Computing {a} + {b}");
+    a + b
+}
+
 /// Main entry point demonstrating Cachelito's caching capabilities.
 ///
 /// This function shows:
@@ -157,4 +163,10 @@ fn main() {
     println!("Result 3 (error, not cached): {:?}", risky_operation(3));
     // Second call with same odd number: computes again (notice "Running" message)
     println!("Result 4 (error again): {:?}", risky_operation(3));
+
+    println!("Result: {}", slow_add(1, 1));
+    println!("Result: {}", slow_add(1, 1));
+    println!("Result: {}", slow_add(1, 2));
+    println!("Result: {}", slow_add(1, 2));
+    println!("Result: {}", slow_add(1, 1));
 }
