@@ -309,7 +309,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
     /// ```
-    pub fn get(&'static self, key: &str) -> Option<R> {
+    pub fn get(&self, key: &str) -> Option<R> {
         let val = self.cache.with(|c| c.borrow().get(key).cloned());
         if val.is_some() && self.policy == EvictionPolicy::LRU {
             self.order.with(|o| {
@@ -346,7 +346,8 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
     /// ```
-    pub fn insert(&'static self, key: String, value: R) {
+    pub fn insert(&self, key: &str, value: R) {
+        let key = key.to_string();
         self.cache
             .with(|c| c.borrow_mut().insert(key.clone(), value));
         self.order.with(|o| {
@@ -358,12 +359,11 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 
             if let Some(limit) = self.limit {
                 if order.len() > limit {
-                    let evict_key = match self.policy {
+                    if let Some(evict_key) = match self.policy {
                         EvictionPolicy::FIFO | EvictionPolicy::LRU => order.pop_front(),
-                    };
-                    if let Some(k) = evict_key {
+                    } {
                         self.cache.with(|c| {
-                            c.borrow_mut().remove(&k);
+                            c.borrow_mut().remove(&evict_key);
                         });
                     }
                 }
@@ -421,9 +421,9 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> ThreadLocalCache<Re
     ///
     /// * If `value` is `Ok(v)`, stores `Ok(v.clone())` in the cache (with full eviction logic)
     /// * If `value` is `Err(_)`, does nothing (error is not cached)
-    pub fn insert_result(&'static self, key: &str, value: &Result<T, E>) {
+    pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
         if let Ok(val) = value {
-            self.insert(key.to_string(), Ok(val.clone()));
+            self.insert(key, Ok(val.clone()));
         }
     }
 }

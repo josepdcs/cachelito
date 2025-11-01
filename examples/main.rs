@@ -128,7 +128,7 @@ fn risky_operation(x: u32) -> Result<u32, String> {
     }
 }
 
-#[cache(limit = 1)]
+#[cache(limit = 1, policy = "lru")]
 fn slow_add(a: u32, b: u32) -> u32 {
     println!("Computing {a} + {b}");
     a + b

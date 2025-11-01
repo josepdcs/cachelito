@@ -85,28 +85,40 @@ use syn::{parse_macro_input, Expr, FnArg, ItemFn, MetaNameValue, ReturnType, Tok
 ///
 #[proc_macro_attribute]
 pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // --- parse attribute list like `limit = 100, policy = "lru"` ---
+    use proc_macro2::TokenStream as TokenStream2;
+    use quote::{format_ident, quote};
+    use syn::{
+        parse_macro_input, punctuated::Punctuated, Expr, FnArg, ItemFn, MetaNameValue, ReturnType,
+        Token,
+    };
+
+    // Parse attributes: e.g. #[cache(limit = 100, policy = "lru")]
     let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
     let parsed_args = parser.parse(attr).unwrap_or_default();
 
-    // defaults
     let mut limit_expr = quote! { None };
     let mut policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
 
     for nv in parsed_args {
         if nv.path.is_ident("limit") {
             match nv.value {
-                Expr::Lit(ref expr_lit) => match &expr_lit.lit {
-                    syn::Lit::Int(lit_int) => {
+                Expr::Lit(ref expr_lit) => match expr_lit.lit {
+                    syn::Lit::Int(ref lit_int) => {
                         let val = lit_int
                             .base10_parse::<usize>()
-                            .expect("limit must be usize");
+                            .expect("limit must be a positive integer");
                         limit_expr = quote! { Some(#val) };
                     }
-                    lit => {
+                    ref lit => {
                         return quote! {
-                            compile_error!(concat!("Invalid literal for `limit`, expected integer, got: ", stringify!(#lit)));
-                        }.into();
+                            compile_error!(
+                                concat!(
+                                    "Invalid literal for `limit`: expected integer, got: ",
+                                    stringify!(#lit)
+                                )
+                            );
+                        }
+                        .into();
                     }
                 },
                 _ => {
@@ -119,26 +131,36 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         } else if nv.path.is_ident("policy") {
             match nv.value {
                 Expr::Lit(ref expr_lit) => match &expr_lit.lit {
-                    syn::Lit::Str(lit_str) => match lit_str.value().to_lowercase().as_str() {
-                        "fifo" => policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO },
-                        "lru" => policy_expr = quote! { cachelito_core::EvictionPolicy::LRU },
-                        _ => {
-                            return quote! {
-                                compile_error!(concat!("Unknown policy: ", stringify!(#lit_str)));
+                    syn::Lit::Str(s) => {
+                        let pol = match s.value().to_lowercase().as_str() {
+                            "fifo" => quote! { cachelito_core::EvictionPolicy::FIFO },
+                            "lru" => quote! { cachelito_core::EvictionPolicy::LRU },
+                            other => {
+                                return quote! {
+                                    compile_error!(concat!("Invalid policy: ", #other));
+                                }
+                                .into();
                             }
-                            .into();
-                        }
-                    },
+                        };
+                        policy_expr = pol;
+                    }
                     lit => {
                         return quote! {
-                            compile_error!(concat!("Invalid literal for `policy`, expected string, got: ", stringify!(#lit)));
-                        }.into();
+                            compile_error!(
+                                concat!(
+                                    "Invalid literal for `policy`: expected string, got: ",
+                                    stringify!(#lit)
+                                )
+                            );
+                        }
+                        .into();
                     }
                 },
                 _ => {
                     return quote! {
                         compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`");
-                    }.into();
+                    }
+                        .into();
                 }
             }
         }
@@ -151,125 +173,129 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ident = &sig.ident;
     let block = &input.block;
 
-    // return type
+    // Return type
     let ret_type = match &sig.output {
         ReturnType::Type(_, ty) => quote! { #ty },
         ReturnType::Default => quote! { () },
     };
 
-    // collect argument patterns and whether we have a receiver
+    // Collect argument patterns (no types) + detect self
     let mut arg_pats = Vec::new();
     let mut has_self = false;
     for arg in sig.inputs.iter() {
         match arg {
             FnArg::Receiver(_) => has_self = true,
-            FnArg::Typed(pat_type) => arg_pats.push(quote! { #pat_type.pat }),
+            FnArg::Typed(pat_type) => {
+                let pat = &pat_type.pat;
+                arg_pats.push(quote! { #pat });
+            }
         }
     }
 
-    // thread-local storage identifiers
+    // Thread-local identifiers
     let cache_ident = format_ident!("_CACHE_{}_MAP", ident.to_string().to_uppercase());
     let order_ident = format_ident!("_CACHE_{}_ORDER", ident.to_string().to_uppercase());
 
-    // build key expression
-    let key_expr = if has_self {
+    // Build cache key expression
+    let key_expr: TokenStream2 = if has_self {
         if arg_pats.is_empty() {
-            quote! { { use cachelito_core::CacheableKey; vec![self.to_cache_key()].join("|") } }
+            quote! {{
+                use cachelito_core::CacheableKey;
+                self.to_cache_key()
+            }}
         } else {
-            quote! {
-                {
-                    use cachelito_core::CacheableKey;
-                    let mut __key_parts = Vec::new();
-                    __key_parts.push(self.to_cache_key());
-                    #( __key_parts.push((#arg_pats).to_cache_key()); )*
-                    __key_parts.join("|")
-                }
-            }
+            quote! {{
+                use cachelito_core::CacheableKey;
+                let mut __key_parts = Vec::new();
+                __key_parts.push(self.to_cache_key());
+                #(
+                    __key_parts.push((#arg_pats).to_cache_key());
+                )*
+                __key_parts.join("|")
+            }}
         }
     } else {
         if arg_pats.is_empty() {
-            quote! { { String::new() } }
+            quote! {{ String::new() }}
         } else {
-            quote! {
-                {
-                    use cachelito_core::CacheableKey;
-                    let mut __key_parts = Vec::new();
-                    #( __key_parts.push((#arg_pats).to_cache_key()); )*
-                    __key_parts.join("|")
-                }
-            }
+            quote! {{
+                use cachelito_core::CacheableKey;
+                let mut __key_parts = Vec::new();
+                #(
+                    __key_parts.push((#arg_pats).to_cache_key());
+                )*
+                __key_parts.join("|")
+            }}
         }
     };
 
-    // detect Result<T, E> return types
-    let is_result = quote!(#ret_type)
-        .to_string()
-        .replace(' ', "")
-        .starts_with("Result<");
+    // Detect if return type is Result<...>
+    let is_result = {
+        let s = quote!(#ret_type).to_string().replace(' ', "");
+        s.starts_with("Result<") || s.starts_with("std::result::Result<")
+    };
 
-    // --- generate expanded function body ---
+    // --- Generate expanded function ---
     let expanded = if is_result {
         quote! {
             #vis #sig {
-                {
-                    use ::std::collections::{HashMap, VecDeque};
-                    use ::std::cell::RefCell;
-                    use ::cachelito_core::{ThreadLocalCache, CacheableKey};
+                use ::std::collections::{HashMap, VecDeque};
+                use ::std::cell::RefCell;
+                use ::cachelito_core::{ThreadLocalCache, CacheableKey};
 
-                    thread_local! {
-                        static #cache_ident: RefCell<HashMap<String, #ret_type>> = RefCell::new(HashMap::new());
-                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                    }
-
-                    let __key = #key_expr;
-                    let __cache = ThreadLocalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                    );
-
-                    if let Some(cached) = __cache.get(&__key) {
-                        if let Ok(val) = cached.clone() {
-                            return Ok(val);
-                        }
-                    }
-
-                    let __result = (|| #block)();
-                    __cache.insert_result(&__key, &__result);
-                    __result
+                thread_local! {
+                    static #cache_ident: RefCell<HashMap<String, #ret_type>> = RefCell::new(HashMap::new());
+                    static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
                 }
+
+                let __key = #key_expr;
+                let __cache = ThreadLocalCache::<#ret_type>::new(
+                    &#cache_ident,
+                    &#order_ident,
+                    #limit_expr,
+                    #policy_expr
+                );
+
+                if let Some(cached) = __cache.get(&__key) {
+                    if let Ok(val) = cached.clone() {
+                        return Ok(val);
+                    }
+                }
+
+                let __result = (|| #block)();
+                __cache.insert_result(&__key, &__result);
+
+                __result
             }
         }
     } else {
         quote! {
             #vis #sig {
-                {
-                    use ::std::collections::{HashMap, VecDeque};
-                    use ::std::cell::RefCell;
-                    use ::cachelito_core::{ThreadLocalCache, CacheableKey};
+                use ::std::collections::{HashMap, VecDeque};
+                use ::std::cell::RefCell;
+                use ::cachelito_core::{ThreadLocalCache, CacheableKey};
 
-                    thread_local! {
-                        static #cache_ident: RefCell<HashMap<String, #ret_type>> = RefCell::new(HashMap::new());
-                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                    }
-
-                    let __key = #key_expr;
-                    let __cache = ThreadLocalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                    );
-
-                    if let Some(cached) = __cache.get(&__key) {
-                        return cached;
-                    }
-
-                    let __result = (|| #block)();
-                    __cache.insert(__key.clone(), __result.clone());
-                    __result
+                thread_local! {
+                    static #cache_ident: RefCell<HashMap<String, #ret_type>> = RefCell::new(HashMap::new());
+                    static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
                 }
+
+                let __key = #key_expr;
+                let __cache = ThreadLocalCache::<#ret_type>::new(
+                    &#cache_ident,
+                    &#order_ident,
+                    #limit_expr,
+                    #policy_expr
+                );
+
+                if let Some(cached) = __cache.get(&__key) {
+                    return cached;
+                }
+
+                let __result = (|| #block)();
+                __cache.insert(&__key, __result.clone());
+
+                __result
             }
         }
     };
