@@ -11,6 +11,8 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🔒 **Thread-safe**: Uses `thread_local!` storage for cache isolation
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
+- 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
+- 📊 **Eviction policies**: Choose between FIFO (First In, First Out) and LRU (Least Recently Used)
 - ✅ **Type-safe**: Full compile-time type checking
 - 📦 **Zero runtime dependencies**: Uses only Rust standard library for runtime
 
@@ -20,7 +22,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.1.0"
+cachelito = "0.2.0"
 ```
 
 ## Usage
@@ -138,42 +140,119 @@ fn main() {
 }
 ```
 
+### Cache Limits and Eviction Policies
+
+Control memory usage by setting cache limits and choosing an eviction policy:
+
+#### FIFO (First In, First Out) - Default
+
+```rust
+use cachelito::cache;
+
+// Cache with a limit of 100 entries using FIFO eviction
+#[cache(limit = 100, policy = "fifo")]
+fn expensive_computation(x: i32) -> i32 {
+    // When cache is full, oldest entry is evicted
+    x * x
+}
+
+// FIFO is the default policy, so this is equivalent:
+#[cache(limit = 100)]
+fn another_computation(x: i32) -> i32 {
+    x * x
+}
+```
+
+#### LRU (Least Recently Used)
+
+```rust
+use cachelito::cache;
+
+// Cache with a limit of 100 entries using LRU eviction
+#[cache(limit = 100, policy = "lru")]
+fn expensive_computation(x: i32) -> i32 {
+    // When cache is full, least recently accessed entry is evicted
+    // Accessing a cached value moves it to the end of the queue
+    x * x
+}
+```
+
+**Key Differences:**
+
+- **FIFO**: Evicts the oldest inserted entry, regardless of usage
+- **LRU**: Evicts the least recently accessed entry, keeping frequently used items longer
+
 ## How It Works
 
 The `#[cache]` macro generates code that:
 
 1. Creates a thread-local cache using `thread_local!` and `RefCell<HashMap>`
-2. Builds a cache key from function arguments using `CacheableKey::to_cache_key()`
-3. Checks the cache before executing the function body
-4. Stores the result in the cache after execution
-5. For `Result<T, E>` types, only caches `Ok` values
+2. Creates a thread-local order queue using `VecDeque` for eviction tracking
+3. Builds a cache key from function arguments using `CacheableKey::to_cache_key()`
+4. Checks the cache before executing the function body
+5. Stores the result in the cache after execution
+6. For `Result<T, E>` types, only caches `Ok` values
+7. When cache limit is reached, evicts entries according to the configured policy:
+    - **FIFO**: Removes the oldest inserted entry
+    - **LRU**: Removes the least recently accessed entry
 
 ## Examples
 
-Run the included example:
+The library includes several comprehensive examples demonstrating different features:
+
+### Run Examples
 
 ```bash
-cargo run --example main
+# Basic caching with custom types (default cache key)
+cargo run --example custom_type_default_key
+
+# Custom cache key implementation
+cargo run --example custom_type_custom_key
+
+# Result type caching (only Ok values cached)
+cargo run --example result_caching
+
+# Cache limits with LRU policy
+cargo run --example cache_limit
+
+# LRU eviction policy
+cargo run --example lru
+
+# FIFO eviction policy
+cargo run --example fifo
+
+# Default policy (FIFO)
+cargo run --example fifo_default
 ```
 
-Output:
+### Example Output (LRU Policy):
 
 ```
-=== Cachelito Example ===
+=== Testing LRU Cache Policy ===
 
---- Testing Product Price Caching ---
-Calculating price for Product { id: 1, name: "Book" }
-First call: 12
-Second call (cached): 12
+Calling compute_square(1)...
+Executing compute_square(1)
+Result: 1
 
---- Testing Result Caching ---
-Running risky operation for 2
-Result 1: Ok(4)
-Result 2 (cached): Ok(4)
-Running risky operation for 3
-Result 3 (error, not cached): Err("Odd number: 3")
-Running risky operation for 3
-Result 4 (error again): Err("Odd number: 3")
+Calling compute_square(2)...
+Executing compute_square(2)
+Result: 4
+
+Calling compute_square(3)...
+Executing compute_square(3)
+Result: 9
+
+Calling compute_square(2)...
+Result: 4 (should be cached)
+
+Calling compute_square(4)...
+Executing compute_square(4)
+Result: 16
+
+...
+
+Total executions: 6
+✅ LRU Policy Test PASSED
 ```
 
 ## Performance Considerations
@@ -182,15 +261,18 @@ Result 4 (error again): Err("Odd number: 3")
   formatting, which may be slow for complex types. Consider implementing `CacheableKey` directly for better performance.
 - **Thread-local storage**: Each thread has its own cache, so cached data is not shared across threads. This means no
   locks or synchronization overhead.
-- **Memory usage**: The cache grows unbounded. For long-running applications with many different input combinations,
-  consider implementing cache eviction strategies.
+- **Memory usage**: Without a limit, the cache grows unbounded. Use the `limit` parameter to control memory usage.
+- **Eviction policy overhead**:
+    - **FIFO**: Minimal overhead, O(1) eviction
+    - **LRU**: Slightly higher overhead due to reordering on access, O(n) for reordering but still efficient
+- **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
 
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
 - The function must be deterministic for correct caching behavior
-- Cache size is unbounded (no automatic eviction)
 - Each thread maintains its own cache (data is not shared across threads)
+- LRU policy has O(n) overhead on cache hits for reordering (where n is the number of cached entries)
 
 ## Documentation
 
@@ -199,6 +281,39 @@ For detailed API documentation, run:
 ```bash
 cargo doc --no-deps --open
 ```
+
+## Changelog
+
+### Version 0.2.0 (Current)
+
+**New Features:**
+
+- ✨ Cache size limits with `limit` parameter
+- ✨ FIFO (First In, First Out) eviction policy
+- ✨ LRU (Least Recently Used) eviction policy
+- ✨ Configurable eviction policies via `policy` parameter
+
+**Improvements:**
+
+- 📚 Enhanced documentation with comprehensive examples
+- 📚 Added 7 example files demonstrating different use cases
+- 🧪 Improved test coverage for eviction policies
+- 🔧 Better error messages for invalid macro parameters
+
+**Breaking Changes:**
+
+- None (fully backward compatible)
+
+### Version 0.1.0
+
+**Initial Release:**
+
+- ✨ Basic caching functionality with `#[cache]` attribute
+- ✨ Thread-local storage for cache isolation
+- ✨ Custom cache key generation via `CacheableKey` trait
+- ✨ Default cache key implementation via `DefaultCacheableKey`
+- ✨ Result-aware caching (only `Ok` values cached)
+- ✨ Support for methods (`self`, `&self`, `&mut self`)
 
 ## License
 
