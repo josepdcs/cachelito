@@ -2,8 +2,29 @@
 //!
 //! Core traits and utilities for the Cachelito caching library.
 //!
-//! This module provides the fundamental building blocks for cache key generation
-//! and thread-local cache management.
+//! This module provides the fundamental building blocks for cache key generation,
+//! thread-local cache management, and eviction policies.
+//!
+//! ## Features
+//!
+//! - **Cache Key Generation**: Flexible traits for custom or default cache keys
+//! - **Thread-Local Storage**: Safe, lock-free caching using `thread_local!`
+//! - **Eviction Policies**: Support for FIFO (First In, First Out) and LRU (Least Recently Used)
+//! - **Cache Limits**: Control memory usage with configurable size limits
+//! - **Result-Aware Caching**: Smart handling of `Result<T, E>` types
+//!
+//! ## Version History
+//!
+//! ### Version 0.2.0 (Current)
+//! - Added cache size limits
+//! - Implemented FIFO and LRU eviction policies
+//! - Enhanced `ThreadLocalCache` with configurable limits and policies
+//! - Improved documentation and examples
+//!
+//! ### Version 0.1.0
+//! - Initial release with basic caching functionality
+//! - Thread-local storage support
+//! - Custom cache key generation
 
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
@@ -151,40 +172,110 @@ impl<T: DefaultCacheableKey, E: DefaultCacheableKey> DefaultCacheableKey for Res
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
 impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
 
-/// Represents the policy used for evicting elements in a cache or similar data structure.
+/// Represents the policy used for evicting elements from a cache when it reaches its limit.
+///
+/// Eviction policies determine which cached entry should be removed when the cache is full
+/// and a new entry needs to be added.
 ///
 /// # Variants
 ///
-/// * `FIFO` - First In, First Out eviction policy. Elements are evicted in the order
-///   they were added, with the oldest element being removed first.
-/// * `LRU` - Least Recently Used eviction policy. Elements are evicted based on
-///   usage, where the least recently accessed element is removed first.
+/// * `FIFO` - **First In, First Out** eviction policy
+///   - Elements are evicted in the order they were added
+///   - The oldest inserted element is removed first
+///   - Accessing a cached value does NOT change its position
+///   - Simple and predictable behavior
+///   - O(1) eviction performance
+///
+/// * `LRU` - **Least Recently Used** eviction policy
+///   - Elements are evicted based on when they were last accessed
+///   - The least recently accessed element is removed first
+///   - Accessing a cached value moves it to the "most recent" position
+///   - Better for workloads with temporal locality
+///   - O(n) overhead on cache hits for reordering
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::EvictionPolicy;
+///
+/// // Creating policies
+/// let fifo = EvictionPolicy::FIFO;
+/// let lru = EvictionPolicy::LRU;
+///
+/// // Using default (FIFO)
+/// let default_policy = EvictionPolicy::default();
+/// assert_eq!(default_policy, EvictionPolicy::FIFO);
+///
+/// // Converting from string
+/// let policy: EvictionPolicy = "lru".into();
+/// assert_eq!(policy, EvictionPolicy::LRU);
+/// ```
+///
+/// # Performance Characteristics
+///
+/// | Policy | Eviction | Cache Hit | Cache Miss | Use Case |
+/// |--------|----------|-----------|------------|----------|
+/// | FIFO   | O(1)     | O(1)      | O(1)       | Simple, predictable caching |
+/// | LRU    | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
 ///
 /// # Derives
 ///
 /// This enum derives the following traits:
 ///
-/// * `Clone` - Enables the creation of a duplicate `EvictionPolicy` value.
+/// * `Clone` - Enables the creation of a duplicate `EvictionPolicy` value
 /// * `Copy` - Allows `EvictionPolicy` values to be duplicated by simple assignment
-///   without consuming the original value.
-/// * `Debug` - Provides a human-readable string representation of the `EvictionPolicy`
-///   variants for debugging purposes.
+/// * `Debug` - Provides a human-readable string representation for debugging
+/// * `PartialEq` - Enables equality comparison between policies
 #[derive(Clone, Copy, Debug)]
 pub enum EvictionPolicy {
     FIFO,
     LRU,
 }
-/// Returns the default eviction policy (FIFO).
 impl EvictionPolicy {
     /// Returns the default eviction policy (FIFO).
+    ///
+    /// FIFO is chosen as the default because:
+    /// - Simple and predictable behavior
+    /// - Lower overhead (O(1) for all operations)
+    /// - No additional bookkeeping on cache hits
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachelito_core::EvictionPolicy;
+    ///
+    /// let default = EvictionPolicy::default();
+    /// assert_eq!(default, EvictionPolicy::FIFO);
+    /// ```
     pub const fn default() -> Self {
         EvictionPolicy::FIFO
     }
 }
 
 /// Converts a string slice to an `EvictionPolicy`.
-/// The conversion is case-insensitive.
-/// If the string does not match "lru", it defaults to `FIFO`.
+///
+/// The conversion is case-insensitive and defaults to FIFO for unrecognized values.
+///
+/// # Supported Values
+///
+/// - `"fifo"` or `"FIFO"` → `EvictionPolicy::FIFO`
+/// - `"lru"` or `"LRU"` → `EvictionPolicy::LRU`
+/// - Any other value → `EvictionPolicy::FIFO` (default)
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::EvictionPolicy;
+///
+/// let fifo: EvictionPolicy = "fifo".into();
+/// assert_eq!(fifo, EvictionPolicy::FIFO);
+///
+/// let lru: EvictionPolicy = "LRU".into();
+/// assert_eq!(lru, EvictionPolicy::LRU);
+///
+/// let unknown: EvictionPolicy = "random".into();
+/// assert_eq!(unknown, EvictionPolicy::FIFO); // defaults to FIFO
+/// ```
 impl From<&str> for EvictionPolicy {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
@@ -205,7 +296,7 @@ impl PartialEq for EvictionPolicy {
     }
 }
 
-/// Core cache abstraction that stores values in a thread-local HashMap.
+/// Core cache abstraction that stores values in a thread-local HashMap with configurable limits.
 ///
 /// This cache is designed to work with static thread-local maps declared using
 /// the `thread_local!` macro. Each thread maintains its own independent cache,
@@ -214,7 +305,14 @@ impl PartialEq for EvictionPolicy {
 /// # Type Parameters
 ///
 /// * `R` - The type of values stored in the cache. Must be `'static` to satisfy
-///   thread-local storage requirements.
+///   thread-local storage requirements and `Clone` for retrieval.
+///
+/// # Features
+///
+/// - **Thread-local storage**: Each thread has its own cache instance
+/// - **Configurable limits**: Optional maximum cache size
+/// - **Eviction policies**: FIFO or LRU eviction when limit is reached
+/// - **Result-aware**: Special handling for `Result<T, E>` types
 ///
 /// # Thread Safety
 ///
@@ -226,18 +324,43 @@ impl PartialEq for EvictionPolicy {
 ///
 /// # Examples
 ///
+/// ## Basic Usage
+///
 /// ```
 /// use std::cell::RefCell;
-/// use std::collections::HashMap;
-/// use cachelito_core::ThreadLocalCache;
+/// use std::collections::{HashMap, VecDeque};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
 ///
 /// thread_local! {
 ///     static MY_CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+///     static MY_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
-/// let cache = ThreadLocalCache::new(&MY_CACHE);
+/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, EvictionPolicy::FIFO);
 /// cache.insert("answer", 42);
 /// assert_eq!(cache.get("answer"), Some(42));
+/// ```
+///
+/// ## With Cache Limit and LRU Policy
+///
+/// ```
+/// use std::cell::RefCell;
+/// use std::collections::{HashMap, VecDeque};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+///
+/// thread_local! {
+///     static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+/// }
+///
+/// // Cache with limit of 100 entries using LRU eviction
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
+/// cache.insert("key1", "value1".to_string());
+/// cache.insert("key2", "value2".to_string());
+///
+/// // Accessing key1 moves it to the end (most recently used)
+/// let _ = cache.get("key1");
+/// ```
 /// ```
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap
@@ -251,24 +374,28 @@ pub struct ThreadLocalCache<R: 'static> {
 }
 
 impl<R: Clone + 'static> ThreadLocalCache<R> {
-    /// Creates a new `ThreadLocalCache` wrapper around a thread-local storage key.
+    /// Creates a new `ThreadLocalCache` wrapper around thread-local storage keys.
     ///
     /// # Arguments
     ///
     /// * `cache` - A static reference to a `LocalKey` that stores the cache HashMap
+    /// * `order` - A static reference to a `LocalKey` that stores the eviction order queue
+    /// * `limit` - Optional maximum number of entries (None for unlimited)
+    /// * `policy` - Eviction policy to use when limit is reached
     ///
     /// # Examples
     ///
     /// ```
     /// use std::cell::RefCell;
-    /// use std::collections::HashMap;
-    /// use cachelito_core::ThreadLocalCache;
+    /// use std::collections::{HashMap, VecDeque};
+    /// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
     ///
     /// thread_local! {
     ///     static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// }
     ///
-    /// let cache = ThreadLocalCache::new(&CACHE);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
     /// ```
     pub const fn new(
         cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
@@ -299,12 +426,13 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///
     /// ```
     /// # use std::cell::RefCell;
-    /// # use std::collections::HashMap;
-    /// # use cachelito_core::ThreadLocalCache;
+    /// # use std::collections::{HashMap, VecDeque};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
     /// # thread_local! {
     /// #     static CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+    /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
     /// cache.insert("key", 100);
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
@@ -336,12 +464,13 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///
     /// ```
     /// # use std::cell::RefCell;
-    /// # use std::collections::HashMap;
-    /// # use cachelito_core::ThreadLocalCache;
+    /// # use std::collections::{HashMap, VecDeque};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
     /// # thread_local! {
     /// #     static CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+    /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
     /// cache.insert("first", 1);
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
@@ -387,12 +516,13 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 ///
 /// ```
 /// # use std::cell::RefCell;
-/// # use std::collections::HashMap;
-/// # use cachelito_core::ThreadLocalCache;
+/// # use std::collections::{HashMap, VecDeque};
+/// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
 /// # thread_local! {
 /// #     static CACHE: RefCell<HashMap<String, Result<i32, String>>> = RefCell::new(HashMap::new());
+/// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// # }
-/// let cache = ThreadLocalCache::new(&CACHE);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
 ///
 /// // Only Ok values are cached
 /// cache.insert_result("success", &Ok(42));
