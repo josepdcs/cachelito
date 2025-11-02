@@ -356,14 +356,14 @@ impl PartialEq for EvictionPolicy {
 /// ```
 /// use std::cell::RefCell;
 /// use std::collections::{HashMap, VecDeque};
-/// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
 ///
 /// thread_local! {
-///     static MY_CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+///     static MY_CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
 ///     static MY_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
-/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, EvictionPolicy::FIFO);
+/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, EvictionPolicy::FIFO, None);
 /// cache.insert("answer", 42);
 /// assert_eq!(cache.get("answer"), Some(42));
 /// ```
@@ -373,21 +373,20 @@ impl PartialEq for EvictionPolicy {
 /// ```
 /// use std::cell::RefCell;
 /// use std::collections::{HashMap, VecDeque};
-/// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
 ///
 /// thread_local! {
-///     static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+///     static CACHE: RefCell<HashMap<String, CacheEntry<String>>> = RefCell::new(HashMap::new());
 ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
 /// // Cache with limit of 100 entries using LRU eviction
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, None);
 /// cache.insert("key1", "value1".to_string());
 /// cache.insert("key2", "value2".to_string());
 ///
 /// // Accessing key1 moves it to the end (most recently used)
 /// let _ = cache.get("key1");
-/// ```
 /// ```
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap
@@ -411,20 +410,21 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// * `order` - A static reference to a `LocalKey` that stores the eviction order queue
     /// * `limit` - Optional maximum number of entries (None for unlimited)
     /// * `policy` - Eviction policy to use when limit is reached
+    /// * `ttl` - Optional time-to-live in seconds (None for no expiration)
     ///
     /// # Examples
     ///
     /// ```
     /// use std::cell::RefCell;
     /// use std::collections::{HashMap, VecDeque};
-    /// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+    /// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
     ///
     /// thread_local! {
-    ///     static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    ///     static CACHE: RefCell<HashMap<String, CacheEntry<String>>> = RefCell::new(HashMap::new());
     ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// }
     ///
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, Some(60));
     /// ```
     pub const fn new(
         cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
@@ -458,12 +458,12 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// ```
     /// # use std::cell::RefCell;
     /// # use std::collections::{HashMap, VecDeque};
-    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
     /// # thread_local! {
-    /// #     static CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+    /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
     /// cache.insert("key", 100);
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
@@ -472,7 +472,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
         let mut expired = false;
 
         let val = self.cache.with(|c| {
-            let mut c = c.borrow_mut();
+            let c = c.borrow();
             if let Some(entry) = c.get(key) {
                 if entry.is_expired(self.ttl) {
                     expired = true;
@@ -518,12 +518,12 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// ```
     /// # use std::cell::RefCell;
     /// # use std::collections::{HashMap, VecDeque};
-    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
     /// # thread_local! {
-    /// #     static CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+    /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
     /// cache.insert("first", 1);
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
@@ -586,12 +586,12 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 /// ```
 /// # use std::cell::RefCell;
 /// # use std::collections::{HashMap, VecDeque};
-/// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+/// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
 /// # thread_local! {
-/// #     static CACHE: RefCell<HashMap<String, Result<i32, String>>> = RefCell::new(HashMap::new());
+/// #     static CACHE: RefCell<HashMap<String, CacheEntry<Result<i32, String>>>> = RefCell::new(HashMap::new());
 /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// # }
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
 ///
 /// // Only Ok values are cached
 /// cache.insert_result("success", &Ok(42));

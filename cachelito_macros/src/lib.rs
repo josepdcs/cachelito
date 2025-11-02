@@ -206,7 +206,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                         let val = lit_int
                             .base10_parse::<u64>()
                             .expect("ttl must be a positive integer (seconds)");
-                        ttl_expr = quote! { Some(std::time::Duration::from_secs(#val)) };
+                        ttl_expr = quote! { Some(#val) };
                     }
                     _ => {
                         return quote! {
