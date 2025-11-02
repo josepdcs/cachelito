@@ -301,7 +301,6 @@ Total executions: 6
   formatting, which may be slow for complex types. Consider implementing `CacheableKey` directly for better performance.
 - **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
     - **FIFO**: Minimal overhead, O(1) eviction
-    - **FIFO**: Minimal overhead, O(1) eviction
     - **LRU**: Slightly higher overhead due to reordering on access, O(n) for reordering but still efficient
 - **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
 
