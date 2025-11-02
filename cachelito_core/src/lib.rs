@@ -28,6 +28,7 @@
 
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
+use std::time::Instant;
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, thread::LocalKey};
 
 /// Trait defining how to generate a cache key for a given type.
@@ -171,6 +172,32 @@ impl<T: DefaultCacheableKey, E: DefaultCacheableKey> DefaultCacheableKey for Res
 // Collection types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
 impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
+
+/// Internal wrapper that tracks when a value was inserted into the cache.
+/// Used for TTL expiration support.
+#[derive(Clone)]
+pub struct CacheEntry<R> {
+    pub value: R,
+    pub inserted_at: Instant,
+}
+
+impl<R> CacheEntry<R> {
+    pub fn new(value: R) -> Self {
+        Self {
+            value,
+            inserted_at: Instant::now(),
+        }
+    }
+
+    /// Returns true if the entry has expired based on the provided TTL (in seconds).
+    pub fn is_expired(&self, ttl: Option<u64>) -> bool {
+        if let Some(ttl_secs) = ttl {
+            self.inserted_at.elapsed().as_secs() >= ttl_secs
+        } else {
+            false
+        }
+    }
+}
 
 /// Represents the policy used for evicting elements from a cache when it reaches its limit.
 ///
@@ -364,13 +391,15 @@ impl PartialEq for EvictionPolicy {
 /// ```
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap
-    pub cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
+    pub cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
     /// Reference to the thread-local storage key for the cache order queue
     pub order: &'static LocalKey<RefCell<VecDeque<String>>>,
     /// Maximum number of items to store in the cache
     pub limit: Option<usize>,
     /// Eviction policy to use for the cache
     pub policy: EvictionPolicy,
+    /// Optional TTL (in seconds) for cache entries
+    pub ttl: Option<u64>,
 }
 
 impl<R: Clone + 'static> ThreadLocalCache<R> {
@@ -398,16 +427,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
     /// ```
     pub const fn new(
-        cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
+        cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
         order: &'static LocalKey<RefCell<VecDeque<String>>>,
         limit: Option<usize>,
         policy: EvictionPolicy,
+        ttl: Option<u64>,
     ) -> Self {
         Self {
             cache,
             order,
             limit,
             policy,
+            ttl,
         }
     }
 
@@ -438,7 +469,28 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// assert_eq!(cache.get("missing"), None);
     /// ```
     pub fn get(&self, key: &str) -> Option<R> {
-        let val = self.cache.with(|c| c.borrow().get(key).cloned());
+        let mut expired = false;
+
+        let val = self.cache.with(|c| {
+            let mut c = c.borrow_mut();
+            if let Some(entry) = c.get(key) {
+                if entry.is_expired(self.ttl) {
+                    expired = true;
+                    return None;
+                }
+                Some(entry.value.clone())
+            } else {
+                None
+            }
+        });
+
+        // If expired, remove key from cache and return None
+        if expired {
+            self.remove_key(key);
+            return None;
+        }
+
+        // If LRU, update order queue
         if val.is_some() && self.policy == EvictionPolicy::LRU {
             self.order.with(|o| {
                 let mut o = o.borrow_mut();
@@ -448,6 +500,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                 }
             });
         }
+
         val
     }
 
@@ -477,8 +530,12 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// ```
     pub fn insert(&self, key: &str, value: R) {
         let key = key.to_string();
-        self.cache
-            .with(|c| c.borrow_mut().insert(key.clone(), value));
+        let entry = CacheEntry::new(value);
+
+        self.cache.with(|c| {
+            c.borrow_mut().insert(key.clone(), entry);
+        });
+
         self.order.with(|o| {
             let mut order = o.borrow_mut();
             if let Some(pos) = order.iter().position(|k| *k == key) {
@@ -496,6 +553,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                         });
                     }
                 }
+            }
+        });
+    }
+
+    fn remove_key(&self, key: &str) {
+        self.cache.with(|c| {
+            c.borrow_mut().remove(key);
+        });
+        self.order.with(|o| {
+            let mut o = o.borrow_mut();
+            if let Some(pos) = o.iter().position(|k| k == key) {
+                o.remove(pos);
             }
         });
     }

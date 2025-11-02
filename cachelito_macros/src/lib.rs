@@ -137,12 +137,13 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         Token,
     };
 
-    // Parse attributes: e.g. #[cache(limit = 100, policy = "lru")]
+    // Parse attributes: #[cache(limit = 100, policy = "lru", ttl = 60)]
     let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
     let parsed_args = parser.parse(attr).unwrap_or_default();
 
     let mut limit_expr = quote! { None };
     let mut policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
+    let mut ttl_expr = quote! { None };
 
     for nv in parsed_args {
         if nv.path.is_ident("limit") {
@@ -154,14 +155,9 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                             .expect("limit must be a positive integer");
                         limit_expr = quote! { Some(#val) };
                     }
-                    ref lit => {
+                    _ => {
                         return quote! {
-                            compile_error!(
-                                concat!(
-                                    "Invalid literal for `limit`: expected integer, got: ",
-                                    stringify!(#lit)
-                                )
-                            );
+                            compile_error!("Invalid literal for `limit`: expected integer");
                         }
                         .into();
                     }
@@ -180,23 +176,18 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                         let pol = match s.value().to_lowercase().as_str() {
                             "fifo" => quote! { cachelito_core::EvictionPolicy::FIFO },
                             "lru" => quote! { cachelito_core::EvictionPolicy::LRU },
-                            other => {
+                            _ => {
                                 return quote! {
-                                    compile_error!(concat!("Invalid policy: ", #other));
+                                    compile_error!("Invalid policy: expected \"fifo\" or \"lru\"");
                                 }
                                 .into();
                             }
                         };
                         policy_expr = pol;
                     }
-                    lit => {
+                    _ => {
                         return quote! {
-                            compile_error!(
-                                concat!(
-                                    "Invalid literal for `policy`: expected string, got: ",
-                                    stringify!(#lit)
-                                )
-                            );
+                            compile_error!("Invalid literal for `policy`: expected string");
                         }
                         .into();
                     }
@@ -208,23 +199,45 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .into();
                 }
             }
+        } else if nv.path.is_ident("ttl") {
+            match nv.value {
+                Expr::Lit(ref expr_lit) => match expr_lit.lit {
+                    syn::Lit::Int(ref lit_int) => {
+                        let val = lit_int
+                            .base10_parse::<u64>()
+                            .expect("ttl must be a positive integer (seconds)");
+                        ttl_expr = quote! { Some(std::time::Duration::from_secs(#val)) };
+                    }
+                    _ => {
+                        return quote! {
+                            compile_error!("Invalid literal for `ttl`: expected integer (seconds)");
+                        }
+                        .into();
+                    }
+                },
+                _ => {
+                    return quote! {
+                        compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`");
+                    }
+                    .into();
+                }
+            }
         }
     }
 
-    // --- parse function ---
+    // === parse function ===
     let input = parse_macro_input!(item as ItemFn);
     let vis = &input.vis;
     let sig = &input.sig;
     let ident = &sig.ident;
     let block = &input.block;
 
-    // Return type
     let ret_type = match &sig.output {
         ReturnType::Type(_, ty) => quote! { #ty },
         ReturnType::Default => quote! { () },
     };
 
-    // Collect argument patterns (no types) + detect self
+    // arguments, self detection
     let mut arg_pats = Vec::new();
     let mut has_self = false;
     for arg in sig.inputs.iter() {
@@ -237,11 +250,9 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // Thread-local identifiers
     let cache_ident = format_ident!("_CACHE_{}_MAP", ident.to_string().to_uppercase());
     let order_ident = format_ident!("_CACHE_{}_ORDER", ident.to_string().to_uppercase());
 
-    // Build cache key expression
     let key_expr: TokenStream2 = if has_self {
         if arg_pats.is_empty() {
             quote! {{
@@ -259,28 +270,25 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                 __key_parts.join("|")
             }}
         }
+    } else if arg_pats.is_empty() {
+        quote! {{ String::new() }}
     } else {
-        if arg_pats.is_empty() {
-            quote! {{ String::new() }}
-        } else {
-            quote! {{
-                use cachelito_core::CacheableKey;
-                let mut __key_parts = Vec::new();
-                #(
-                    __key_parts.push((#arg_pats).to_cache_key());
-                )*
-                __key_parts.join("|")
-            }}
-        }
+        quote! {{
+            use cachelito_core::CacheableKey;
+            let mut __key_parts = Vec::new();
+            #(
+                __key_parts.push((#arg_pats).to_cache_key());
+            )*
+            __key_parts.join("|")
+        }}
     };
 
-    // Detect if return type is Result<...>
     let is_result = {
         let s = quote!(#ret_type).to_string().replace(' ', "");
         s.starts_with("Result<") || s.starts_with("std::result::Result<")
     };
 
-    // --- Generate expanded function ---
+    // === Expanded function ===
     let expanded = if is_result {
         quote! {
             #vis #sig {
@@ -289,7 +297,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                 use ::cachelito_core::{ThreadLocalCache, CacheableKey};
 
                 thread_local! {
-                    static #cache_ident: RefCell<HashMap<String, #ret_type>> = RefCell::new(HashMap::new());
+                    static #cache_ident: RefCell<HashMap<String, cachelito_core::CacheEntry<#ret_type>>> = RefCell::new(HashMap::new());
                     static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
                 }
 
@@ -298,7 +306,8 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                     &#cache_ident,
                     &#order_ident,
                     #limit_expr,
-                    #policy_expr
+                    #policy_expr,
+                    #ttl_expr
                 );
 
                 if let Some(cached) = __cache.get(&__key) {
@@ -309,7 +318,6 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let __result = (|| #block)();
                 __cache.insert_result(&__key, &__result);
-
                 __result
             }
         }
@@ -321,7 +329,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                 use ::cachelito_core::{ThreadLocalCache, CacheableKey};
 
                 thread_local! {
-                    static #cache_ident: RefCell<HashMap<String, #ret_type>> = RefCell::new(HashMap::new());
+                    static #cache_ident: RefCell<HashMap<String, cachelito_core::CacheEntry<#ret_type>>> = RefCell::new(HashMap::new());
                     static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
                 }
 
@@ -330,7 +338,8 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                     &#cache_ident,
                     &#order_ident,
                     #limit_expr,
-                    #policy_expr
+                    #policy_expr,
+                    #ttl_expr
                 );
 
                 if let Some(cached) = __cache.get(&__key) {
@@ -339,7 +348,6 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let __result = (|| #block)();
                 __cache.insert(&__key, __result.clone());
-
                 __result
             }
         }
