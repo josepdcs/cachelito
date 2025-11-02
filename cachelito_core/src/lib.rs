@@ -174,6 +174,28 @@ impl<
 
 // Option and Result wrapper types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Option<T> {}
+
+// Collection types
+impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
+impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
+
+/// Internal wrapper that tracks when a value was inserted into the cache.
+/// Used for TTL expiration support.
+/// Creates a new cache entry with the current timestamp.
+///
+/// # Arguments
+///
+/// * `value` - The value to cache
+///
+/// # Returns
+///
+/// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
+#[derive(Clone)]
+pub struct CacheEntry<R> {
+    pub value: R,
+    pub inserted_at: Instant,
+}
+
 ///
 /// This structure is used internally to support TTL (Time To Live) expiration.
 /// Each cached value is wrapped in a `CacheEntry` which records the insertion
@@ -199,28 +221,6 @@ impl<T: DefaultCacheableKey> DefaultCacheableKey for Option<T> {}
 /// // Check if expired (TTL of 60 seconds)
 /// assert!(!entry.is_expired(Some(60)));
 /// ```
-
-// Collection types
-impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
-impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
-
-/// Internal wrapper that tracks when a value was inserted into the cache.
-/// Used for TTL expiration support.
-/// Creates a new cache entry with the current timestamp.
-///
-/// # Arguments
-///
-/// * `value` - The value to cache
-///
-/// # Returns
-///
-/// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
-#[derive(Clone)]
-pub struct CacheEntry<R> {
-    pub value: R,
-    pub inserted_at: Instant,
-}
-
 impl<R> CacheEntry<R> {
     /// Creates a new cache entry with the current timestamp.
     ///
