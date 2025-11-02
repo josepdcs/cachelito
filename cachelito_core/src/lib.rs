@@ -11,11 +11,18 @@
 //! - **Thread-Local Storage**: Safe, lock-free caching using `thread_local!`
 //! - **Eviction Policies**: Support for FIFO (First In, First Out) and LRU (Least Recently Used)
 //! - **Cache Limits**: Control memory usage with configurable size limits
+//! - **TTL Support**: Time-to-live expiration for automatic cache invalidation
 //! - **Result-Aware Caching**: Smart handling of `Result<T, E>` types
 //!
 //! ## Version History
 //!
-//! ### Version 0.2.0 (Current)
+//! ### Version 0.3.0 (Current)
+//! - Added TTL (Time To Live) support with per-entry expiration
+//! - Introduced `CacheEntry<R>` wrapper for timestamp tracking
+//! - Automatic removal of expired entries on access
+//! - TTL works seamlessly with all eviction policies
+//!
+//! ### Version 0.2.0
 //! - Added cache size limits
 //! - Implemented FIFO and LRU eviction policies
 //! - Enhanced `ThreadLocalCache` with configurable limits and policies
@@ -167,7 +174,31 @@ impl<
 
 // Option and Result wrapper types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Option<T> {}
-impl<T: DefaultCacheableKey, E: DefaultCacheableKey> DefaultCacheableKey for Result<T, E> {}
+///
+/// This structure is used internally to support TTL (Time To Live) expiration.
+/// Each cached value is wrapped in a `CacheEntry` which records the insertion
+/// timestamp using `Instant::now()`.
+///
+/// # Type Parameters
+///
+/// * `R` - The type of the cached value
+///
+/// # Fields
+///
+/// * `value` - The actual cached value
+/// * `inserted_at` - The `Instant` when this entry was created
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::CacheEntry;
+///
+/// let entry = CacheEntry::new(42);
+/// assert_eq!(entry.value, 42);
+///
+/// // Check if expired (TTL of 60 seconds)
+/// assert!(!entry.is_expired(Some(60)));
+/// ```
 
 // Collection types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
@@ -175,6 +206,15 @@ impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
 
 /// Internal wrapper that tracks when a value was inserted into the cache.
 /// Used for TTL expiration support.
+/// Creates a new cache entry with the current timestamp.
+///
+/// # Arguments
+///
+/// * `value` - The value to cache
+///
+/// # Returns
+///
+/// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
 #[derive(Clone)]
 pub struct CacheEntry<R> {
     pub value: R,
@@ -182,6 +222,15 @@ pub struct CacheEntry<R> {
 }
 
 impl<R> CacheEntry<R> {
+    /// Creates a new cache entry with the current timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to cache
+    ///
+    /// # Returns
+    ///
+    /// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
     pub fn new(value: R) -> Self {
         Self {
             value,
@@ -189,7 +238,38 @@ impl<R> CacheEntry<R> {
         }
     }
 
-    /// Returns true if the entry has expired based on the provided TTL (in seconds).
+    /// Returns true if the entry has expired based on the provided TTL.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl` - Optional time-to-live in seconds. `None` means no expiration.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the entry age exceeds the TTL
+    /// * `false` if TTL is `None` or the entry is still valid
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachelito_core::CacheEntry;
+    /// use std::thread;
+    /// use std::time::Duration;
+    ///
+    /// let entry = CacheEntry::new("data");
+    ///
+    /// // Fresh entry is not expired
+    /// assert!(!entry.is_expired(Some(1)));
+    ///
+    /// // Wait 2 seconds
+    /// thread::sleep(Duration::from_secs(2));
+    ///
+    /// // Now it's expired (TTL was 1 second)
+    /// assert!(entry.is_expired(Some(1)));
+    ///
+    /// // No TTL means never expires
+    /// assert!(!entry.is_expired(None));
+    /// ```
     pub fn is_expired(&self, ttl: Option<u64>) -> bool {
         if let Some(ttl_secs) = ttl {
             self.inserted_at.elapsed().as_secs() >= ttl_secs
@@ -268,6 +348,7 @@ impl EvictionPolicy {
     ///
     /// # Examples
     ///
+    /// - **TTL support**: Optional time-to-live for automatic expiration
     /// ```
     /// use cachelito_core::EvictionPolicy;
     ///
@@ -339,6 +420,7 @@ impl PartialEq for EvictionPolicy {
 /// - **Thread-local storage**: Each thread has its own cache instance
 /// - **Configurable limits**: Optional maximum cache size
 /// - **Eviction policies**: FIFO or LRU eviction when limit is reached
+/// - **TTL support**: Optional time-to-live for automatic expiration
 /// - **Result-aware**: Special handling for `Result<T, E>` types
 ///
 /// # Thread Safety
@@ -387,6 +469,26 @@ impl PartialEq for EvictionPolicy {
 ///
 /// // Accessing key1 moves it to the end (most recently used)
 /// let _ = cache.get("key1");
+/// ```
+///
+/// ## With TTL (Time To Live)
+///
+/// ```
+/// use std::cell::RefCell;
+/// use std::collections::{HashMap, VecDeque};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
+///
+/// thread_local! {
+///     static CACHE: RefCell<HashMap<String, CacheEntry<String>>> = RefCell::new(HashMap::new());
+///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+/// }
+///
+/// // Cache with 60 second TTL
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, Some(60));
+/// cache.insert("key", "value".to_string());
+///
+/// // Entry will expire after 60 seconds
+/// // get() returns None for expired entries
 /// ```
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap

@@ -23,6 +23,8 @@ use syn::parse::Parser;
 /// - `policy` (optional): Eviction policy to use when the cache is full. Options:
 ///   - `"fifo"` - First In, First Out (default)
 ///   - `"lru"` - Least Recently Used
+/// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
+///   automatically removed when accessed. Default: None (no expiration).
 ///
 /// # Cache Behavior
 ///
@@ -31,6 +33,7 @@ use syn::parse::Parser;
 /// - **Thread-local storage**: Each thread maintains its own independent cache
 /// - **Methods**: Works with `self`, `&self`, and `&mut self` parameters
 /// - **Eviction**: When limit is reached, entries are removed according to the policy
+/// - **Expiration**: When TTL is set, expired entries are removed on access
 ///
 /// # Examples
 ///
@@ -79,6 +82,34 @@ use syn::parse::Parser;
 /// }
 /// ```
 ///
+/// ## Cache with TTL (Time To Live)
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// #[cache(ttl = 60)]
+/// fn fetch_user_data(user_id: u32) -> UserData {
+///     // Cache expires after 60 seconds
+///     // Expired entries are automatically removed
+///     fetch_from_database(user_id)
+/// }
+/// ```
+///
+/// ## Combining All Features
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// #[cache(limit = 50, policy = "lru", ttl = 300)]
+/// fn api_call(endpoint: &str) -> Result<Response, Error> {
+///     // - Max 50 entries
+///     // - LRU eviction
+///     // - 5 minute TTL
+///     // - Only Ok values cached
+///     make_http_request(endpoint)
+/// }
+/// ```
+///
 /// ## Method Caching
 ///
 /// ```ignore
@@ -88,7 +119,7 @@ use syn::parse::Parser;
 /// struct Calculator;
 ///
 /// impl Calculator {
-///     #[cache(limit = 50, policy = "lru")]
+///     #[cache(limit = 50, policy = "lru", ttl = 60)]
 ///     fn compute(&self, x: f64, y: f64) -> f64 {
 ///         x.powf(y)
 ///     }
@@ -100,7 +131,7 @@ use syn::parse::Parser;
 /// ```ignore
 /// use cachelito::cache;
 ///
-/// #[cache(limit = 10)]
+/// #[cache(limit = 10, ttl = 30)]
 /// fn divide(a: i32, b: i32) -> Result<i32, String> {
 ///     if b == 0 {
 ///         Err("Division by zero".to_string())
@@ -117,10 +148,16 @@ use syn::parse::Parser;
 /// - **Memory usage**: Controlled by the `limit` parameter
 /// - **FIFO overhead**: O(1) for all operations
 /// - **LRU overhead**: O(n) for cache hits (reordering), O(1) for misses and evictions
+/// - **TTL overhead**: O(1) expiration check on each get()
 ///
 /// # Version History
 ///
-/// ## Version 0.2.0 (Current)
+/// ## Version 0.3.0 (Current)
+/// - Added `ttl` parameter for time-to-live expiration
+/// - Automatic removal of expired entries
+/// - Enhanced documentation with TTL examples
+///
+/// ## Version 0.2.0
 /// - Added `limit` parameter for cache size control
 /// - Added `policy` parameter with FIFO and LRU support
 /// - Enhanced documentation with examples
