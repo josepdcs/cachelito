@@ -11,11 +11,18 @@
 //! - **Thread-Local Storage**: Safe, lock-free caching using `thread_local!`
 //! - **Eviction Policies**: Support for FIFO (First In, First Out) and LRU (Least Recently Used)
 //! - **Cache Limits**: Control memory usage with configurable size limits
+//! - **TTL Support**: Time-to-live expiration for automatic cache invalidation
 //! - **Result-Aware Caching**: Smart handling of `Result<T, E>` types
 //!
 //! ## Version History
 //!
-//! ### Version 0.2.0 (Current)
+//! ### Version 0.3.0 (Current)
+//! - Added TTL (Time To Live) support with per-entry expiration
+//! - Introduced `CacheEntry<R>` wrapper for timestamp tracking
+//! - Automatic removal of expired entries on access
+//! - TTL works seamlessly with all eviction policies
+//!
+//! ### Version 0.2.0
 //! - Added cache size limits
 //! - Implemented FIFO and LRU eviction policies
 //! - Enhanced `ThreadLocalCache` with configurable limits and policies
@@ -28,6 +35,7 @@
 
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
+use std::time::Instant;
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, thread::LocalKey};
 
 /// Trait defining how to generate a cache key for a given type.
@@ -166,11 +174,110 @@ impl<
 
 // Option and Result wrapper types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Option<T> {}
-impl<T: DefaultCacheableKey, E: DefaultCacheableKey> DefaultCacheableKey for Result<T, E> {}
 
 // Collection types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
 impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
+
+/// Internal wrapper that tracks when a value was inserted into the cache.
+/// Used for TTL expiration support.
+/// Creates a new cache entry with the current timestamp.
+///
+/// # Arguments
+///
+/// * `value` - The value to cache
+///
+/// # Returns
+///
+/// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
+#[derive(Clone)]
+pub struct CacheEntry<R> {
+    pub value: R,
+    pub inserted_at: Instant,
+}
+
+///
+/// This structure is used internally to support TTL (Time To Live) expiration.
+/// Each cached value is wrapped in a `CacheEntry` which records the insertion
+/// timestamp using `Instant::now()`.
+///
+/// # Type Parameters
+///
+/// * `R` - The type of the cached value
+///
+/// # Fields
+///
+/// * `value` - The actual cached value
+/// * `inserted_at` - The `Instant` when this entry was created
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::CacheEntry;
+///
+/// let entry = CacheEntry::new(42);
+/// assert_eq!(entry.value, 42);
+///
+/// // Check if expired (TTL of 60 seconds)
+/// assert!(!entry.is_expired(Some(60)));
+/// ```
+impl<R> CacheEntry<R> {
+    /// Creates a new cache entry with the current timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to cache
+    ///
+    /// # Returns
+    ///
+    /// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
+    pub fn new(value: R) -> Self {
+        Self {
+            value,
+            inserted_at: Instant::now(),
+        }
+    }
+
+    /// Returns true if the entry has expired based on the provided TTL.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl` - Optional time-to-live in seconds. `None` means no expiration.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the entry age exceeds the TTL
+    /// * `false` if TTL is `None` or the entry is still valid
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachelito_core::CacheEntry;
+    /// use std::thread;
+    /// use std::time::Duration;
+    ///
+    /// let entry = CacheEntry::new("data");
+    ///
+    /// // Fresh entry is not expired
+    /// assert!(!entry.is_expired(Some(1)));
+    ///
+    /// // Wait 2 seconds
+    /// thread::sleep(Duration::from_secs(2));
+    ///
+    /// // Now it's expired (TTL was 1 second)
+    /// assert!(entry.is_expired(Some(1)));
+    ///
+    /// // No TTL means never expires
+    /// assert!(!entry.is_expired(None));
+    /// ```
+    pub fn is_expired(&self, ttl: Option<u64>) -> bool {
+        if let Some(ttl_secs) = ttl {
+            self.inserted_at.elapsed().as_secs() >= ttl_secs
+        } else {
+            false
+        }
+    }
+}
 
 /// Represents the policy used for evicting elements from a cache when it reaches its limit.
 ///
@@ -241,6 +348,7 @@ impl EvictionPolicy {
     ///
     /// # Examples
     ///
+    /// - **TTL support**: Optional time-to-live for automatic expiration
     /// ```
     /// use cachelito_core::EvictionPolicy;
     ///
@@ -312,6 +420,7 @@ impl PartialEq for EvictionPolicy {
 /// - **Thread-local storage**: Each thread has its own cache instance
 /// - **Configurable limits**: Optional maximum cache size
 /// - **Eviction policies**: FIFO or LRU eviction when limit is reached
+/// - **TTL support**: Optional time-to-live for automatic expiration
 /// - **Result-aware**: Special handling for `Result<T, E>` types
 ///
 /// # Thread Safety
@@ -329,14 +438,14 @@ impl PartialEq for EvictionPolicy {
 /// ```
 /// use std::cell::RefCell;
 /// use std::collections::{HashMap, VecDeque};
-/// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
 ///
 /// thread_local! {
-///     static MY_CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+///     static MY_CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
 ///     static MY_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
-/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, EvictionPolicy::FIFO);
+/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, EvictionPolicy::FIFO, None);
 /// cache.insert("answer", 42);
 /// assert_eq!(cache.get("answer"), Some(42));
 /// ```
@@ -346,31 +455,52 @@ impl PartialEq for EvictionPolicy {
 /// ```
 /// use std::cell::RefCell;
 /// use std::collections::{HashMap, VecDeque};
-/// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
 ///
 /// thread_local! {
-///     static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+///     static CACHE: RefCell<HashMap<String, CacheEntry<String>>> = RefCell::new(HashMap::new());
 ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
 /// // Cache with limit of 100 entries using LRU eviction
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, None);
 /// cache.insert("key1", "value1".to_string());
 /// cache.insert("key2", "value2".to_string());
 ///
 /// // Accessing key1 moves it to the end (most recently used)
 /// let _ = cache.get("key1");
 /// ```
+///
+/// ## With TTL (Time To Live)
+///
+/// ```
+/// use std::cell::RefCell;
+/// use std::collections::{HashMap, VecDeque};
+/// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
+///
+/// thread_local! {
+///     static CACHE: RefCell<HashMap<String, CacheEntry<String>>> = RefCell::new(HashMap::new());
+///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+/// }
+///
+/// // Cache with 60 second TTL
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, Some(60));
+/// cache.insert("key", "value".to_string());
+///
+/// // Entry will expire after 60 seconds
+/// // get() returns None for expired entries
 /// ```
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap
-    pub cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
+    pub cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
     /// Reference to the thread-local storage key for the cache order queue
     pub order: &'static LocalKey<RefCell<VecDeque<String>>>,
     /// Maximum number of items to store in the cache
     pub limit: Option<usize>,
     /// Eviction policy to use for the cache
     pub policy: EvictionPolicy,
+    /// Optional TTL (in seconds) for cache entries
+    pub ttl: Option<u64>,
 }
 
 impl<R: Clone + 'static> ThreadLocalCache<R> {
@@ -382,32 +512,35 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// * `order` - A static reference to a `LocalKey` that stores the eviction order queue
     /// * `limit` - Optional maximum number of entries (None for unlimited)
     /// * `policy` - Eviction policy to use when limit is reached
+    /// * `ttl` - Optional time-to-live in seconds (None for no expiration)
     ///
     /// # Examples
     ///
     /// ```
     /// use std::cell::RefCell;
     /// use std::collections::{HashMap, VecDeque};
-    /// use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+    /// use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
     ///
     /// thread_local! {
-    ///     static CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    ///     static CACHE: RefCell<HashMap<String, CacheEntry<String>>> = RefCell::new(HashMap::new());
     ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// }
     ///
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, Some(60));
     /// ```
     pub const fn new(
-        cache: &'static LocalKey<RefCell<HashMap<String, R>>>,
+        cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
         order: &'static LocalKey<RefCell<VecDeque<String>>>,
         limit: Option<usize>,
         policy: EvictionPolicy,
+        ttl: Option<u64>,
     ) -> Self {
         Self {
             cache,
             order,
             limit,
             policy,
+            ttl,
         }
     }
 
@@ -427,18 +560,39 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// ```
     /// # use std::cell::RefCell;
     /// # use std::collections::{HashMap, VecDeque};
-    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
     /// # thread_local! {
-    /// #     static CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+    /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
     /// cache.insert("key", 100);
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
     /// ```
     pub fn get(&self, key: &str) -> Option<R> {
-        let val = self.cache.with(|c| c.borrow().get(key).cloned());
+        let mut expired = false;
+
+        let val = self.cache.with(|c| {
+            let c = c.borrow();
+            if let Some(entry) = c.get(key) {
+                if entry.is_expired(self.ttl) {
+                    expired = true;
+                    return None;
+                }
+                Some(entry.value.clone())
+            } else {
+                None
+            }
+        });
+
+        // If expired, remove key from cache and return None
+        if expired {
+            self.remove_key(key);
+            return None;
+        }
+
+        // If LRU, update order queue
         if val.is_some() && self.policy == EvictionPolicy::LRU {
             self.order.with(|o| {
                 let mut o = o.borrow_mut();
@@ -448,6 +602,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                 }
             });
         }
+
         val
     }
 
@@ -465,20 +620,24 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// ```
     /// # use std::cell::RefCell;
     /// # use std::collections::{HashMap, VecDeque};
-    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
     /// # thread_local! {
-    /// #     static CACHE: RefCell<HashMap<String, i32>> = RefCell::new(HashMap::new());
+    /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
     /// cache.insert("first", 1);
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
     /// ```
     pub fn insert(&self, key: &str, value: R) {
         let key = key.to_string();
-        self.cache
-            .with(|c| c.borrow_mut().insert(key.clone(), value));
+        let entry = CacheEntry::new(value);
+
+        self.cache.with(|c| {
+            c.borrow_mut().insert(key.clone(), entry);
+        });
+
         self.order.with(|o| {
             let mut order = o.borrow_mut();
             if let Some(pos) = order.iter().position(|k| *k == key) {
@@ -496,6 +655,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                         });
                     }
                 }
+            }
+        });
+    }
+
+    fn remove_key(&self, key: &str) {
+        self.cache.with(|c| {
+            c.borrow_mut().remove(key);
+        });
+        self.order.with(|o| {
+            let mut o = o.borrow_mut();
+            if let Some(pos) = o.iter().position(|k| k == key) {
+                o.remove(pos);
             }
         });
     }
@@ -517,12 +688,12 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 /// ```
 /// # use std::cell::RefCell;
 /// # use std::collections::{HashMap, VecDeque};
-/// # use cachelito_core::{ThreadLocalCache, EvictionPolicy};
+/// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
 /// # thread_local! {
-/// #     static CACHE: RefCell<HashMap<String, Result<i32, String>>> = RefCell::new(HashMap::new());
+/// #     static CACHE: RefCell<HashMap<String, CacheEntry<Result<i32, String>>>> = RefCell::new(HashMap::new());
 /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// # }
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
 ///
 /// // Only Ok values are cached
 /// cache.insert_result("success", &Ok(42));

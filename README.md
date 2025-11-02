@@ -13,6 +13,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
 - 📊 **Eviction policies**: Choose between FIFO (First In, First Out) and LRU (Least Recently Used)
+- ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - ✅ **Type-safe**: Full compile-time type checking
 - 📦 **Zero runtime dependencies**: Uses only Rust standard library for runtime
 
@@ -22,7 +23,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.2.0"
+cachelito = "0.3.0"
 ```
 
 ## Usage
@@ -182,17 +183,49 @@ fn expensive_computation(x: i32) -> i32 {
 - **FIFO**: Evicts the oldest inserted entry, regardless of usage
 - **LRU**: Evicts the least recently accessed entry, keeping frequently used items longer
 
+### Time-To-Live (TTL) Expiration
+
+Set automatic expiration times for cached entries:
+
+```rust
+use cachelito::cache;
+
+// Cache entries expire after 60 seconds
+#[cache(ttl = 60)]
+fn fetch_user_data(user_id: u32) -> UserData {
+    // Entries older than 60 seconds are automatically removed
+    // when accessed
+    fetch_from_database(user_id)
+}
+
+// Combine TTL with limits and policies
+#[cache(limit = 100, policy = "lru", ttl = 300)]
+fn api_call(endpoint: &str) -> Result<Response, Error> {
+    // Max 100 entries, LRU eviction, 5 minute TTL
+    make_http_request(endpoint)
+}
+```
+
+**Benefits:**
+
+- **Automatic expiration**: Old data is automatically removed
+- **Per-entry tracking**: Each entry has its own timestamp
+- **Lazy eviction**: Expired entries removed on access
+- **Works with policies**: Compatible with FIFO and LRU
+
 ## How It Works
 
 The `#[cache]` macro generates code that:
 
 1. Creates a thread-local cache using `thread_local!` and `RefCell<HashMap>`
 2. Creates a thread-local order queue using `VecDeque` for eviction tracking
-3. Builds a cache key from function arguments using `CacheableKey::to_cache_key()`
-4. Checks the cache before executing the function body
-5. Stores the result in the cache after execution
-6. For `Result<T, E>` types, only caches `Ok` values
-7. When cache limit is reached, evicts entries according to the configured policy:
+3. Wraps cached values in `CacheEntry` to track insertion timestamps
+4. Builds a cache key from function arguments using `CacheableKey::to_cache_key()`
+5. Checks the cache before executing the function body
+6. Validates TTL expiration if configured, removing expired entries
+7. Stores the result in the cache after execution
+8. For `Result<T, E>` types, only caches `Ok` values
+9. When cache limit is reached, evicts entries according to the configured policy:
     - **FIFO**: Removes the oldest inserted entry
     - **LRU**: Removes the least recently accessed entry
 
@@ -223,6 +256,9 @@ cargo run --example fifo
 
 # Default policy (FIFO)
 cargo run --example fifo_default
+
+# TTL (Time To Live) expiration
+cargo run --example ttl
 ```
 
 ### Example Output (LRU Policy):
@@ -257,12 +293,13 @@ Total executions: 6
 
 ## Performance Considerations
 
-- **Cache key generation**: Uses `CacheableKey::to_cache_key()` method. The default implementation uses `Debug`
-  formatting, which may be slow for complex types. Consider implementing `CacheableKey` directly for better performance.
 - **Thread-local storage**: Each thread has its own cache, so cached data is not shared across threads. This means no
   locks or synchronization overhead.
 - **Memory usage**: Without a limit, the cache grows unbounded. Use the `limit` parameter to control memory usage.
-- **Eviction policy overhead**:
+
+- **Cache key generation**: Uses `CacheableKey::to_cache_key()` method. The default implementation uses `Debug`
+  formatting, which may be slow for complex types. Consider implementing `CacheableKey` directly for better performance.
+- **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
     - **FIFO**: Minimal overhead, O(1) eviction
     - **LRU**: Slightly higher overhead due to reordering on access, O(n) for reordering but still efficient
 - **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
@@ -284,7 +321,27 @@ cargo doc --no-deps --open
 
 ## Changelog
 
-### Version 0.2.0 (Current)
+### Version 0.3.0 (Current)
+
+**New Features:**
+
+- ⏱️ TTL (Time To Live) support with automatic expiration
+- 🔄 Per-entry timestamp tracking with `CacheEntry<R>` wrapper
+- 🧹 Automatic removal of expired entries on access
+- 🎯 TTL works seamlessly with all eviction policies and limits
+
+**Improvements:**
+
+- 📚 Enhanced documentation with TTL examples
+- 📚 Comprehensive TTL example demonstrating all features
+- 🧪 Added test coverage for TTL expiration scenarios
+- 🔧 Improved error messages and validation
+
+**Breaking Changes:**
+
+- None (fully backward compatible)
+
+### Version 0.2.0
 
 **New Features:**
 
@@ -313,6 +370,7 @@ cargo doc --no-deps --open
 - ✨ Custom cache key generation via `CacheableKey` trait
 - ✨ Default cache key implementation via `DefaultCacheableKey`
 - ✨ Result-aware caching (only `Ok` values cached)
+
 - ✨ Support for methods (`self`, `&self`, `&mut self`)
 
 ## License
