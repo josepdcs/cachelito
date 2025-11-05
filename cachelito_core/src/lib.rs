@@ -32,9 +32,12 @@
 //! - Initial release with basic caching functionality
 //! - Thread-local storage support
 //! - Custom cache key generation
+//!
 
+use once_cell::sync::Lazy;
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
+use std::sync::Mutex;
 use std::time::Instant;
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, thread::LocalKey};
 
@@ -178,6 +181,13 @@ impl<T: DefaultCacheableKey> DefaultCacheableKey for Option<T> {}
 // Collection types
 impl<T: DefaultCacheableKey> DefaultCacheableKey for Vec<T> {}
 impl<T: DefaultCacheableKey> DefaultCacheableKey for &[T] {}
+
+/// Cache scope: thread-local or global
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheScope {
+    ThreadLocal,
+    Global,
+}
 
 /// Internal wrapper that tracks when a value was inserted into the cache.
 /// Used for TTL expiration support.
@@ -338,6 +348,8 @@ pub enum EvictionPolicy {
     FIFO,
     LRU,
 }
+
+/// Returns the default eviction policy (FIFO).
 impl EvictionPolicy {
     /// Returns the default eviction policy (FIFO).
     ///
@@ -725,6 +737,115 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> ThreadLocalCache<Re
     pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
         if let Ok(val) = value {
             self.insert(key, Ok(val.clone()));
+        }
+    }
+}
+
+pub struct GlobalCache<R: 'static> {
+    pub map: &'static Lazy<Mutex<HashMap<String, CacheEntry<R>>>>,
+    pub order: &'static Lazy<Mutex<VecDeque<String>>>,
+    pub limit: Option<usize>,
+    pub policy: EvictionPolicy,
+    pub ttl: Option<u64>,
+}
+
+impl<R: Clone + 'static> GlobalCache<R> {
+    pub fn new(
+        map: &'static Lazy<Mutex<HashMap<String, CacheEntry<R>>>>,
+        order: &'static Lazy<Mutex<VecDeque<String>>>,
+        limit: Option<usize>,
+        policy: EvictionPolicy,
+        ttl: Option<u64>,
+    ) -> Self {
+        Self {
+            map,
+            order,
+            limit,
+            policy,
+            ttl,
+        }
+    }
+
+    fn remove_key(&self, key: &str) {
+        if let Ok(mut m) = self.map.lock() {
+            m.remove(key);
+        }
+        if let Ok(mut o) = self.order.lock() {
+            if let Some(pos) = o.iter().position(|k| k == key) {
+                o.remove(pos);
+            }
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<R> {
+        // Acquire lock and check entry
+        if let Ok(mut m) = self.map.lock() {
+            if let Some(entry) = m.get(key) {
+                if entry.is_expired(self.ttl) {
+                    // drop later
+                } else {
+                    // LRU: update order
+                    if self.policy == EvictionPolicy::LRU {
+                        if let Ok(mut o) = self.order.lock() {
+                            if let Some(pos) = o.iter().position(|k| k == key) {
+                                o.remove(pos);
+                                o.push_back(key.to_string());
+                            }
+                        }
+                    }
+                    return Some(entry.value.clone());
+                }
+            }
+        }
+
+        // expired or missing -> remove if expired
+        if let Ok(mut m) = self.map.lock() {
+            if let Some(entry) = m.get(key) {
+                if entry.is_expired(self.ttl) {
+                    m.remove(key);
+                    if let Ok(mut o) = self.order.lock() {
+                        if let Some(pos) = o.iter().position(|k| k == key) {
+                            o.remove(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn insert(&self, key: &str, value: R) {
+        let key_s = key.to_string();
+        let entry = CacheEntry::new(value);
+
+        if let Ok(mut m) = self.map.lock() {
+            m.insert(key_s.clone(), entry);
+        }
+
+        if let Ok(mut o) = self.order.lock() {
+            if let Some(pos) = o.iter().position(|k| *k == key_s) {
+                o.remove(pos);
+            }
+            o.push_back(key_s.clone());
+
+            if let Some(limit) = self.limit {
+                if o.len() > limit {
+                    if let Some(evict_key) = o.pop_front() {
+                        if let Ok(mut m) = self.map.lock() {
+                            m.remove(&evict_key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<T, E>> {
+    pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
+        if let Ok(v) = value {
+            self.insert(key, Ok(v.clone()));
         }
     }
 }

@@ -174,13 +174,14 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         Token,
     };
 
-    // Parse attributes: #[cache(limit = 100, policy = "lru", ttl = 60)]
+    // Parse attributes: limit, policy, ttl (seconds), scope ("thread"|"global")
     let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
     let parsed_args = parser.parse(attr).unwrap_or_default();
 
     let mut limit_expr = quote! { None };
     let mut policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
     let mut ttl_expr = quote! { None };
+    let mut scope_expr = quote! { cachelito_core::CacheScope::ThreadLocal };
 
     for nv in parsed_args {
         if nv.path.is_ident("limit") {
@@ -259,6 +260,40 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .into();
                 }
             }
+        } else if nv.path.is_ident("scope") {
+            match nv.value {
+                Expr::Lit(ref expr_lit) => match &expr_lit.lit {
+                    syn::Lit::Str(s) => {
+                        let val = s.value().to_lowercase();
+                        match val.as_str() {
+                            "thread" => {
+                                scope_expr = quote! { cachelito_core::CacheScope::ThreadLocal };
+                            }
+                            "global" => {
+                                scope_expr = quote! { cachelito_core::CacheScope::Global };
+                            }
+                            other => {
+                                return quote! {
+                                    compile_error!(concat!("Invalid scope: ", #other));
+                                }
+                                .into();
+                            }
+                        }
+                    }
+                    lit => {
+                        return quote! {
+                            compile_error!(concat!("Invalid literal for `scope`: ", stringify!(#lit)));
+                        }
+                            .into();
+                    }
+                },
+                _ => {
+                    return quote! {
+                        compile_error!("Invalid syntax for `scope`");
+                    }
+                    .into();
+                }
+            }
         }
     }
 
@@ -287,8 +322,15 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    let cache_ident = format_ident!("_CACHE_{}_MAP", ident.to_string().to_uppercase());
-    let order_ident = format_ident!("_CACHE_{}_ORDER", ident.to_string().to_uppercase());
+    // idents for per-function storages
+    let cache_ident = format_ident!(
+        "GLOBAL_OR_THREAD_CACHE_{}",
+        ident.to_string().to_uppercase()
+    );
+    let order_ident = format_ident!(
+        "GLOBAL_OR_THREAD_ORDER_{}",
+        ident.to_string().to_uppercase()
+    );
 
     let key_expr: TokenStream2 = if has_self {
         if arg_pats.is_empty() {
@@ -320,72 +362,129 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         }}
     };
 
+    // detect Result<...>
     let is_result = {
         let s = quote!(#ret_type).to_string().replace(' ', "");
         s.starts_with("Result<") || s.starts_with("std::result::Result<")
     };
 
-    // === Expanded function ===
+    // For global scope we will generate `static` Lazy Mutex maps; for thread we use thread_local!
+    // We use cachelito_core::CacheEntry<#ret_type> as stored value in both cases.
+
     let expanded = if is_result {
         quote! {
             #vis #sig {
-                use ::std::collections::{HashMap, VecDeque};
+                use ::std::sync::LazyLock;
+                use ::std::collections::VecDeque;
                 use ::std::cell::RefCell;
-                use ::cachelito_core::{ThreadLocalCache, CacheableKey};
+                use ::cachelito_core::{CacheEntry, CacheScope, ThreadLocalCache, GlobalCache, CacheableKey};
 
-                thread_local! {
-                    static #cache_ident: RefCell<HashMap<String, cachelito_core::CacheEntry<#ret_type>>> = RefCell::new(HashMap::new());
-                    static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                }
+                // choose storage depending on scope
+                let __scope = #scope_expr;
 
-                let __key = #key_expr;
-                let __cache = ThreadLocalCache::<#ret_type>::new(
-                    &#cache_ident,
-                    &#order_ident,
-                    #limit_expr,
-                    #policy_expr,
-                    #ttl_expr
-                );
-
-                if let Some(cached) = __cache.get(&__key) {
-                    if let Ok(val) = cached.clone() {
-                        return Ok(val);
+                if __scope == cachelito_core::CacheScope::ThreadLocal {
+                    thread_local! {
+                        static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
+                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
                     }
-                }
 
-                let __result = (|| #block)();
-                __cache.insert_result(&__key, &__result);
-                __result
+                    let __cache = ThreadLocalCache::<#ret_type>::new(
+                        &#cache_ident,
+                        &#order_ident,
+                        #limit_expr,
+                        #policy_expr,
+                        #ttl_expr
+                    );
+
+                    let __key = #key_expr;
+
+                    if let Some(cached) = __cache.get(&__key) {
+                        // cached is Result<T,E>
+                        return cached;
+                    }
+
+                    let __result = (|| #block)();
+                    __cache.insert_result(&__key, &__result);
+                    __result
+                } else {
+                    // Note: we cannot create per-invocation statics with unique names in runtime easily,
+                    // so we declare per-macro statics with the generated identifiers:
+                    static #cache_ident: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+                    static #order_ident: once_cell::sync::Lazy<std::sync::Mutex<VecDeque<String>>> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(VecDeque::new()));
+
+                    let __cache = GlobalCache::<#ret_type>::new(
+                        &#cache_ident,
+                        &#order_ident,
+                        #limit_expr,
+                        #policy_expr,
+                        #ttl_expr
+                    );
+
+                    let __key = #key_expr;
+
+                    if let Some(cached) = __cache.get(&__key) {
+                        return cached;
+                    }
+
+                    let __result = (|| #block)();
+                    __cache.insert_result(&__key, &__result);
+                    __result
+                }
             }
         }
     } else {
         quote! {
             #vis #sig {
-                use ::std::collections::{HashMap, VecDeque};
+                use ::std::collections::VecDeque;
                 use ::std::cell::RefCell;
-                use ::cachelito_core::{ThreadLocalCache, CacheableKey};
+                use ::cachelito_core::{CacheEntry, CacheScope, ThreadLocalCache, GlobalCache, CacheableKey};
 
-                thread_local! {
-                    static #cache_ident: RefCell<HashMap<String, cachelito_core::CacheEntry<#ret_type>>> = RefCell::new(HashMap::new());
-                    static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+                let __scope = #scope_expr;
+
+                if __scope == cachelito_core::CacheScope::ThreadLocal {
+                    thread_local! {
+                        static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
+                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+                    }
+
+                    let __cache = ThreadLocalCache::<#ret_type>::new(
+                        &#cache_ident,
+                        &#order_ident,
+                        #limit_expr,
+                        #policy_expr,
+                        #ttl_expr
+                    );
+
+                    let __key = #key_expr;
+
+                    if let Some(cached) = __cache.get(&__key) {
+                        return cached;
+                    }
+
+                    let __result = (|| #block)();
+                    __cache.insert(&__key, __result.clone());
+                    __result
+                } else {
+                    static #cache_ident: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+                    static #order_ident: once_cell::sync::Lazy<std::sync::Mutex<VecDeque<String>>> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(VecDeque::new()));
+
+                    let __cache = GlobalCache::<#ret_type>::new(
+                        &#cache_ident,
+                        &#order_ident,
+                        #limit_expr,
+                        #policy_expr,
+                        #ttl_expr
+                    );
+
+                    let __key = #key_expr;
+                    if let Some(cached) = __cache.get(&__key) {
+                        return cached;
+                    }
+
+                    let __result = (|| #block)();
+                    __cache.insert(&__key, __result.clone());
+                    __result
                 }
-
-                let __key = #key_expr;
-                let __cache = ThreadLocalCache::<#ret_type>::new(
-                    &#cache_ident,
-                    &#order_ident,
-                    #limit_expr,
-                    #policy_expr,
-                    #ttl_expr
-                );
-
-                if let Some(cached) = __cache.get(&__key) {
-                    return cached;
-                }
-
-                let __result = (|| #block)();
-                __cache.insert(&__key, __result.clone());
-                __result
             }
         }
     };

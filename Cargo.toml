@@ -9,6 +9,7 @@ edition = "2021"
 [dependencies]
 cachelito_core = { path = "./cachelito_core" }
 cachelito_macros = { path = "./cachelito_macros" }
+once_cell = "1.21.3"
 
 [lib]
 name = "cachelito"
