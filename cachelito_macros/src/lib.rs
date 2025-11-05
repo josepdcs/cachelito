@@ -25,12 +25,16 @@ use syn::parse::Parser;
 ///   - `"lru"` - Least Recently Used
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
+/// - `scope` (optional): Cache scope - where the cache is stored. Options:
+///   - `"thread"` - Thread-local storage (default, no synchronization overhead)
+///   - `"global"` - Global storage shared across all threads (uses Mutex)
 ///
 /// # Cache Behavior
 ///
 /// - **Regular functions**: All results are cached
 /// - **Result-returning functions**: Only `Ok` values are cached, `Err` values are not
-/// - **Thread-local storage**: Each thread maintains its own independent cache
+/// - **Thread-local storage** (default): Each thread maintains its own independent cache
+/// - **Global storage**: With `scope = "global"`, cache is shared across all threads
 /// - **Methods**: Works with `self`, `&self`, and `&mut self` parameters
 /// - **Eviction**: When limit is reached, entries are removed according to the policy
 /// - **Expiration**: When TTL is set, expired entries are removed on access
@@ -141,10 +145,30 @@ use syn::parse::Parser;
 /// }
 /// ```
 ///
+/// ## Global Scope Cache (Shared Across Threads)
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// // Thread-local cache (default) - each thread has its own cache
+/// #[cache(limit = 100)]
+/// fn thread_local_computation(x: i32) -> i32 {
+///     x * x
+/// }
+///
+/// // Global cache - shared across all threads
+/// #[cache(limit = 100, scope = "global")]
+/// fn global_computation(x: i32) -> i32 {
+///     // Uses Mutex for thread-safe access
+///     x * x
+/// }
+/// ```
+///
 /// # Performance Considerations
 ///
 /// - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method
-/// - **Thread-local storage**: Each thread has its own cache (no locks needed)
+/// - **Thread-local storage** (default): Each thread has its own cache (no locks needed)
+/// - **Global storage**: With `scope = "global"`, uses Mutex for synchronization (adds overhead)
 /// - **Memory usage**: Controlled by the `limit` parameter
 /// - **FIFO overhead**: O(1) for all operations
 /// - **LRU overhead**: O(n) for cache hits (reordering), O(1) for misses and evictions
@@ -152,7 +176,12 @@ use syn::parse::Parser;
 ///
 /// # Version History
 ///
-/// ## Version 0.3.0 (Current)
+/// ## Version 0.4.0 (Current)
+/// - Added `scope` parameter for global cache across threads
+/// - Global cache support with Mutex synchronization
+/// - Enhanced documentation with global scope examples
+///
+/// ## Version 0.3.0
 /// - Added `ttl` parameter for time-to-live expiration
 /// - Automatic removal of expired entries
 /// - Enhanced documentation with TTL examples
