@@ -8,7 +8,8 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 ## Features
 
 - 🚀 **Easy to use**: Simply add `#[cache]` attribute to any function or method
-- 🔒 **Thread-safe**: Uses `thread_local!` storage for cache isolation
+- 🔒 **Thread-safe**: Uses `thread_local!` storage for cache isolation by default
+- 🌐 **Global scope**: Optional global cache shared across all threads with `scope = "global"`
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
@@ -23,7 +24,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.3.0"
+cachelito = "0.4.0"
 ```
 
 ## Usage
@@ -213,6 +214,68 @@ fn api_call(endpoint: &str) -> Result<Response, Error> {
 - **Lazy eviction**: Expired entries removed on access
 - **Works with policies**: Compatible with FIFO and LRU
 
+### Global Scope Cache
+
+By default, each thread has its own cache (thread-local). Use `scope = "global"` to share the cache across all threads:
+
+```rust
+use cachelito::cache;
+
+// Thread-local cache (default) - each thread has its own cache
+#[cache(limit = 100)]
+fn thread_local_computation(x: i32) -> i32 {
+    // Cache is NOT shared across threads
+    x * x
+}
+
+// Global cache - shared across all threads
+#[cache(limit = 100, scope = "global")]
+fn global_computation(x: i32) -> i32 {
+    // Cache IS shared across all threads
+    // Uses Mutex for thread-safe access
+    x * x
+}
+```
+
+**When to use global scope:**
+
+- **Cross-thread sharing**: When you want all threads to benefit from cached results
+- **Expensive operations**: When the cost of computation outweighs the synchronization overhead
+- **Shared data**: When the same function is called with the same arguments across multiple threads
+
+**Performance considerations:**
+
+- **Thread-local** (default): No synchronization overhead, but cache is not shared
+- **Global**: Uses `Mutex` for synchronization, adds overhead but shares cache across threads
+
+```rust
+use cachelito::cache;
+use std::thread;
+
+#[cache(scope = "global", limit = 50)]
+fn expensive_api_call(endpoint: &str) -> String {
+    // This expensive call is cached globally
+    // All threads benefit from the same cache
+    format!("Response from {}", endpoint)
+}
+
+fn main() {
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            thread::spawn(move || {
+                // All threads share the same cache
+                // First thread computes, others get cached result
+                expensive_api_call("/api/users")
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+
 ## How It Works
 
 The `#[cache]` macro generates code that:
@@ -259,6 +322,9 @@ cargo run --example fifo_default
 
 # TTL (Time To Live) expiration
 cargo run --example ttl
+
+# Global scope cache (shared across threads)
+cargo run --example global_scope
 ```
 
 ### Example Output (LRU Policy):
@@ -293,23 +359,24 @@ Total executions: 6
 
 ## Performance Considerations
 
-- **Thread-local storage**: Each thread has its own cache, so cached data is not shared across threads. This means no
-  locks or synchronization overhead.
+- **Thread-local storage** (default): Each thread has its own cache, so cached data is not shared across threads. This
+  means no locks or synchronization overhead.
+- **Global scope**: When using `scope = "global"`, the cache is shared across all threads using a `Mutex`. This adds
+  synchronization overhead but allows cache sharing.
 - **Memory usage**: Without a limit, the cache grows unbounded. Use the `limit` parameter to control memory usage.
-
 - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method. The default implementation uses `Debug`
   formatting, which may be slow for complex types. Consider implementing `CacheableKey` directly for better performance.
 - **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
     - **FIFO**: Minimal overhead, O(1) eviction
     - **LRU**: Slightly higher overhead due to reordering on access, O(n) for reordering but still efficient
-- **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
 
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
 - The function must be deterministic for correct caching behavior
-- Each thread maintains its own cache (data is not shared across threads)
+- By default, each thread maintains its own cache (use `scope = "global"` to share across threads)
 - LRU policy has O(n) overhead on cache hits for reordering (where n is the number of cached entries)
+- Global scope adds synchronization overhead due to `Mutex` usage
 
 ## Documentation
 
@@ -321,7 +388,24 @@ cargo doc --no-deps --open
 
 ## Changelog
 
-### Version 0.3.0 (Current)
+### Version 0.4.0 (Current)
+
+**New Features:**
+
+- 🌐 Global scope cache with `scope = "global"` for cross-thread sharing
+- 🔒 Thread-safe global cache using `Mutex` synchronization
+
+**Improvements:**
+
+- 📚 New `global_scope` example showing cross-thread cache sharing
+- 📚 Enhanced documentation with global scope examples
+- 🧪 Added test coverage for global scope functionality
+
+**Breaking Changes:**
+
+- None (fully backward compatible)
+
+### Version 0.3.0
 
 **New Features:**
 
