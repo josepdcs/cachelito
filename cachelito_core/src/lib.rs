@@ -916,11 +916,14 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// assert_eq!(cache.get("key2"), None);
     /// ```
     pub fn get(&self, key: &str) -> Option<R> {
+        let mut result = None;
+        let mut expired = false;
+
         // Acquire lock and check entry
-        if let Ok(mut m) = self.map.lock() {
+        if let Ok(m) = self.map.lock() {
             if let Some(entry) = m.get(key) {
                 if entry.is_expired(self.ttl) {
-                    // drop later
+                    expired = true;
                 } else {
                     // LRU: update order
                     if self.policy == EvictionPolicy::LRU {
@@ -931,26 +934,17 @@ impl<R: Clone + 'static> GlobalCache<R> {
                             }
                         }
                     }
-                    return Some(entry.value.clone());
+                    result = Some(entry.value.clone());
                 }
             }
         }
 
-        // expired or missing -> remove if expired
-        if let Ok(mut m) = self.map.lock() {
-            if let Some(entry) = m.get(key) {
-                if entry.is_expired(self.ttl) {
-                    m.remove(key);
-                    if let Ok(mut o) = self.order.lock() {
-                        if let Some(pos) = o.iter().position(|k| k == key) {
-                            o.remove(pos);
-                        }
-                    }
-                }
-            }
+        if expired {
+            self.remove_key(key);
+            return None;
         }
 
-        None
+        result
     }
 
     /// Inserts or updates a value in the cache.
