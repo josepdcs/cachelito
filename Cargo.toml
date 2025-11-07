@@ -5,13 +5,40 @@ members = ["cachelito-core", "cachelito-macros"]
 name = "cachelito"
 version = "0.5.0"
 edition = "2021"
+license = "Apache-2.0"
+
+description = "Procedural macro for automatic function caching with LRU/FIFO policies, expiration, limits, and thread-local or global scope"
+authors = ["Josep Damia Carbonell Segui <josepdcs@gmail.com>"]
+repository = "https://github.com/josepdcs/cachelito"
+homepage = "https://github.com/josepdcs/cachelito"
+documentation = "https://docs.rs/cachelito"
+readme = "README.md"
+keywords = ["cache", "lru", "lfu", "fifo", "memoization"]
+categories = ["caching", "data-structures"]
+
+rust-version = "1.70.0"  # MSRV (Minimum Supported Rust Version)
+include = [
+    "src/**/*",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+]
+exclude = [
+    ".github/**",
+    "examples/**",
+    "tests/**",
+    "benches/**"
+]
 
 [dependencies]
-cachelito-core = { path = "./cachelito-core" }
-cachelito-macros = { path = "./cachelito-macros" }
+cachelito-core = { path = "./cachelito-core", version = "0.5.0" }
+cachelito-macros = { path = "./cachelito-macros", version = "0.5.0" }
 once_cell = "1.21.3"
 parking_lot = "0.12"
 
 [lib]
 name = "cachelito"
 path = "src/lib.rs"
+
+[badges]
+maintenance = { status = "actively-developed" }

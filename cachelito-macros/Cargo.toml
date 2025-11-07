@@ -1,12 +1,26 @@
 [package]
 name = "cachelito-macros"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
+license = "Apache-2.0"
+
+description = "Procedural macros for cachelito - automatic caching attributes"
+authors = ["josepdcs <[email protected]>"]
+repository = "https://github.com/josepdcs/cachelito"
+homepage = "https://github.com/josepdcs/cachelito"
+documentation = "https://docs.rs/cachelito-macros"
+readme = "../README.md"
+keywords = ["cache", "macro", "procedural", "attribute", "memoization"]
+categories = ["development-tools::procedural-macro-helpers", "caching"]
+
+rust-version = "1.70.0"
 
 [lib]
 proc-macro = true
+name = "cachelito_macros"
+path = "src/lib.rs"
 
 [dependencies]
-quote = "1"
-syn = { version = "2", features = ["full", "extra-traits"] }
-proc-macro2 = "1"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
