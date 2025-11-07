@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
-use std::sync::Mutex;
 
 use crate::{CacheEntry, EvictionPolicy};
 
@@ -25,9 +25,12 @@ use crate::{CacheEntry, EvictionPolicy};
 ///
 /// # Thread Safety
 ///
-/// This cache uses `Mutex` to protect internal state, making it safe to use across
-/// multiple threads. However, this adds synchronization overhead compared to
-/// thread-local caches.
+/// This cache uses `parking_lot::Mutex` for better performance than `std::sync::Mutex`.
+/// The `parking_lot` implementation provides:
+/// - No lock poisoning (simpler API, no `Result` wrapping)
+/// - Better performance under contention
+/// - Smaller memory footprint
+/// - Fair locking algorithm
 ///
 /// # Performance Considerations
 ///
@@ -41,7 +44,7 @@ use crate::{CacheEntry, EvictionPolicy};
 /// ```ignore
 /// use cachelito_core::{GlobalCache, EvictionPolicy, CacheEntry};
 /// use once_cell::sync::Lazy;
-/// use std::sync::Mutex;
+/// use parking_lot::Mutex;
 /// use std::collections::{HashMap, VecDeque};
 ///
 /// static CACHE_MAP: Lazy<Mutex<HashMap<String, CacheEntry<i32>>>> =
@@ -157,7 +160,8 @@ impl<R: Clone + 'static> GlobalCache<R> {
         let mut expired = false;
 
         // Acquire lock and check entry
-        if let Ok(m) = self.map.lock() {
+        {
+            let m = self.map.lock();
             if let Some(entry) = m.get(key) {
                 if entry.is_expired(self.ttl) {
                     expired = true;
@@ -174,11 +178,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
 
         // Update LRU order after releasing map lock
         if result.is_some() && self.policy == EvictionPolicy::LRU {
-            if let Ok(mut o) = self.order.lock() {
-                if let Some(pos) = o.iter().position(|k| k == key) {
-                    o.remove(pos);
-                    o.push_back(key.to_string());
-                }
+            let mut o = self.order.lock();
+            if let Some(pos) = o.iter().position(|k| k == key) {
+                o.remove(pos);
+                o.push_back(key.to_string());
             }
         }
 
@@ -233,23 +236,18 @@ impl<R: Clone + 'static> GlobalCache<R> {
         let key_s = key.to_string();
         let entry = CacheEntry::new(value);
 
-        if let Ok(mut m) = self.map.lock() {
-            m.insert(key_s.clone(), entry);
+        self.map.lock().insert(key_s.clone(), entry);
+
+        let mut o = self.order.lock();
+        if let Some(pos) = o.iter().position(|k| *k == key_s) {
+            o.remove(pos);
         }
+        o.push_back(key_s.clone());
 
-        if let Ok(mut o) = self.order.lock() {
-            if let Some(pos) = o.iter().position(|k| *k == key_s) {
-                o.remove(pos);
-            }
-            o.push_back(key_s.clone());
-
-            if let Some(limit) = self.limit {
-                if o.len() > limit {
-                    if let Some(evict_key) = o.pop_front() {
-                        if let Ok(mut m) = self.map.lock() {
-                            m.remove(&evict_key);
-                        }
-                    }
+        if let Some(limit) = self.limit {
+            if o.len() > limit {
+                if let Some(evict_key) = o.pop_front() {
+                    self.map.lock().remove(&evict_key);
                 }
             }
         }
@@ -266,16 +264,14 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///
     /// # Thread Safety
     ///
-    /// This method is thread-safe and will not panic if locks cannot be acquired.
-    /// If a lock acquisition fails, the operation is silently skipped.
+    /// This method is thread-safe. Multiple threads can safely call this method
+    /// concurrently. The method uses mutex locks to ensure data consistency.
     fn remove_key(&self, key: &str) {
-        if let Ok(mut m) = self.map.lock() {
-            m.remove(key);
-        }
-        if let Ok(mut o) = self.order.lock() {
-            if let Some(pos) = o.iter().position(|k| k == key) {
-                o.remove(pos);
-            }
+        self.map.lock().remove(key);
+
+        let mut o = self.order.lock();
+        if let Some(pos) = o.iter().position(|k| k == key) {
+            o.remove(pos);
         }
     }
 }
