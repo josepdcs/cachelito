@@ -4,7 +4,7 @@
 //! performance and more control over the cache key format.
 
 use cachelito::cache;
-use cachelito_core::CacheableKey;
+use cachelito::CacheableKey;
 
 /// Represents a user in the system.
 ///

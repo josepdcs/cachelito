@@ -3,7 +3,7 @@
 //! This example demonstrates using custom types with the default cache key
 //! implementation, which generates keys based on the `Debug` trait representation.
 use cachelito::cache;
-use cachelito_core::DefaultCacheableKey;
+use cachelito::DefaultCacheableKey;
 /// Represents a product in an inventory system.
 ///
 /// This type demonstrates using the default cache key implementation,

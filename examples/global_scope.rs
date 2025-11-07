@@ -1,4 +1,4 @@
-use cachelito_macros::cache;
+use cachelito::cache;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;

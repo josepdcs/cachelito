@@ -1,4 +1,4 @@
-use cachelito_macros::cache;
+use cachelito::cache;
 use std::cell::RefCell;
 
 // Counter to verify how many times the function executes
