@@ -276,6 +276,173 @@ fn main() {
 }
 ```
 
+### Performance with Large Values
+
+The cache clones values on every `get` operation. For large values (big structs, vectors, strings), this can be
+expensive. Wrap your return values in `Arc<T>` to share ownership without copying data:
+
+#### Problem: Expensive Cloning
+
+```rust
+use cachelito::cache;
+
+#[derive(Clone, Debug)]
+struct LargeData {
+    payload: Vec<u8>, // Could be megabytes of data
+    metadata: String,
+}
+
+#[cache(limit = 100)]
+fn process_data(id: u32) -> LargeData {
+    LargeData {
+        payload: vec![0u8; 1_000_000], // 1MB of data
+        metadata: format!("Data for {}", id),
+    }
+}
+
+fn main() {
+    // First call: computes and caches (1MB allocation)
+    let data1 = process_data(42);
+
+    // Second call: clones the ENTIRE 1MB! (expensive)
+    let data2 = process_data(42);
+}
+```
+
+#### Solution: Use Arc<T>
+
+```rust
+use cachelito::cache;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct LargeData {
+    payload: Vec<u8>,
+    metadata: String,
+}
+
+// Return Arc instead of the value directly
+#[cache(limit = 100)]
+fn process_data(id: u32) -> Arc<LargeData> {
+    Arc::new(LargeData {
+        payload: vec![0u8; 1_000_000], // 1MB of data
+        metadata: format!("Data for {}", id),
+    })
+}
+
+fn main() {
+    // First call: computes and caches Arc (1MB allocation)
+    let data1 = process_data(42);
+
+    // Second call: clones only the Arc pointer (cheap!)
+    // The 1MB payload is NOT cloned
+    let data2 = process_data(42);
+
+    // Both Arc point to the same underlying data
+    assert!(Arc::ptr_eq(&data1, &data2));
+}
+```
+
+#### Real-World Example: Caching Parsed Data
+
+```rust
+use cachelito::cache;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct ParsedDocument {
+    title: String,
+    content: String,
+    tokens: Vec<String>,
+    word_count: usize,
+}
+
+// Cache expensive parsing operations
+#[cache(limit = 50, policy = "lru", ttl = 3600)]
+fn parse_document(file_path: &str) -> Arc<ParsedDocument> {
+    // Expensive parsing operation
+    let content = std::fs::read_to_string(file_path).unwrap();
+    let tokens: Vec<String> = content
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    Arc::new(ParsedDocument {
+        title: extract_title(&content),
+        content,
+        word_count: tokens.len(),
+        tokens,
+    })
+}
+
+fn analyze_document(path: &str) {
+    // First access: parses file (expensive)
+    let doc = parse_document(path);
+    println!("Title: {}", doc.title);
+
+    // Subsequent accesses: returns Arc clone (cheap)
+    let doc2 = parse_document(path);
+    println!("Words: {}", doc2.word_count);
+
+    // The underlying ParsedDocument is shared, not cloned
+}
+```
+
+#### When to Use Arc<T>
+
+**Use Arc<T> when:**
+
+- ✅ Values are large (>1KB)
+- ✅ Values contain collections (Vec, HashMap, String)
+- ✅ Values are frequently accessed from cache
+- ✅ Multiple parts of your code need access to the same data
+
+**Don't need Arc<T> when:**
+
+- ❌ Values are small primitives (i32, f64, bool)
+- ❌ Values are rarely accessed from cache
+- ❌ Clone is already cheap (e.g., types with `Copy` trait)
+
+#### Combining Arc with Global Scope
+
+For maximum efficiency with multi-threaded applications:
+
+```rust
+use cachelito::cache;
+use std::sync::Arc;
+use std::thread;
+
+#[cache(scope = "global", limit = 100, policy = "lru")]
+fn fetch_user_profile(user_id: u64) -> Arc<UserProfile> {
+    // Expensive database or API call
+    Arc::new(UserProfile::fetch_from_db(user_id))
+}
+
+fn main() {
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            thread::spawn(move || {
+                // All threads share the global cache
+                // Cloning Arc is cheap across threads
+                let profile = fetch_user_profile(42);
+                println!("User: {}", profile.name);
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+```
+
+**Benefits:**
+
+- 🚀 Only one database/API call across all threads
+- 💾 Minimal memory overhead (Arc clones are just pointer + ref count)
+- 🔒 Thread-safe sharing with minimal synchronization cost
+- ⚡ Fast cache access with no data copying
+
 ## How It Works
 
 The `#[cache]` macro generates code that:
@@ -366,6 +533,8 @@ Total executions: 6
 - **Memory usage**: Without a limit, the cache grows unbounded. Use the `limit` parameter to control memory usage.
 - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method. The default implementation uses `Debug`
   formatting, which may be slow for complex types. Consider implementing `CacheableKey` directly for better performance.
+- **Value cloning**: The cache clones values on every access. For large values (>1KB), wrap them in `Arc<T>` to avoid
+  expensive clones. See the [Performance with Large Values](#performance-with-large-values) section for details.
 - **Cache hit performance**: O(1) hash map lookup, with LRU having an additional O(n) reordering cost on hits
     - **FIFO**: Minimal overhead, O(1) eviction
     - **LRU**: Slightly higher overhead due to reordering on access, O(n) for reordering but still efficient
