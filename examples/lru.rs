@@ -6,7 +6,7 @@ thread_local! {
     static EXEC_COUNT: RefCell<usize> = RefCell::new(0);
 }
 
-#[cache(limit = 2, policy = "lru")]
+#[cache(limit = 2, policy = "lru", scope = "global")]
 fn compute_square(x: u32) -> u32 {
     EXEC_COUNT.with(|count| {
         *count.borrow_mut() += 1;
