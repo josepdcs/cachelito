@@ -438,7 +438,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else {
                     // Note: we cannot create per-invocation statics with unique names in runtime easily,
                     // so we declare per-macro statics with the generated identifiers:
-                    static #cache_ident: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+                    static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
                     static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
 
                     let __cache = GlobalCache::<#ret_type>::new(
@@ -494,7 +494,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                     __cache.insert(&__key, __result.clone());
                     __result
                 } else {
-                    static #cache_ident: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+                    static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
                     static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
 
                     let __cache = GlobalCache::<#ret_type>::new(
