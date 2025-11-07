@@ -540,11 +540,6 @@ cargo run --example parking_lot_performance
 cargo run --example cache_comparison
 ```
 
-### Migration Note
-
-This change is **fully backward compatible**. No changes are required to your code - the performance improvements are
-automatic when you upgrade to 0.5.0.
-
 ## How It Works
 
 The `#[cache]` macro generates code that:
