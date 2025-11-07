@@ -19,12 +19,12 @@ fn compute_square(x: u32) -> u32 {
 
 /// Function with thread-local scope cache (default) - separate cache per thread
 #[cache(limit = 5)]
-fn compute_cube(x: u32) -> u32 {
+fn compute_cube(x: u32) -> Arc<u32> {
     println!(
         "Executing compute_cube({x}) in thread {:?}",
         thread::current().id()
     );
-    x * x * x
+    Arc::new(x * x * x)
 }
 
 fn main() {
@@ -116,14 +116,14 @@ fn main() {
             // will execute the function because caches are separate
             println!("Thread {} calling compute_cube(5)...", i);
             let result = compute_cube(5);
-            assert_eq!(result, 125);
+            assert_eq!(result, 125.into());
             counter.fetch_add(1, Ordering::SeqCst);
             println!("Thread {} got result: {}\n", i, result);
 
             // Second call in same thread should be cached
             println!("Thread {} calling compute_cube(5) again...", i);
             let result = compute_cube(5);
-            assert_eq!(result, 125);
+            assert_eq!(result, 125.into());
             println!(
                 "Thread {} got result: {} (cached in this thread)\n",
                 i, result
