@@ -472,8 +472,8 @@ eviction queue**, providing optimal performance for read-heavy workloads.
 ```
 GlobalCache Structure:
 ┌─────────────────────────────────────┐
-│ map: RwLock<HashMap<...>>          │ ← Multiple readers OR one writer
-│ order: Mutex<VecDeque<...>>        │ ← Always exclusive (needs modification)
+│ map: RwLock<HashMap<...>>           │ ← Multiple readers OR one writer
+│ order: Mutex<VecDeque<...>>         │ ← Always exclusive (needs modification)
 └─────────────────────────────────────┘
 
 Read Operation (cache hit):
@@ -527,7 +527,7 @@ You can run the included benchmarks to see the performance on your hardware:
 
 ```bash
 # Run cache benchmarks (includes RwLock concurrent reads)
-cd cachelito_core
+cd cachelito-core
 cargo bench --bench cache_benchmark
 
 # Run RwLock concurrent reads demo

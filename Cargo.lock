@@ -45,14 +45,14 @@ checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
 name = "cachelito"
 version = "0.5.0"
 dependencies = [
- "cachelito_core",
- "cachelito_macros",
+ "cachelito-core",
+ "cachelito-macros",
  "once_cell",
  "parking_lot",
 ]
 
 [[package]]
-name = "cachelito_core"
+name = "cachelito-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
@@ -61,7 +61,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cachelito_macros"
+name = "cachelito-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",

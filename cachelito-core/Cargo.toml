@@ -1,5 +1,5 @@
 [package]
-name = "cachelito_core"
+name = "cachelito-core"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,3 +13,4 @@ criterion = "0.5"
 [[bench]]
 name = "cache_benchmark"
 harness = false
+
