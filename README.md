@@ -1,7 +1,10 @@
 # Cachelito
 
-[![Rust](https://img.shields.io/badge/rust-stable-brightgreen.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/cachelito.svg)](https://crates.io/crates/cachelito)
+[![Documentation](https://docs.rs/cachelito/badge.svg)](https://docs.rs/cachelito)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-brightgreen.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/josepdcs/cachelito/rust.yml?branch=main)](https://github.com/josepdcs/cachelito/actions)
 
 A lightweight, thread-safe caching library for Rust that provides automatic memoization through procedural macros.
 
@@ -654,106 +657,23 @@ cargo doc --no-deps --open
 
 ## Changelog
 
-### Version 0.5.0 (Current)
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-**New Features:**
+### Latest Release: Version 0.5.0
 
-- ⚡ **RwLock for cache map** - Replaced `Mutex` with `RwLock` for the global cache HashMap, enabling concurrent reads
-- 🚀 **4-5x performance improvement** for read-heavy workloads (typical cache usage)
-- 🔓 **20x faster concurrent reads** - Multiple threads read simultaneously without blocking
-- 💾 **Optimized architecture** - RwLock for map, Mutex for eviction queue
-- 📊 **Enhanced benchmarks** - Added RwLock-specific benchmarks and read-heavy workload tests
+**Highlights:**
 
-**parking_lot Integration:**
+- ⚡ **RwLock for concurrent reads** - 4-5x faster for read-heavy workloads
+- 🚀 **20x improvement** for pure concurrent reads
+- 💾 **40x smaller memory footprint** with parking_lot
+- 📊 **Enhanced benchmarks** and examples
+- 🔧 **Idiomatic crate naming** (`cachelito-core`, `cachelito-macros`)
 
-- ⚡ **parking_lot::RwLock** - Better performance than `std::sync::RwLock`
-- 💾 **40x smaller memory footprint** per lock (~1 byte vs ~40 bytes)
-- 🔓 **No lock poisoning** - simpler API without `Result` wrapping
-
-**Improvements:**
-
-- 📊 Added comprehensive benchmarks: `rwlock_concurrent_reads`, `read_heavy_workload`
-- 📚 New `rwlock_concurrent_reads` example demonstrating concurrent non-blocking reads
-- 🧪 Added 2 new unit tests: `test_rwlock_concurrent_reads`, `test_rwlock_write_excludes_reads`
-- 🧹 Cleaner internal code thanks to parking_lot's simpler API
-- 📚 Enhanced documentation with RwLock benefits, architecture diagrams, and benchmarks
-
-**Breaking Changes:**
-
-- None (fully backward compatible - performance improvements are automatic)
-
-### Version 0.4.0
-
-**New Features:**
-
-- 🌐 Global scope cache with `scope = "global"` for cross-thread sharing
-- 🔒 Thread-safe global cache using `Mutex` synchronization
-
-**Improvements:**
-
-- 📚 New `global_scope` example showing cross-thread cache sharing
-- 📚 Enhanced documentation with global scope examples
-- 🧪 Added test coverage for global scope functionality
-
-**Breaking Changes:**
-
-- None (fully backward compatible)
-
-### Version 0.3.0
-
-**New Features:**
-
-- ⏱️ TTL (Time To Live) support with automatic expiration
-- 🔄 Per-entry timestamp tracking with `CacheEntry<R>` wrapper
-- 🧹 Automatic removal of expired entries on access
-- 🎯 TTL works seamlessly with all eviction policies and limits
-
-**Improvements:**
-
-- 📚 Enhanced documentation with TTL examples
-- 📚 Comprehensive TTL example demonstrating all features
-- 🧪 Added test coverage for TTL expiration scenarios
-- 🔧 Improved error messages and validation
-
-**Breaking Changes:**
-
-- None (fully backward compatible)
-
-### Version 0.2.0
-
-**New Features:**
-
-- ✨ Cache size limits with `limit` parameter
-- ✨ FIFO (First In, First Out) eviction policy
-- ✨ LRU (Least Recently Used) eviction policy
-- ✨ Configurable eviction policies via `policy` parameter
-
-**Improvements:**
-
-- 📚 Enhanced documentation with comprehensive examples
-- 📚 Added 7 example files demonstrating different use cases
-- 🧪 Improved test coverage for eviction policies
-- 🔧 Better error messages for invalid macro parameters
-
-**Breaking Changes:**
-
-- None (fully backward compatible)
-
-### Version 0.1.0
-
-**Initial Release:**
-
-- ✨ Basic caching functionality with `#[cache]` attribute
-- ✨ Thread-local storage for cache isolation
-- ✨ Custom cache key generation via `CacheableKey` trait
-- ✨ Default cache key implementation via `DefaultCacheableKey`
-- ✨ Result-aware caching (only `Ok` values cached)
-
-- ✨ Support for methods (`self`, `&self`, `&mut self`)
+For full details, see the [complete changelog](CHANGELOG.md).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
@@ -761,6 +681,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## See Also
 
+- [CHANGELOG](CHANGELOG.md) - Detailed version history and release notes
 - [Macro Expansion Guide](MACRO_EXPANSION.md) - How to view generated code and understand `format!("{:?}")`
 - [API Documentation](https://docs.rs/cachelito) - Full API reference
 
