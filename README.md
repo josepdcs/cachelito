@@ -63,7 +63,7 @@ The `#[cache]` attribute also works with methods:
 
 ```rust
 use cachelito::cache;
-use cachelito_core::DefaultCacheableKey;
+use cachelito::DefaultCacheableKey;
 
 #[derive(Debug, Clone)]
 struct Calculator {
@@ -88,7 +88,7 @@ For complex types, you can implement custom cache key generation:
 #### Option 1: Use Default Debug-based Key
 
 ```rust
-use cachelito_core::DefaultCacheableKey;
+use cachelito::DefaultCacheableKey;
 
 #[derive(Debug, Clone)]
 struct Product {
@@ -103,7 +103,7 @@ impl DefaultCacheableKey for Product {}
 #### Option 2: Custom Key Implementation
 
 ```rust
-use cachelito_core::CacheableKey;
+use cachelito::CacheableKey;
 
 #[derive(Debug, Clone)]
 struct User {
