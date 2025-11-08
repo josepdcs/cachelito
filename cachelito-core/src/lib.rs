@@ -30,11 +30,18 @@ mod eviction_policy;
 mod global_cache;
 mod keys;
 mod thread_local_cache;
+
+#[cfg(feature = "stats")]
+mod stats;
+
 pub use cache_entry::CacheEntry;
 pub use eviction_policy::EvictionPolicy;
 pub use global_cache::GlobalCache;
 pub use keys::{CacheableKey, DefaultCacheableKey};
 pub use thread_local_cache::ThreadLocalCache;
+
+#[cfg(feature = "stats")]
+pub use stats::CacheStats;
 /// Cache scope: thread-local or global
 ///
 /// This enum determines whether a cache is stored in thread-local storage

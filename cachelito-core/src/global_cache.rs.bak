@@ -78,7 +78,7 @@ pub struct GlobalCache<R: 'static> {
     pub policy: EvictionPolicy,
     pub ttl: Option<u64>,
     #[cfg(feature = "stats")]
-    pub stats: &'static Lazy<CacheStats>,
+    pub stats: &'static CacheStats,
 }
 
 impl<R: Clone + 'static> GlobalCache<R> {
@@ -117,7 +117,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         limit: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
-        stats: &'static Lazy<CacheStats>,
+        stats: &'static CacheStats,
     ) -> Self {
         Self {
             map,
@@ -334,7 +334,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// println!("Total accesses: {}", stats.total_accesses());
     /// ```
     #[cfg(feature = "stats")]
-    pub fn stats(&self) -> &CacheStats {
+    pub fn stats(&self) -> &'static CacheStats {
         self.stats
     }
 }
@@ -422,7 +422,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
         #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+        static STATS: CacheStats = CacheStats::new();
 
         let cache = GlobalCache::new(
             &MAP,
@@ -443,18 +443,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
         assert_eq!(cache.get("nonexistent"), None);
     }
 
@@ -464,18 +453,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
         cache.insert("key", 1);
         cache.insert("key", 2);
         assert_eq!(cache.get("key"), Some(2));
@@ -487,18 +465,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            Some(2),
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, Some(2), EvictionPolicy::FIFO, None);
         cache.insert("k1", 1);
         cache.insert("k2", 2);
         cache.insert("k3", 3);
@@ -514,18 +481,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            Some(2),
-            EvictionPolicy::LRU,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, Some(2), EvictionPolicy::LRU, None);
         cache.insert("k1", 1);
         cache.insert("k2", 2);
         let _ = cache.get("k1");
@@ -542,18 +498,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            Some(3),
-            EvictionPolicy::LRU,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, Some(3), EvictionPolicy::LRU, None);
         cache.insert("k1", 1);
         cache.insert("k2", 2);
         cache.insert("k3", 3);
@@ -577,21 +522,10 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
         let handles: Vec<_> = (0..10)
             .map(|i| {
                 thread::spawn(move || {
-                    let cache = GlobalCache::new(
-                        &MAP,
-                        &ORDER,
-                        None,
-                        EvictionPolicy::FIFO,
-                        None,
-                        #[cfg(feature = "stats")]
-                        &STATS,
-                    );
+                    let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
                     cache.insert(&format!("key{}", i), i);
                     thread::sleep(Duration::from_millis(10));
                     cache.get(&format!("key{}", i))
@@ -611,18 +545,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            Some(1),
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, Some(1));
         cache.insert("expires", 999);
 
         // Should be valid immediately
@@ -639,18 +562,8 @@ mod tests {
         static RES_MAP: Lazy<RwLock<HashMap<String, CacheEntry<Result<i32, String>>>>> =
             Lazy::new(|| RwLock::new(HashMap::new()));
         static RES_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
-        let cache = GlobalCache::new(
-            &RES_MAP,
-            &RES_ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&RES_MAP, &RES_ORDER, None, EvictionPolicy::FIFO, None);
         let ok_result = Ok(42);
         cache.insert_result("success", &ok_result);
         assert_eq!(cache.get("success"), Some(Ok(42)));
@@ -661,18 +574,8 @@ mod tests {
         static RES_MAP: Lazy<RwLock<HashMap<String, CacheEntry<Result<i32, String>>>>> =
             Lazy::new(|| RwLock::new(HashMap::new()));
         static RES_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
-        let cache = GlobalCache::new(
-            &RES_MAP,
-            &RES_ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&RES_MAP, &RES_ORDER, None, EvictionPolicy::FIFO, None);
         let err_result: Result<i32, String> = Err("error".to_string());
         cache.insert_result("failure", &err_result);
         assert_eq!(cache.get("failure"), None); // Errors not cached
@@ -684,18 +587,8 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+        let cache = GlobalCache::new(&MAP, &ORDER, Some(5), EvictionPolicy::LRU, None);
 
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            Some(5),
-            EvictionPolicy::LRU,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
         // Pre-populate cache
         for i in 0..5 {
             cache.insert(&format!("k{}", i), i);
@@ -705,15 +598,7 @@ mod tests {
         let handles: Vec<_> = (0..5)
             .map(|_| {
                 thread::spawn(|| {
-                    let cache = GlobalCache::new(
-                        &MAP,
-                        &ORDER,
-                        Some(5),
-                        EvictionPolicy::LRU,
-                        None,
-                        #[cfg(feature = "stats")]
-                        &STATS,
-                    );
+                    let cache = GlobalCache::new(&MAP, &ORDER, Some(5), EvictionPolicy::LRU, None);
                     for _ in 0..10 {
                         let _ = cache.get("k0");
                     }
@@ -735,18 +620,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
 
         for i in 0..100 {
             cache.insert(&format!("k{}", i), i);
@@ -765,18 +639,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
 
         // Populate cache
         for i in 0..10 {
@@ -787,15 +650,7 @@ mod tests {
         let handles: Vec<_> = (0..20)
             .map(|_thread_id| {
                 thread::spawn(move || {
-                    let cache = GlobalCache::new(
-                        &MAP,
-                        &ORDER,
-                        None,
-                        EvictionPolicy::FIFO,
-                        None,
-                        #[cfg(feature = "stats")]
-                        &STATS,
-                    );
+                    let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
                     let mut results = Vec::new();
                     for i in 0..10 {
                         results.push(cache.get(&format!("key{}", i)));
@@ -821,32 +676,13 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
 
         cache.insert("key1", 100);
 
         // Write and read interleaved - should not deadlock
         let write_handle = thread::spawn(|| {
-            let cache = GlobalCache::new(
-                &MAP,
-                &ORDER,
-                None,
-                EvictionPolicy::FIFO,
-                None,
-                #[cfg(feature = "stats")]
-                &STATS,
-            );
+            let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
             for i in 0..50 {
                 cache.insert(&format!("key{}", i), i);
                 thread::sleep(Duration::from_micros(100));
@@ -856,15 +692,7 @@ mod tests {
         let read_handles: Vec<_> = (0..5)
             .map(|_| {
                 thread::spawn(|| {
-                    let cache = GlobalCache::new(
-                        &MAP,
-                        &ORDER,
-                        None,
-                        EvictionPolicy::FIFO,
-                        None,
-                        #[cfg(feature = "stats")]
-                        &STATS,
-                    );
+                    let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
                     for i in 0..50 {
                         let _ = cache.get(&format!("key{}", i));
                         thread::sleep(Duration::from_micros(100));
@@ -886,18 +714,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
         cache.insert("k1", 1);
         cache.insert("k2", 2);
 
@@ -919,18 +736,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            Some(1),
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, Some(1));
         cache.insert("expires", 999);
 
         // Immediate access - should be a hit
@@ -954,18 +760,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
         cache.insert("k1", 1);
         let _ = cache.get("k1");
         let _ = cache.get("k2");
@@ -986,33 +781,14 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
         cache.insert("k1", 1);
         cache.insert("k2", 2);
 
         let handles: Vec<_> = (0..10)
             .map(|_| {
                 thread::spawn(|| {
-                    let cache = GlobalCache::new(
-                        &MAP,
-                        &ORDER,
-                        None,
-                        EvictionPolicy::FIFO,
-                        None,
-                        #[cfg(feature = "stats")]
-                        &STATS,
-                    );
+                    let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
                     for _ in 0..10 {
                         let _ = cache.get("k1"); // Hit
                         let _ = cache.get("k2"); // Hit
@@ -1041,18 +817,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
         cache.insert("k1", 1);
         cache.insert("k2", 2);
 
@@ -1075,18 +840,7 @@ mod tests {
             Lazy::new(|| RwLock::new(HashMap::new()));
         static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-        #[cfg(feature = "stats")]
-        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
-
-        let cache = GlobalCache::new(
-            &MAP,
-            &ORDER,
-            None,
-            EvictionPolicy::FIFO,
-            None,
-            #[cfg(feature = "stats")]
-            &STATS,
-        );
+        let cache = GlobalCache::new(&MAP, &ORDER, None, EvictionPolicy::FIFO, None);
 
         for i in 0..10 {
             let _ = cache.get(&format!("k{}", i));
