@@ -337,6 +337,31 @@ impl<R: Clone + 'static> GlobalCache<R> {
     pub fn stats(&self) -> &CacheStats {
         self.stats
     }
+
+    /// Clears all entries from the cache.
+    ///
+    /// This method removes all entries from both the cache map and the order queue.
+    /// It's useful for testing or when you need to completely reset the cache state.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method is thread-safe and can be safely called from multiple threads.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// cache.insert("key1", 42);
+    /// cache.insert("key2", 84);
+    ///
+    /// cache.clear();
+    ///
+    /// assert_eq!(cache.get("key1"), None);
+    /// assert_eq!(cache.get("key2"), None);
+    /// ```
+    pub fn clear(&self) {
+        self.map.write().clear();
+        self.order.lock().clear();
+    }
 }
 
 /// Implementation of `GlobalCache` for `Result` types.

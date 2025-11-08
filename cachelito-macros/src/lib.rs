@@ -1,6 +1,278 @@
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::parse::Parser;
+use syn::{
+    parse_macro_input, punctuated::Punctuated, Expr, FnArg, ItemFn, MetaNameValue, ReturnType,
+    Token,
+};
+
+/// Parsed macro attributes
+struct CacheAttributes {
+    limit: TokenStream2,
+    policy: TokenStream2,
+    ttl: TokenStream2,
+    scope: TokenStream2,
+    custom_name: Option<String>,
+}
+
+impl Default for CacheAttributes {
+    fn default() -> Self {
+        Self {
+            limit: quote! { None },
+            policy: quote! { cachelito_core::EvictionPolicy::FIFO },
+            ttl: quote! { None },
+            scope: quote! { cachelito_core::CacheScope::Global },
+            custom_name: None,
+        }
+    }
+}
+
+/// Parse macro attributes from the attribute token stream
+fn parse_attributes(attr: TokenStream) -> CacheAttributes {
+    use syn::parse::Parser;
+
+    let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
+    let parsed_args = parser.parse(attr).unwrap_or_default();
+    let mut attrs = CacheAttributes::default();
+
+    for nv in parsed_args {
+        if nv.path.is_ident("limit") {
+            attrs.limit = parse_limit_attribute(&nv);
+        } else if nv.path.is_ident("policy") {
+            attrs.policy = parse_policy_attribute(&nv);
+        } else if nv.path.is_ident("ttl") {
+            attrs.ttl = parse_ttl_attribute(&nv);
+        } else if nv.path.is_ident("scope") {
+            attrs.scope = parse_scope_attribute(&nv);
+        } else if nv.path.is_ident("name") {
+            attrs.custom_name = parse_name_attribute(&nv);
+        }
+    }
+
+    attrs
+}
+
+/// Parse the `limit` attribute
+fn parse_limit_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Int(lit_int) => {
+                let val = lit_int
+                    .base10_parse::<usize>()
+                    .expect("limit must be a positive integer");
+                quote! { Some(#val) }
+            }
+            _ => quote! { compile_error!("Invalid literal for `limit`: expected integer") },
+        },
+        _ => quote! { compile_error!("Invalid syntax for `limit`: expected `limit = <integer>`") },
+    }
+}
+
+/// Parse the `policy` attribute
+fn parse_policy_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Str(s) => match s.value().to_lowercase().as_str() {
+                "fifo" => quote! { cachelito_core::EvictionPolicy::FIFO },
+                "lru" => quote! { cachelito_core::EvictionPolicy::LRU },
+                _ => quote! { compile_error!("Invalid policy: expected \"fifo\" or \"lru\"") },
+            },
+            _ => quote! { compile_error!("Invalid literal for `policy`: expected string") },
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`") }
+        }
+    }
+}
+
+/// Parse the `ttl` attribute
+fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Int(lit_int) => {
+                let val = lit_int
+                    .base10_parse::<u64>()
+                    .expect("ttl must be a positive integer (seconds)");
+                quote! { Some(#val) }
+            }
+            _ => quote! { compile_error!("Invalid literal for `ttl`: expected integer (seconds)") },
+        },
+        _ => quote! { compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`") },
+    }
+}
+
+/// Parse the `scope` attribute
+fn parse_scope_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Str(s) => match s.value().to_lowercase().as_str() {
+                "thread" => quote! { cachelito_core::CacheScope::ThreadLocal },
+                "global" => quote! { cachelito_core::CacheScope::Global },
+                other => quote! { compile_error!(concat!("Invalid scope: ", #other)) },
+            },
+            lit => {
+                quote! { compile_error!(concat!("Invalid literal for `scope`: ", stringify!(#lit))) }
+            }
+        },
+        _ => quote! { compile_error!("Invalid syntax for `scope`") },
+    }
+}
+
+/// Parse the `name` attribute
+fn parse_name_attribute(nv: &MetaNameValue) -> Option<String> {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Str(s) => Some(s.value()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Generate cache key expression based on function arguments
+fn generate_key_expr(has_self: bool, arg_pats: &[TokenStream2]) -> TokenStream2 {
+    if has_self {
+        if arg_pats.is_empty() {
+            quote! {{
+                use cachelito_core::CacheableKey;
+                self.to_cache_key()
+            }}
+        } else {
+            quote! {{
+                use cachelito_core::CacheableKey;
+                let mut __key_parts = Vec::new();
+                __key_parts.push(self.to_cache_key());
+                #(
+                    __key_parts.push((#arg_pats).to_cache_key());
+                )*
+                __key_parts.join("|")
+            }}
+        }
+    } else if arg_pats.is_empty() {
+        quote! {{ String::new() }}
+    } else {
+        quote! {{
+            use cachelito_core::CacheableKey;
+            let mut __key_parts = Vec::new();
+            #(
+                __key_parts.push((#arg_pats).to_cache_key());
+            )*
+            __key_parts.join("|")
+        }}
+    }
+}
+
+/// Generate the thread-local cache branch
+fn generate_thread_local_branch(
+    cache_ident: &syn::Ident,
+    order_ident: &syn::Ident,
+    ret_type: &TokenStream2,
+    limit_expr: &TokenStream2,
+    policy_expr: &TokenStream2,
+    ttl_expr: &TokenStream2,
+    key_expr: &TokenStream2,
+    block: &syn::Block,
+    is_result: bool,
+) -> TokenStream2 {
+    let insert_call = if is_result {
+        quote! { __cache.insert_result(&__key, &__result); }
+    } else {
+        quote! { __cache.insert(&__key, __result.clone()); }
+    };
+
+    quote! {
+        thread_local! {
+            static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
+            static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+        }
+
+        let __cache = ThreadLocalCache::<#ret_type>::new(
+            &#cache_ident,
+            &#order_ident,
+            #limit_expr,
+            #policy_expr,
+            #ttl_expr
+        );
+
+        let __key = #key_expr;
+
+        if let Some(cached) = __cache.get(&__key) {
+            return cached;
+        }
+
+        let __result = (|| #block)();
+        #insert_call
+        __result
+    }
+}
+
+/// Generate the global cache branch
+fn generate_global_branch(
+    cache_ident: &syn::Ident,
+    order_ident: &syn::Ident,
+    stats_ident: &syn::Ident,
+    ret_type: &TokenStream2,
+    limit_expr: &TokenStream2,
+    policy_expr: &TokenStream2,
+    ttl_expr: &TokenStream2,
+    key_expr: &TokenStream2,
+    block: &syn::Block,
+    fn_name_str: &str,
+    is_result: bool,
+) -> TokenStream2 {
+    let insert_call = if is_result {
+        quote! { __cache.insert_result(&__key, &__result); }
+    } else {
+        quote! { __cache.insert(&__key, __result.clone()); }
+    };
+
+    quote! {
+        static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> =
+            once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
+        static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> =
+            once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> =
+            once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
+
+        #[cfg(feature = "stats")]
+        {
+            use std::sync::Once;
+            static REGISTER_ONCE: Once = Once::new();
+            REGISTER_ONCE.call_once(|| {
+                cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
+            });
+        }
+
+        #[cfg(feature = "stats")]
+        let __cache = GlobalCache::<#ret_type>::new(
+            &#cache_ident,
+            &#order_ident,
+            #limit_expr,
+            #policy_expr,
+            #ttl_expr,
+            &#stats_ident,
+        );
+        #[cfg(not(feature = "stats"))]
+        let __cache = GlobalCache::<#ret_type>::new(
+            &#cache_ident,
+            &#order_ident,
+            #limit_expr,
+            #policy_expr,
+            #ttl_expr,
+        );
+
+        let __key = #key_expr;
+        if let Some(cached) = __cache.get(&__key) {
+            return cached;
+        }
+
+        let __result = (|| #block)();
+        #insert_call
+        __result
+    }
+}
 
 /// A procedural macro that adds automatic memoization to functions and methods.
 ///
@@ -231,170 +503,23 @@ use syn::parse::Parser;
 ///
 #[proc_macro_attribute]
 pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
-    use proc_macro2::TokenStream as TokenStream2;
-    use quote::{format_ident, quote};
-    use syn::{
-        parse_macro_input, punctuated::Punctuated, Expr, FnArg, ItemFn, MetaNameValue, ReturnType,
-        Token,
-    };
+    // Parse macro attributes
+    let attrs = parse_attributes(attr);
 
-    // Parse attributes: limit, policy, ttl (seconds), scope ("thread"|"global")
-    let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
-    let parsed_args = parser.parse(attr).unwrap_or_default();
-
-    let mut limit_expr = quote! { None };
-    let mut policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
-    let mut ttl_expr = quote! { None };
-    let mut scope_expr = quote! { cachelito_core::CacheScope::Global }; // Changed default to Global
-    let mut custom_name: Option<String> = None;
-
-    for nv in parsed_args {
-        if nv.path.is_ident("limit") {
-            match nv.value {
-                Expr::Lit(ref expr_lit) => match expr_lit.lit {
-                    syn::Lit::Int(ref lit_int) => {
-                        let val = lit_int
-                            .base10_parse::<usize>()
-                            .expect("limit must be a positive integer");
-                        limit_expr = quote! { Some(#val) };
-                    }
-                    _ => {
-                        return quote! {
-                            compile_error!("Invalid literal for `limit`: expected integer");
-                        }
-                        .into();
-                    }
-                },
-                _ => {
-                    return quote! {
-                        compile_error!("Invalid syntax for `limit`: expected `limit = <integer>`");
-                    }
-                    .into();
-                }
-            }
-        } else if nv.path.is_ident("policy") {
-            match nv.value {
-                Expr::Lit(ref expr_lit) => match &expr_lit.lit {
-                    syn::Lit::Str(s) => {
-                        let pol = match s.value().to_lowercase().as_str() {
-                            "fifo" => quote! { cachelito_core::EvictionPolicy::FIFO },
-                            "lru" => quote! { cachelito_core::EvictionPolicy::LRU },
-                            _ => {
-                                return quote! {
-                                    compile_error!("Invalid policy: expected \"fifo\" or \"lru\"");
-                                }
-                                .into();
-                            }
-                        };
-                        policy_expr = pol;
-                    }
-                    _ => {
-                        return quote! {
-                            compile_error!("Invalid literal for `policy`: expected string");
-                        }
-                        .into();
-                    }
-                },
-                _ => {
-                    return quote! {
-                        compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`");
-                    }
-                        .into();
-                }
-            }
-        } else if nv.path.is_ident("ttl") {
-            match nv.value {
-                Expr::Lit(ref expr_lit) => match expr_lit.lit {
-                    syn::Lit::Int(ref lit_int) => {
-                        let val = lit_int
-                            .base10_parse::<u64>()
-                            .expect("ttl must be a positive integer (seconds)");
-                        ttl_expr = quote! { Some(#val) };
-                    }
-                    _ => {
-                        return quote! {
-                            compile_error!("Invalid literal for `ttl`: expected integer (seconds)");
-                        }
-                        .into();
-                    }
-                },
-                _ => {
-                    return quote! {
-                        compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`");
-                    }
-                    .into();
-                }
-            }
-        } else if nv.path.is_ident("name") {
-            match nv.value {
-                Expr::Lit(ref expr_lit) => match &expr_lit.lit {
-                    syn::Lit::Str(s) => {
-                        custom_name = Some(s.value());
-                    }
-                    _ => {
-                        return quote! {
-                            compile_error!("Invalid literal for `name`: expected string");
-                        }
-                        .into();
-                    }
-                },
-                _ => {
-                    return quote! {
-                        compile_error!("Invalid syntax for `name`: expected `name = \"identifier\"`");
-                    }
-                    .into();
-                }
-            }
-        } else if nv.path.is_ident("scope") {
-            match nv.value {
-                Expr::Lit(ref expr_lit) => match &expr_lit.lit {
-                    syn::Lit::Str(s) => {
-                        let val = s.value().to_lowercase();
-                        match val.as_str() {
-                            "thread" => {
-                                scope_expr = quote! { cachelito_core::CacheScope::ThreadLocal };
-                            }
-                            "global" => {
-                                scope_expr = quote! { cachelito_core::CacheScope::Global };
-                            }
-                            other => {
-                                return quote! {
-                                    compile_error!(concat!("Invalid scope: ", #other));
-                                }
-                                .into();
-                            }
-                        }
-                    }
-                    lit => {
-                        return quote! {
-                            compile_error!(concat!("Invalid literal for `scope`: ", stringify!(#lit)));
-                        }
-                            .into();
-                    }
-                },
-                _ => {
-                    return quote! {
-                        compile_error!("Invalid syntax for `scope`");
-                    }
-                    .into();
-                }
-            }
-        }
-    }
-
-    // === parse function ===
+    // Parse function
     let input = parse_macro_input!(item as ItemFn);
     let vis = &input.vis;
     let sig = &input.sig;
     let ident = &sig.ident;
     let block = &input.block;
 
+    // Extract return type
     let ret_type = match &sig.output {
         ReturnType::Type(_, ty) => quote! { #ty },
         ReturnType::Default => quote! { () },
     };
 
-    // arguments, self detection
+    // Parse arguments and detect self
     let mut arg_pats = Vec::new();
     let mut has_self = false;
     for arg in sig.inputs.iter() {
@@ -407,7 +532,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // idents for per-function storages
+    // Generate unique identifiers for static storage
     let cache_ident = format_ident!(
         "GLOBAL_OR_THREAD_CACHE_{}",
         ident.to_string().to_uppercase()
@@ -421,202 +546,59 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         ident.to_string().to_uppercase()
     );
 
-    let key_expr: TokenStream2 = if has_self {
-        if arg_pats.is_empty() {
-            quote! {{
-                use cachelito_core::CacheableKey;
-                self.to_cache_key()
-            }}
-        } else {
-            quote! {{
-                use cachelito_core::CacheableKey;
-                let mut __key_parts = Vec::new();
-                __key_parts.push(self.to_cache_key());
-                #(
-                    __key_parts.push((#arg_pats).to_cache_key());
-                )*
-                __key_parts.join("|")
-            }}
-        }
-    } else if arg_pats.is_empty() {
-        quote! {{ String::new() }}
-    } else {
-        quote! {{
-            use cachelito_core::CacheableKey;
-            let mut __key_parts = Vec::new();
-            #(
-                __key_parts.push((#arg_pats).to_cache_key());
-            )*
-            __key_parts.join("|")
-        }}
-    };
+    // Generate cache key expression
+    let key_expr = generate_key_expr(has_self, &arg_pats);
 
-    // detect Result<...>
+    // Detect Result type
     let is_result = {
         let s = quote!(#ret_type).to_string().replace(' ', "");
         s.starts_with("Result<") || s.starts_with("std::result::Result<")
     };
 
-    // For global scope we will generate `static` Lazy Mutex maps; for thread we use thread_local!
-    // We use cachelito_core::CacheEntry<#ret_type> as stored value in both cases.
-
     // Use custom name if provided, otherwise use function name
-    let fn_name_str = custom_name.unwrap_or_else(|| ident.to_string());
+    let fn_name_str = attrs.custom_name.unwrap_or_else(|| ident.to_string());
 
-    let expanded = if is_result {
-        quote! {
-            #vis #sig {
-                use ::std::sync::LazyLock;
-                use ::std::collections::VecDeque;
-                use ::std::cell::RefCell;
-                use ::cachelito_core::{CacheEntry, CacheScope, ThreadLocalCache, GlobalCache, CacheableKey};
+    // Generate thread-local and global cache branches
+    let thread_local_branch = generate_thread_local_branch(
+        &cache_ident,
+        &order_ident,
+        &ret_type,
+        &attrs.limit,
+        &attrs.policy,
+        &attrs.ttl,
+        &key_expr,
+        block,
+        is_result,
+    );
 
-                // choose storage depending on scope
-                let __scope = #scope_expr;
+    let global_branch = generate_global_branch(
+        &cache_ident,
+        &order_ident,
+        &stats_ident,
+        &ret_type,
+        &attrs.limit,
+        &attrs.policy,
+        &attrs.ttl,
+        &key_expr,
+        block,
+        &fn_name_str,
+        is_result,
+    );
 
-                if __scope == cachelito_core::CacheScope::ThreadLocal {
-                    thread_local! {
-                        static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
-                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                    }
+    // Generate final expanded code
+    let scope_expr = &attrs.scope;
+    let expanded = quote! {
+        #vis #sig {
+            use ::std::collections::VecDeque;
+            use ::std::cell::RefCell;
+            use ::cachelito_core::{CacheEntry, CacheScope, ThreadLocalCache, GlobalCache, CacheableKey};
 
-                    let __cache = ThreadLocalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr
-                    );
+            let __scope = #scope_expr;
 
-                    let __key = #key_expr;
-
-                    if let Some(cached) = __cache.get(&__key) {
-                        // cached is Result<T,E>
-                        return cached;
-                    }
-
-                    let __result = (|| #block)();
-                    __cache.insert_result(&__key, &__result);
-                    __result
-                } else {
-                    static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
-                    static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
-
-                    #[cfg(feature = "stats")]
-                    static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> = once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
-                    #[cfg(feature = "stats")]
-                    {
-                        use std::sync::Once;
-                        static REGISTER_ONCE: Once = Once::new();
-                        REGISTER_ONCE.call_once(|| {
-                            cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
-                        });
-                    }
-
-                    #[cfg(feature = "stats")]
-                    let __cache = GlobalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr,
-                        &#stats_ident,
-                    );
-                    #[cfg(not(feature = "stats"))]
-                    let __cache = GlobalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr,
-                    );
-
-                    let __key = #key_expr;
-
-                    if let Some(cached) = __cache.get(&__key) {
-                        return cached;
-                    }
-
-                    let __result = (|| #block)();
-                    __cache.insert_result(&__key, &__result);
-                    __result
-                }
-            }
-        }
-    } else {
-        quote! {
-            #vis #sig {
-                use ::std::collections::VecDeque;
-                use ::std::cell::RefCell;
-                use ::cachelito_core::{CacheEntry, CacheScope, ThreadLocalCache, GlobalCache, CacheableKey};
-
-                let __scope = #scope_expr;
-
-                if __scope == cachelito_core::CacheScope::ThreadLocal {
-                    thread_local! {
-                        static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
-                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                    }
-
-                    let __cache = ThreadLocalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr
-                    );
-
-                    let __key = #key_expr;
-
-                    if let Some(cached) = __cache.get(&__key) {
-                        return cached;
-                    }
-
-                    let __result = (|| #block)();
-                    __cache.insert(&__key, __result.clone());
-                    __result
-                } else {
-                    static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
-                    static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
-
-                    #[cfg(feature = "stats")]
-                    static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> = once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
-                    #[cfg(feature = "stats")]
-                    {
-                        use std::sync::Once;
-                        static REGISTER_ONCE: Once = Once::new();
-                        REGISTER_ONCE.call_once(|| {
-                            cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
-                        });
-                    }
-
-                    #[cfg(feature = "stats")]
-                    let __cache = GlobalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr,
-                        &#stats_ident,
-                    );
-                    #[cfg(not(feature = "stats"))]
-                    let __cache = GlobalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr,
-                    );
-
-                    let __key = #key_expr;
-                    if let Some(cached) = __cache.get(&__key) {
-                        return cached;
-                    }
-
-                    let __result = (|| #block)();
-                    __cache.insert(&__key, __result.clone());
-                    __result
-                }
+            if __scope == cachelito_core::CacheScope::ThreadLocal {
+                #thread_local_branch
+            } else {
+                #global_branch
             }
 
         }

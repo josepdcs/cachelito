@@ -44,5 +44,8 @@ parking_lot = "0.12"
 name = "cachelito"
 path = "src/lib.rs"
 
+[dev-dependencies]
+serial_test = "3.2"
+
 [badges]
 maintenance = { status = "actively-developed" }
