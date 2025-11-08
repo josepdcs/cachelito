@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-01-08
+
+### Added
+
+- **Cache Statistics**: New `stats` feature flag for tracking cache performance metrics
+- **Stats Registry**: Centralized statistics management via `cachelito::stats_registry`
+    - `stats_registry::get(name)` - Get statistics snapshot for a cached function
+    - `stats_registry::get_ref(name)` - Get direct reference to statistics
+    - `stats_registry::list()` - List all registered cache functions
+    - `stats_registry::reset(name)` - Reset statistics for a specific function
+    - `stats_registry::clear()` - Clear all statistics registrations
+- **CacheStats metrics**:
+    - `hits()` - Number of successful cache lookups
+    - `misses()` - Number of cache misses
+    - `total_accesses()` - Total cache access count
+    - `hit_rate()` - Ratio of hits to total accesses
+    - `miss_rate()` - Ratio of misses to total accesses
+    - `reset()` - Reset counters to zero
+- **Thread-safe statistics**: Using `AtomicU64` for concurrent access
+- **Automatic registration**: Global-scoped caches automatically register their statistics
+- New examples: `cache_stats`, `concurrent_stats`, `test_stats_simple`
+- Comprehensive test coverage for statistics functionality (54 tests)
+- New module: `cachelito-core/src/stats_registry.rs`
+- New module: `cachelito-core/src/stats.rs`
+
+### Changed
+
+- Statistics are automatically tracked for all caches with `scope = "global"`
+- Enhanced documentation with statistics usage examples and best practices
+- Updated README with comprehensive statistics section
+
+### Fixed
+
+- None
+
+### Breaking Changes
+
+- None (statistics are opt-in via feature flag)
+
+### Notes
+
+- Statistics are only accessible via `stats_registry` for global-scoped caches
+- Thread-local caches track statistics internally but don't expose them via the registry
+- Statistics add minimal overhead (atomic operations only)
+- Feature must be explicitly enabled: `cachelito = { version = "0.6.0", features = ["stats"] }`
+
 ## [0.5.0] - 2025-01-07
 
 ### Added

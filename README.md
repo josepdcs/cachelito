@@ -19,6 +19,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
 - 📊 **Eviction policies**: Choose between FIFO (First In, First Out) and LRU (Least Recently Used)
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
+- 📈 **Statistics**: Track cache hit/miss rates and performance metrics (with `stats` feature)
 - ✅ **Type-safe**: Full compile-time type checking
 - 📦 **Minimal dependencies**: Uses `parking_lot` for optimal performance
 
@@ -28,7 +29,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.5.0"
+cachelito = "0.6.0"
+
+# Optional: Enable statistics tracking
+cachelito = { version = "0.6.0", features = ["stats"] }
 ```
 
 ## Usage
@@ -639,6 +643,205 @@ Total executions: 6
     - **FIFO**: Minimal overhead, O(1) eviction
     - **LRU**: Slightly higher overhead due to reordering on access, O(n) for reordering but still efficient
 
+## Cache Statistics
+
+**Available since v0.6.0** with the `stats` feature flag.
+
+Track cache performance metrics including hit/miss rates and access counts. Statistics are automatically collected for
+global-scoped caches and can be queried programmatically.
+
+### Enabling Statistics
+
+Add the `stats` feature to your `Cargo.toml`:
+
+```toml
+[dependencies]
+cachelito = { version = "0.6.0", features = ["stats"] }
+```
+
+### Basic Usage
+
+Statistics are automatically tracked for caches with `scope = "global"`:
+
+```rust
+use cachelito::cache;
+
+#[cache(scope = "global", limit = 100, policy = "lru")]
+fn expensive_operation(x: i32) -> i32 {
+    // Simulate expensive work
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    x * x
+}
+
+fn main() {
+    // Make some calls
+    expensive_operation(5);  // Miss - computes
+    expensive_operation(5);  // Hit - cached
+    expensive_operation(10); // Miss - computes
+    expensive_operation(5);  // Hit - cached
+
+    // Access statistics using the registry
+    #[cfg(feature = "stats")]
+    if let Some(stats) = cachelito::stats_registry::get("expensive_operation") {
+        println!("Total accesses: {}", stats.total_accesses());
+        println!("Cache hits:     {}", stats.hits());
+        println!("Cache misses:   {}", stats.misses());
+        println!("Hit rate:       {:.2}%", stats.hit_rate() * 100.0);
+        println!("Miss rate:      {:.2}%", stats.miss_rate() * 100.0);
+    }
+}
+```
+
+Output:
+
+```
+Total accesses: 4
+Cache hits:     2
+Cache misses:   2
+Hit rate:       50.00%
+Miss rate:      50.00%
+```
+
+### Statistics Registry API
+
+The `stats_registry` module provides centralized access to all cache statistics:
+
+#### Get Statistics
+
+```rust
+use cachelito::stats_registry;
+
+// Get a snapshot of statistics for a function
+if let Some(stats) = stats_registry::get("my_function") {
+println ! ("Hits: {}", stats.hits());
+println ! ("Misses: {}", stats.misses());
+}
+
+// Get direct reference (no cloning)
+if let Some(stats) = stats_registry::get_ref("my_function") {
+println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+}
+```
+
+#### List All Cached Functions
+
+```rust
+use cachelito::stats_registry;
+
+// Get names of all registered cache functions
+let functions = stats_registry::list();
+for name in functions {
+if let Some(stats) = stats_registry::get( & name) {
+println ! ("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
+}
+}
+```
+
+#### Reset Statistics
+
+```rust
+use cachelito::stats_registry;
+
+// Reset stats for a specific function
+if stats_registry::reset("my_function") {
+println ! ("Statistics reset successfully");
+}
+
+// Clear all registrations (useful for testing)
+stats_registry::clear();
+```
+
+### Statistics Metrics
+
+The `CacheStats` struct provides the following metrics:
+
+- `hits()` - Number of successful cache lookups
+- `misses()` - Number of cache misses (computation required)
+- `total_accesses()` - Total number of get operations
+- `hit_rate()` - Ratio of hits to total accesses (0.0 to 1.0)
+- `miss_rate()` - Ratio of misses to total accesses (0.0 to 1.0)
+- `reset()` - Reset all counters to zero
+
+### Concurrent Statistics Example
+
+Statistics are thread-safe and work correctly with concurrent access:
+
+```rust
+use cachelito::cache;
+use std::thread;
+
+#[cache(scope = "global", limit = 100)]
+fn compute(n: u32) -> u32 {
+    n * n
+}
+
+fn main() {
+    // Spawn multiple threads
+    let handles: Vec<_> = (0..5)
+        .map(|_| {
+            thread::spawn(|| {
+                for i in 0..20 {
+                    compute(i);
+                }
+            })
+        })
+        .collect();
+
+    // Wait for completion
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Check statistics
+    #[cfg(feature = "stats")]
+    if let Some(stats) = cachelito::stats_registry::get("compute") {
+        println!("Total accesses: {}", stats.total_accesses());
+        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+        // Expected: ~80% hit rate since first thread computes,
+        // others find values in cache
+    }
+}
+```
+
+### Monitoring Cache Performance
+
+Use statistics to monitor and optimize cache performance:
+
+```rust
+use cachelito::{cache, stats_registry};
+
+#[cache(scope = "global", limit = 50, policy = "lru")]
+fn api_call(endpoint: &str) -> String {
+    // Expensive API call
+    format!("Data from {}", endpoint)
+}
+
+fn monitor_cache_health() {
+    #[cfg(feature = "stats")]
+    if let Some(stats) = stats_registry::get("api_call") {
+        let hit_rate = stats.hit_rate();
+
+        if hit_rate < 0.5 {
+            eprintln!("⚠️ Low cache hit rate: {:.2}%", hit_rate * 100.0);
+            eprintln!("Consider increasing cache limit or adjusting TTL");
+        } else if hit_rate > 0.9 {
+            println!("✅ Excellent cache performance: {:.2}%", hit_rate * 100.0);
+        }
+
+        println!("Cache stats: {} hits / {} total",
+                 stats.hits(), stats.total_accesses());
+    }
+}
+```
+
+### Important Notes
+
+- **Global scope only**: Statistics are only available for caches with `scope = "global"`
+- **Thread-local limitation**: Thread-local caches (default) track statistics internally but they are not accessible
+  via `stats_registry`
+- **Performance**: Statistics use atomic operations (minimal overhead)
+- **Feature flag**: Statistics are only compiled when the `stats` feature is enabled
+
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
@@ -646,6 +849,8 @@ Total executions: 6
 - By default, each thread maintains its own cache (use `scope = "global"` to share across threads)
 - LRU policy has O(n) overhead on cache hits for reordering (where n is the number of cached entries)
 - Global scope adds synchronization overhead due to `Mutex` usage
+- Statistics are only available for global-scoped caches (thread-local statistics are tracked but not externally
+  accessible)
 
 ## Documentation
 
@@ -659,7 +864,32 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.5.0
+### Latest Release: Version 0.6.0
+
+**Highlights:**
+
+- 📈 **Cache Statistics** - Track hit/miss rates and performance metrics with the `stats` feature
+- 🎯 **Stats Registry** - Centralized API for querying statistics: `stats_registry::get("function_name")`
+- 🔍 **Performance Monitoring** - Monitor cache effectiveness with detailed metrics
+- ⚡ **Thread-safe Statistics** - Atomic counters for concurrent access
+- 📊 **Rich Metrics** - Access hits, misses, total accesses, hit rate, and miss rate
+- 🧹 **Statistics Management** - Reset, clear, and list all cached functions
+
+**Statistics Features:**
+
+```rust
+// Enable with feature flag
+cachelito = { version = "0.6.0", features = ["stats"] }
+
+// Access statistics
+if let Some(stats) = cachelito::stats_registry::get("my_function") {
+println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+}
+```
+
+For full details, see the [complete changelog](CHANGELOG.md).
+
+### Previous Release: Version 0.5.0
 
 **Highlights:**
 

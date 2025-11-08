@@ -34,6 +34,9 @@ mod thread_local_cache;
 #[cfg(feature = "stats")]
 mod stats;
 
+#[cfg(feature = "stats")]
+pub mod stats_registry;
+
 pub use cache_entry::CacheEntry;
 pub use eviction_policy::EvictionPolicy;
 pub use global_cache::GlobalCache;

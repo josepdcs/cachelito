@@ -404,8 +404,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     // For global scope we will generate `static` Lazy Mutex maps; for thread we use thread_local!
     // We use cachelito_core::CacheEntry<#ret_type> as stored value in both cases.
 
-    // Generate stats accessor function name
-    let stats_fn_name = format_ident!("{}_stats", ident);
+    let fn_name_str = ident.to_string();
 
     let expanded = if is_result {
         quote! {
@@ -448,6 +447,14 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     #[cfg(feature = "stats")]
                     static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> = once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
+                    #[cfg(feature = "stats")]
+                    {
+                        use std::sync::Once;
+                        static REGISTER_ONCE: Once = Once::new();
+                        REGISTER_ONCE.call_once(|| {
+                            cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
+                        });
+                    }
 
                     let __cache = GlobalCache::<#ret_type>::new(
                         &#cache_ident,
@@ -468,44 +475,6 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let __result = (|| #block)();
                     __cache.insert_result(&__key, &__result);
                     __result
-                }
-            }
-
-            /// Returns a reference to the cache statistics (only available with `stats` feature).
-            #[cfg(feature = "stats")]
-            #[allow(dead_code)]
-            pub fn #stats_fn_name() -> cachelito_core::CacheStats {
-                use ::cachelito_core::CacheScope;
-
-                let __scope = #scope_expr;
-
-                if __scope == cachelito_core::CacheScope::ThreadLocal {
-                    // For thread-local, we need to access the cache instance and clone stats
-                    use ::std::collections::VecDeque;
-                    use ::std::cell::RefCell;
-                    use ::cachelito_core::{CacheEntry, ThreadLocalCache};
-
-                    thread_local! {
-                        static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
-                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                    }
-
-                    let __cache = ThreadLocalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr
-                    );
-
-                    __cache.stats().clone()
-                } else {
-                    // For global, clone the Lazy static
-                    static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, cachelito_core::CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
-                    static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::VecDeque<String>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::VecDeque::new()));
-                    static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> = once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
-
-                    (*#stats_ident).clone()
                 }
             }
         }
@@ -547,6 +516,14 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     #[cfg(feature = "stats")]
                     static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> = once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
+                    #[cfg(feature = "stats")]
+                    {
+                        use std::sync::Once;
+                        static REGISTER_ONCE: Once = Once::new();
+                        REGISTER_ONCE.call_once(|| {
+                            cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
+                        });
+                    }
 
                     let __cache = GlobalCache::<#ret_type>::new(
                         &#cache_ident,
@@ -569,43 +546,6 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
 
-            /// Returns a reference to the cache statistics (only available with `stats` feature).
-            #[cfg(feature = "stats")]
-            #[allow(dead_code)]
-            pub fn #stats_fn_name() -> cachelito_core::CacheStats {
-                use ::cachelito_core::CacheScope;
-
-                let __scope = #scope_expr;
-
-                if __scope == cachelito_core::CacheScope::ThreadLocal {
-                    // For thread-local, we need to access the cache instance and clone stats
-                    use ::std::collections::VecDeque;
-                    use ::std::cell::RefCell;
-                    use ::cachelito_core::{CacheEntry, ThreadLocalCache};
-
-                    thread_local! {
-                        static #cache_ident: RefCell<std::collections::HashMap<String, CacheEntry<#ret_type>>> = RefCell::new(std::collections::HashMap::new());
-                        static #order_ident: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
-                    }
-
-                    let __cache = ThreadLocalCache::<#ret_type>::new(
-                        &#cache_ident,
-                        &#order_ident,
-                        #limit_expr,
-                        #policy_expr,
-                        #ttl_expr
-                    );
-
-                    __cache.stats().clone()
-                } else {
-                    // For global, clone the Lazy static
-                    static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, cachelito_core::CacheEntry<#ret_type>>>> = once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
-                    static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<std::collections::VecDeque<String>>> = once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(std::collections::VecDeque::new()));
-                    static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> = once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
-
-                    (*#stats_ident).clone()
-                }
-            }
         }
     };
 

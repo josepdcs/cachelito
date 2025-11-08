@@ -4,8 +4,12 @@ use cachelito::cache;
 ///
 /// This example shows how to use the `stats` feature to monitor
 /// cache hit/miss rates and performance metrics.
+///
+/// Note: Statistics are only accessible via the `_stats()` function for
+/// caches with `scope = "global"`. Thread-local caches track statistics
+/// internally but they are not accessible through the generated function.
 
-#[cache(limit = 5, policy = "lru")]
+#[cache(scope = "global", limit = 5, policy = "lru")]
 fn expensive_computation(n: u32) -> u32 {
     println!("Computing for n = {}", n);
     // Simulate expensive work
@@ -23,8 +27,8 @@ fn shared_computation(x: i32, y: i32) -> i32 {
 fn main() {
     println!("=== Cache Statistics Example ===\n");
 
-    // Example 1: Thread-local cache statistics
-    println!("--- Thread-Local Cache ---");
+    // Example 1: Global cache statistics with LRU policy
+    println!("--- Global Cache (LRU Policy) ---");
 
     // First calls - cache misses
     println!("\nFirst set of calls (cache misses):");
@@ -46,17 +50,18 @@ fn main() {
     // Get statistics
     #[cfg(feature = "stats")]
     {
-        let stats = expensive_computation_stats();
-        println!("\n📊 Thread-Local Cache Statistics:");
-        println!("  Total accesses: {}", stats.total_accesses());
-        println!("  Hits:           {}", stats.hits());
-        println!("  Misses:         {}", stats.misses());
-        println!("  Hit rate:       {:.2}%", stats.hit_rate() * 100.0);
-        println!("  Miss rate:      {:.2}%", stats.miss_rate() * 100.0);
+        if let Some(stats) = cachelito::stats_registry::get("expensive_computation") {
+            println!("\n📊 Global Cache Statistics (LRU):");
+            println!("  Total accesses: {}", stats.total_accesses());
+            println!("  Hits:           {}", stats.hits());
+            println!("  Misses:         {}", stats.misses());
+            println!("  Hit rate:       {:.2}%", stats.hit_rate() * 100.0);
+            println!("  Miss rate:      {:.2}%", stats.miss_rate() * 100.0);
+        }
     }
 
-    // Example 2: Global cache statistics
-    println!("\n--- Global Cache ---");
+    // Example 2: Global cache statistics with FIFO policy
+    println!("\n--- Global Cache (FIFO Policy) ---");
 
     println!("\nFirst calls (cache misses):");
     shared_computation(1, 2);
@@ -75,13 +80,14 @@ fn main() {
 
     #[cfg(feature = "stats")]
     {
-        let stats = shared_computation_stats();
-        println!("\n📊 Global Cache Statistics:");
-        println!("  Total accesses: {}", stats.total_accesses());
-        println!("  Hits:           {}", stats.hits());
-        println!("  Misses:         {}", stats.misses());
-        println!("  Hit rate:       {:.2}%", stats.hit_rate() * 100.0);
-        println!("  Miss rate:      {:.2}%", stats.miss_rate() * 100.0);
+        if let Some(stats) = cachelito::stats_registry::get("shared_computation") {
+            println!("\n📊 Global Cache Statistics (FIFO):");
+            println!("  Total accesses: {}", stats.total_accesses());
+            println!("  Hits:           {}", stats.hits());
+            println!("  Misses:         {}", stats.misses());
+            println!("  Hit rate:       {:.2}%", stats.hit_rate() * 100.0);
+            println!("  Miss rate:      {:.2}%", stats.miss_rate() * 100.0);
+        }
     }
 
     // Example 3: Reset statistics
@@ -89,36 +95,27 @@ fn main() {
     {
         println!("\n--- Reset Statistics ---");
 
-        let stats_before = expensive_computation_stats();
-        println!("\nBefore reset:");
-        println!(
-            "  Hits: {}, Misses: {}",
-            stats_before.hits(),
-            stats_before.misses()
-        );
+        if let Some(stats) = cachelito::stats_registry::get("expensive_computation") {
+            println!("\nBefore reset:");
+            println!("  Hits: {}, Misses: {}", stats.hits(), stats.misses());
+        }
 
-        stats_before.reset();
+        cachelito::stats_registry::reset("expensive_computation");
 
-        let stats_after = expensive_computation_stats();
-        println!("\nAfter reset:");
-        println!(
-            "  Hits: {}, Misses: {}",
-            stats_after.hits(),
-            stats_after.misses()
-        );
+        if let Some(stats) = cachelito::stats_registry::get("expensive_computation") {
+            println!("\nAfter reset:");
+            println!("  Hits: {}, Misses: {}", stats.hits(), stats.misses());
+        }
 
         // Make some new calls after reset
         println!("\nNew calls after reset:");
         expensive_computation(5); // Hit
         expensive_computation(30); // Miss
 
-        let stats_final = expensive_computation_stats();
-        println!("\nStatistics after new calls:");
-        println!(
-            "  Hits: {}, Misses: {}",
-            stats_final.hits(),
-            stats_final.misses()
-        );
+        if let Some(stats) = cachelito::stats_registry::get("expensive_computation") {
+            println!("\nStatistics after new calls:");
+            println!("  Hits: {}, Misses: {}", stats.hits(), stats.misses());
+        }
     }
 
     // Example 4: Monitoring eviction impact
@@ -126,7 +123,9 @@ fn main() {
     {
         println!("\n--- Eviction Impact on Hit Rate ---");
 
-        shared_computation_stats().reset();
+        cachelito::stats_registry::get("shared_computation")
+            .unwrap()
+            .reset();
 
         // Fill cache (limit = 10)
         println!("\nFilling cache with 10 items:");
@@ -134,7 +133,7 @@ fn main() {
             shared_computation(i, i + 1);
         }
 
-        let stats1 = shared_computation_stats();
+        let stats1 = cachelito::stats_registry::get("shared_computation").unwrap();
         println!(
             "After filling - Hit rate: {:.2}%",
             stats1.hit_rate() * 100.0
@@ -146,7 +145,7 @@ fn main() {
             shared_computation(i, i + 1);
         }
 
-        let stats2 = shared_computation_stats();
+        let stats2 = cachelito::stats_registry::get("shared_computation").unwrap();
         println!("After hits - Hit rate: {:.2}%", stats2.hit_rate() * 100.0);
 
         // Add new items causing evictions
@@ -155,7 +154,7 @@ fn main() {
             shared_computation(i, i + 1);
         }
 
-        let stats3 = shared_computation_stats();
+        let stats3 = cachelito::stats_registry::get("shared_computation").unwrap();
         println!(
             "After evictions - Hit rate: {:.2}%",
             stats3.hit_rate() * 100.0
@@ -167,7 +166,7 @@ fn main() {
             shared_computation(i, i + 1);
         }
 
-        let stats_final = shared_computation_stats();
+        let stats_final = cachelito::stats_registry::get("shared_computation").unwrap();
         println!("\nFinal statistics:");
         println!("  Total accesses: {}", stats_final.total_accesses());
         println!("  Hits:           {}", stats_final.hits());

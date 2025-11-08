@@ -20,7 +20,7 @@ fn main() {
     #[cfg(feature = "stats")]
     {
         // Reset stats at the start
-        compute_factorial_stats().reset();
+        cachelito::stats_registry::reset("compute_factorial");
 
         println!("Spawning 5 threads, each computing factorials...\n");
 
@@ -49,7 +49,7 @@ fn main() {
 
         println!("\n=== Final Statistics ===");
 
-        let stats = compute_factorial_stats();
+        let stats = cachelito::stats_registry::get("compute_factorial").unwrap();
 
         println!("\n📊 Cache Performance:");
         println!("  Total accesses: {}", stats.total_accesses());
@@ -78,13 +78,13 @@ fn main() {
         // Demonstrate statistics reset
         println!("\n=== Testing Statistics Reset ===");
 
-        let stats_before = compute_factorial_stats();
+        let stats_before = cachelito::stats_registry::get("compute_factorial").unwrap();
         println!("\nBefore reset:");
         println!("  Hits: {}", stats_before.hits());
 
         stats_before.reset();
 
-        let stats_after = compute_factorial_stats();
+        let stats_after = cachelito::stats_registry::get("compute_factorial").unwrap();
         println!("\nAfter reset:");
         println!("  Hits: {}", stats_after.hits());
         println!("  Misses: {}", stats_after.misses());
@@ -95,7 +95,7 @@ fn main() {
         compute_factorial(15); // Hit
         compute_factorial(25); // Miss (new value)
 
-        let final_stats = compute_factorial_stats();
+        let final_stats = cachelito::stats_registry::get("compute_factorial").unwrap();
         println!("\nNew statistics:");
         println!("  Hits: {}", final_stats.hits());
         println!("  Misses: {}", final_stats.misses());
