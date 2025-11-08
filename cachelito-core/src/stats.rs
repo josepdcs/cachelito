@@ -191,7 +191,12 @@ impl CacheStats {
     /// ```
     #[inline]
     pub fn miss_rate(&self) -> f64 {
-        1.0 - self.hit_rate()
+        let total = self.total_accesses();
+        if total == 0 {
+            0.0
+        } else {
+            self.misses() as f64 / total as f64
+        }
     }
 
     /// Resets all statistics counters to zero.
@@ -297,7 +302,7 @@ mod tests {
     fn test_hit_rate_no_accesses() {
         let stats = CacheStats::new();
         assert_eq!(stats.hit_rate(), 0.0);
-        assert_eq!(stats.miss_rate(), 1.0);
+        assert_eq!(stats.miss_rate(), 0.0);
     }
 
     #[test]
