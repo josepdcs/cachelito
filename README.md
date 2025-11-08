@@ -866,10 +866,10 @@ fn fetch_data_v2(id: u32) -> String {
 #[cfg(feature = "stats")]
 {
 if let Some(stats) = cachelito::stats_registry::get("api_v1") {
-println ! ("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+println!("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
 }
 if let Some(stats) = cachelito::stats_registry::get("api_v2") {
-println ! ("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+println!("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
 }
 }
 ```
