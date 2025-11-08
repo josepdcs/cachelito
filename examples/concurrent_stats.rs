@@ -3,14 +3,18 @@ use cachelito::cache;
 /// Example demonstrating concurrent cache statistics with global scope.
 ///
 /// This shows how statistics are tracked across multiple threads
-/// accessing the same global cache.
+/// accessing the same global cache (default behavior).
 
-#[cache(scope = "global", limit = 100, policy = "lru")]
+#[cache(limit = 100, policy = "lru")] // Global by default
 fn compute_factorial(n: u64) -> u64 {
     if n <= 1 {
         1
+    } else if n > 20 {
+        // Prevent overflow - factorial(21) already overflows u64
+        panic!("Factorial too large (max 20)");
     } else {
-        n * compute_factorial(n - 1)
+        n.checked_mul(compute_factorial(n - 1))
+            .expect("Factorial overflow")
     }
 }
 
@@ -82,18 +86,18 @@ fn main() {
         println!("\nBefore reset:");
         println!("  Hits: {}", stats_before.hits());
 
-        stats_before.reset();
+        cachelito::stats_registry::reset("compute_factorial");
 
         let stats_after = cachelito::stats_registry::get("compute_factorial").unwrap();
         println!("\nAfter reset:");
         println!("  Hits: {}", stats_after.hits());
         println!("  Misses: {}", stats_after.misses());
 
-        // Make some calls after reset
+        // Make some calls after reset (use smaller numbers to avoid overflow)
         println!("\nMaking a few cached calls:");
         compute_factorial(10); // Hit (already in cache)
         compute_factorial(15); // Hit
-        compute_factorial(25); // Miss (new value)
+        compute_factorial(5); // Hit (already in cache)
 
         let final_stats = cachelito::stats_registry::get("compute_factorial").unwrap();
         println!("\nNew statistics:");

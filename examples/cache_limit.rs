@@ -12,6 +12,7 @@ thread_local! {
 /// Simulates a slow addition operation with a cache limit of 2 entries.
 ///
 /// Uses LRU (Least Recently Used) eviction policy.
+//#[cfg(feature = "stats")]
 #[cache(limit = 2, policy = "lru")]
 fn slow_add(a: u32, b: u32) -> u32 {
     EXEC_COUNT.with(|count| {
@@ -20,6 +21,8 @@ fn slow_add(a: u32, b: u32) -> u32 {
     println!("Computing {} + {}", a, b);
     a + b
 }
+
+//#[cfg(feature = "stats")]
 fn main() {
     println!("=== Cache Limit Example (LRU) ===\n");
     // Reset counter
@@ -66,7 +69,11 @@ fn main() {
     println!("  - Call 3: slow_add(1,2) - miss");
     println!("  - Call 6: slow_add(2,2) - miss");
     println!("  - Call 7: slow_add(1,2) - miss (was evicted)");
-    assert_eq!(exec_count, 4, "Expected 4 function executions but got {}", exec_count);
+    assert_eq!(
+        exec_count, 4,
+        "Expected 4 function executions but got {}",
+        exec_count
+    );
     println!("\n✅ Cache Limit Test PASSED");
     println!("   Cache limit successfully controls memory usage.");
     println!("   LRU policy evicts least recently used entries.");

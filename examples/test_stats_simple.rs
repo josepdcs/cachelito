@@ -1,6 +1,6 @@
 use cachelito::cache;
 
-#[cache(scope = "global")]
+#[cache] // Global by default
 fn simple_fn(x: i32) -> i32 {
     println!("Computing {}", x);
     x * 2

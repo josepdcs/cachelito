@@ -11,9 +11,9 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 ## Features
 
 - 🚀 **Easy to use**: Simply add `#[cache]` attribute to any function or method
-- 🔒 **Thread-safe**: Uses `thread_local!` storage for cache isolation by default
-- 🌐 **Global scope**: Optional global cache shared across all threads with `scope = "global"`
+- 🌐 **Global scope by default**: Cache shared across all threads (use `scope = "thread"` for thread-local)
 - ⚡ **High-performance synchronization**: Uses `parking_lot::RwLock` for global caches, enabling concurrent reads
+- 🔒 **Thread-local option**: Optional thread-local storage with `scope = "thread"` for maximum performance
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
@@ -224,43 +224,52 @@ fn api_call(endpoint: &str) -> Result<Response, Error> {
 
 ### Global Scope Cache
 
-By default, each thread has its own cache (thread-local). Use `scope = "global"` to share the cache across all threads:
+By default, the cache is shared across all threads (global scope). Use `scope = "thread"` for thread-local caches where
+each thread has its own independent cache:
 
 ```rust
 use cachelito::cache;
 
-// Thread-local cache (default) - each thread has its own cache
+// Global cache (default) - shared across all threads
 #[cache(limit = 100)]
-fn thread_local_computation(x: i32) -> i32 {
-    // Cache is NOT shared across threads
+fn global_computation(x: i32) -> i32 {
+    // Cache IS shared across all threads
+    // Uses RwLock for thread-safe access
     x * x
 }
 
-// Global cache - shared across all threads
-#[cache(limit = 100, scope = "global")]
-fn global_computation(x: i32) -> i32 {
-    // Cache IS shared across all threads
-    // Uses Mutex for thread-safe access
+// Thread-local cache - each thread has its own cache
+#[cache(limit = 100, scope = "thread")]
+fn thread_local_computation(x: i32) -> i32 {
+    // Cache is NOT shared across threads
+    // No synchronization overhead
     x * x
 }
 ```
 
-**When to use global scope:**
+**When to use global scope (default):**
 
-- **Cross-thread sharing**: When you want all threads to benefit from cached results
-- **Expensive operations**: When the cost of computation outweighs the synchronization overhead
-- **Shared data**: When the same function is called with the same arguments across multiple threads
+- ✅ **Cross-thread sharing**: All threads benefit from cached results
+- ✅ **Statistics monitoring**: Full access to cache statistics via `stats_registry`
+- ✅ **Expensive operations**: Computation cost outweighs synchronization overhead
+- ✅ **Shared data**: Same function called with same arguments across threads
+
+**When to use thread-local (`scope = "thread"`):**
+
+- ✅ **Maximum performance**: No synchronization overhead
+- ✅ **Thread isolation**: Each thread needs independent cache
+- ✅ **Thread-specific data**: Different threads process different data
 
 **Performance considerations:**
 
-- **Thread-local** (default): No synchronization overhead, but cache is not shared
-- **Global**: Uses `Mutex` for synchronization, adds overhead but shares cache across threads
+- **Global** (default): Uses `RwLock` for synchronization, allows concurrent reads
+- **Thread-local**: No synchronization overhead, but cache is not shared
 
 ```rust
 use cachelito::cache;
 use std::thread;
 
-#[cache(scope = "global", limit = 50)]
+#[cache(limit = 50)]  // Global by default
 fn expensive_api_call(endpoint: &str) -> String {
     // This expensive call is cached globally
     // All threads benefit from the same cache
@@ -661,12 +670,12 @@ cachelito = { version = "0.6.0", features = ["stats"] }
 
 ### Basic Usage
 
-Statistics are automatically tracked for caches with `scope = "global"`:
+Statistics are automatically tracked for global caches (default):
 
 ```rust
 use cachelito::cache;
 
-#[cache(scope = "global", limit = 100, policy = "lru")]
+#[cache(limit = 100, policy = "lru")]  // Global by default
 fn expensive_operation(x: i32) -> i32 {
     // Simulate expensive work
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -770,7 +779,7 @@ Statistics are thread-safe and work correctly with concurrent access:
 use cachelito::cache;
 use std::thread;
 
-#[cache(scope = "global", limit = 100)]
+#[cache(limit = 100)]  // Global by default
 fn compute(n: u32) -> u32 {
     n * n
 }
@@ -810,7 +819,7 @@ Use statistics to monitor and optimize cache performance:
 ```rust
 use cachelito::{cache, stats_registry};
 
-#[cache(scope = "global", limit = 50, policy = "lru")]
+#[cache(limit = 50, policy = "lru")]  // Global by default
 fn api_call(endpoint: &str) -> String {
     // Expensive API call
     format!("Data from {}", endpoint)
@@ -841,14 +850,14 @@ Use the `name` attribute to give your caches custom identifiers in the statistic
 ```rust
 use cachelito::cache;
 
-// API V1 - using custom name
-#[cache(scope = "global", limit = 50, name = "api_v1")]
+// API V1 - using custom name (global by default)
+#[cache(limit = 50, name = "api_v1")]
 fn fetch_data(id: u32) -> String {
     format!("V1 Data for ID {}", id)
 }
 
-// API V2 - using custom name
-#[cache(scope = "global", limit = 50, name = "api_v2")]
+// API V2 - using custom name (global by default)
+#[cache(limit = 50, name = "api_v2")]
 fn fetch_data_v2(id: u32) -> String {
     format!("V2 Data for ID {}", id)
 }
@@ -876,8 +885,8 @@ println ! ("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
 
 ### Important Notes
 
-- **Global scope only**: Statistics are only available via `stats_registry` for caches with `scope = "global"`
-- **Thread-local statistics**: Thread-local caches (default) **DO track statistics** internally via
+- **Global scope by default**: Statistics are automatically available via `stats_registry` (default behavior)
+- **Thread-local statistics**: Thread-local caches (`scope = "thread"`) **DO track statistics** internally via
   the `ThreadLocalCache::stats` field, but these are **NOT accessible via `stats_registry::get()`**
   due to architectural limitations. See [THREAD_LOCAL_STATS.md](THREAD_LOCAL_STATS.md) for a detailed explanation.
 - **Performance**: Statistics use atomic operations (minimal overhead)
@@ -887,18 +896,18 @@ println ! ("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
 
 - Each thread has its own independent cache and statistics
 - Thread-local statics (`thread_local!`) cannot be registered in a global registry
-- To access statistics programmatically, use `scope = "global"`
+- Global scope (default) provides full statistics access via `stats_registry`
 - Thread-local stats are still useful for testing and internal debugging
 
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
 - The function must be deterministic for correct caching behavior
-- By default, each thread maintains its own cache (use `scope = "global"` to share across threads)
+- Cache is global by default (use `scope = "thread"` for thread-local isolation)
 - LRU policy has O(n) overhead on cache hits for reordering (where n is the number of cached entries)
-- Global scope adds synchronization overhead due to `Mutex` usage
-- Statistics are only available for global-scoped caches (thread-local statistics are tracked but not externally
-  accessible)
+- Global scope adds synchronization overhead (though optimized with RwLock)
+- Statistics are automatically available for global caches (default); thread-local caches track stats internally but
+  they're not accessible via `stats_registry`
 
 ## Documentation
 
@@ -916,6 +925,7 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
 **Highlights:**
 
+- 🌐 **Global scope by default** - Cache is now shared across threads by default for better statistics and sharing
 - 📈 **Cache Statistics** - Track hit/miss rates and performance metrics with the `stats` feature
 - 🎯 **Stats Registry** - Centralized API for querying statistics: `stats_registry::get("function_name")`
 - 🏷️ **Custom Cache Names** - Use `name` attribute to give caches custom identifiers: `#[cache(name = "my_cache")]`
@@ -923,6 +933,10 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 - ⚡ **Thread-safe Statistics** - Atomic counters for concurrent access
 - 📊 **Rich Metrics** - Access hits, misses, total accesses, hit rate, and miss rate
 - 🧹 **Statistics Management** - Reset, clear, and list all cached functions
+
+**Breaking Change:**
+
+- Default scope changed from `thread` to `global`. If you need thread-local caches, explicitly use `scope = "thread"`
 
 **Statistics Features:**
 

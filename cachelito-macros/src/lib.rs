@@ -26,8 +26,8 @@ use syn::parse::Parser;
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
 /// - `scope` (optional): Cache scope - where the cache is stored. Options:
-///   - `"thread"` - Thread-local storage (default, no synchronization overhead)
-///   - `"global"` - Global storage shared across all threads (uses Mutex)
+///   - `"global"` - Global storage shared across all threads (default, uses RwLock)
+///   - `"thread"` - Thread-local storage (no synchronization overhead)
 /// - `name` (optional): Custom identifier for the cache in the statistics registry.
 ///   Default: the function name. Useful when you want a more descriptive name or
 ///   when caching multiple versions of a function. Only relevant with `stats` feature.
@@ -153,16 +153,18 @@ use syn::parse::Parser;
 /// ```ignore
 /// use cachelito::cache;
 ///
-/// // Thread-local cache (default) - each thread has its own cache
+/// // Global cache (default) - shared across all threads
 /// #[cache(limit = 100)]
-/// fn thread_local_computation(x: i32) -> i32 {
+/// fn global_computation(x: i32) -> i32 {
+///     // Cache IS shared across all threads
+///     // Uses RwLock for thread-safe access
 ///     x * x
 /// }
 ///
-/// // Global cache - shared across all threads
-/// #[cache(limit = 100, scope = "global")]
-/// fn global_computation(x: i32) -> i32 {
-///     // Uses Mutex for thread-safe access
+/// // Thread-local cache - each thread has its own cache
+/// #[cache(limit = 100, scope = "thread")]
+/// fn thread_local_computation(x: i32) -> i32 {
+///     // Cache is NOT shared across threads
 ///     x * x
 /// }
 /// ```
@@ -243,7 +245,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut limit_expr = quote! { None };
     let mut policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
     let mut ttl_expr = quote! { None };
-    let mut scope_expr = quote! { cachelito_core::CacheScope::ThreadLocal };
+    let mut scope_expr = quote! { cachelito_core::CacheScope::Global }; // Changed default to Global
     let mut custom_name: Option<String> = None;
 
     for nv in parsed_args {
@@ -511,14 +513,22 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                         });
                     }
 
+                    #[cfg(feature = "stats")]
                     let __cache = GlobalCache::<#ret_type>::new(
                         &#cache_ident,
                         &#order_ident,
                         #limit_expr,
                         #policy_expr,
                         #ttl_expr,
-                        #[cfg(feature = "stats")]
                         &#stats_ident,
+                    );
+                    #[cfg(not(feature = "stats"))]
+                    let __cache = GlobalCache::<#ret_type>::new(
+                        &#cache_ident,
+                        &#order_ident,
+                        #limit_expr,
+                        #policy_expr,
+                        #ttl_expr,
                     );
 
                     let __key = #key_expr;
@@ -580,14 +590,22 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                         });
                     }
 
+                    #[cfg(feature = "stats")]
                     let __cache = GlobalCache::<#ret_type>::new(
                         &#cache_ident,
                         &#order_ident,
                         #limit_expr,
                         #policy_expr,
                         #ttl_expr,
-                        #[cfg(feature = "stats")]
                         &#stats_ident,
+                    );
+                    #[cfg(not(feature = "stats"))]
+                    let __cache = GlobalCache::<#ret_type>::new(
+                        &#cache_ident,
+                        &#order_ident,
+                        #limit_expr,
+                        #policy_expr,
+                        #ttl_expr,
                     );
 
                     let __key = #key_expr;

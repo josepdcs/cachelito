@@ -37,7 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Statistics are automatically tracked for all caches with `scope = "global"`
+- **Global scope is now the default** - Cache is shared across threads by default
+    - Use `scope = "thread"` explicitly if you need thread-local caches
+    - Better integration with statistics (automatically accessible via `stats_registry`)
+    - More intuitive behavior for most use cases
+- Statistics are automatically tracked for all caches (global by default)
 - Enhanced documentation with statistics usage examples and best practices
 - Updated README with comprehensive statistics section
 
@@ -47,7 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- None (statistics are opt-in via feature flag)
+- **Default scope changed from `thread` to `global`**
+    - If you need the old behavior (thread-local caches), add `scope = "thread"` to your `#[cache]` attributes
+    - Migration: `#[cache]` → `#[cache(scope = "thread")]` (if you want thread-local)
+    - Most users won't need to change anything as global scope is more useful in most scenarios
 
 ### Notes
 

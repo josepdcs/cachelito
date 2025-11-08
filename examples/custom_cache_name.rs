@@ -7,7 +7,7 @@ use cachelito::cache;
 
 
 // API V1 - using custom name "api_v1"
-#[cache(scope = "global", limit = 50, name = "api_v1")]
+#[cache(limit = 50, name = "api_v1")]
 fn fetch_data(id: u32) -> String {
     println!("  [V1] Fetching data for ID {}", id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -15,7 +15,7 @@ fn fetch_data(id: u32) -> String {
 }
 
 // API V2 - using custom name "api_v2"
-#[cache(scope = "global", limit = 50, name = "api_v2")]
+#[cache(limit = 50, name = "api_v2")]
 fn fetch_data_v2(id: u32) -> String {
     println!("  [V2] Fetching enhanced data for ID {}", id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -23,7 +23,7 @@ fn fetch_data_v2(id: u32) -> String {
 }
 
 // User cache - using custom descriptive name
-#[cache(scope = "global", limit = 100, name = "user_profile_cache")]
+#[cache(limit = 100, name = "user_profile_cache")]
 fn get_user_profile(user_id: u32) -> String {
     println!("  [Profile] Loading profile for user {}", user_id);
     std::thread::sleep(std::time::Duration::from_millis(150));
@@ -31,7 +31,7 @@ fn get_user_profile(user_id: u32) -> String {
 }
 
 // Default name - will use function name "expensive_computation"
-#[cache(scope = "global", limit = 50)]
+#[cache(limit = 50)]
 fn expensive_computation(n: u32) -> u32 {
     println!("  [Compute] Processing {}", n);
     std::thread::sleep(std::time::Duration::from_millis(200));

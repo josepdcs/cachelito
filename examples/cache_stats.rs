@@ -7,7 +7,8 @@ use cachelito::cache;
 ///
 /// ## Important Note about Thread-Local Caches:
 ///
-/// Thread-local caches (default scope) DO track statistics internally via the
+/// Global caches (default) automatically track statistics accessible via `stats_registry`.
+/// Thread-local caches (`scope = "thread"`) DO track statistics internally via the
 /// `ThreadLocalCache::stats` field, but these statistics are NOT accessible through
 /// `stats_registry` because:
 ///
@@ -15,14 +16,14 @@ use cachelito::cache;
 /// 2. Thread-local statics cannot be registered in a global registry
 /// 3. The macro architecture creates separate statics for each thread
 ///
-/// **To access statistics via `stats_registry::get()`, you MUST use `scope = "global"`**
+/// **To access statistics via `stats_registry::get()`, use global scope (default)**
 ///
 /// Thread-local statistics are still tracked and used internally for debugging
 /// and testing, but are not exposed through the public API.
 ///
 /// See `cachelito-core/src/thread_local_cache.rs` for the internal implementation.
 
-#[cache(scope = "global", limit = 5, policy = "lru")]
+#[cache(limit = 5, policy = "lru")] // Global by default
 fn expensive_computation(n: u32) -> u32 {
     println!("Computing for n = {}", n);
     // Simulate expensive work
@@ -30,11 +31,11 @@ fn expensive_computation(n: u32) -> u32 {
     n * n
 }
 
-#[cache(scope = "global", limit = 10, policy = "fifo")]
-fn shared_computation(x: i32, y: i32) -> i32 {
-    println!("Computing {} + {}", x, y);
+#[cache(limit = 10, policy = "fifo")] // Global by default
+fn shared_computation(a: i32, b: i32) -> i32 {
+    println!("Computing {} + {}", a, b);
     std::thread::sleep(std::time::Duration::from_millis(50));
-    x + y
+    a + b
 }
 
 fn main() {
