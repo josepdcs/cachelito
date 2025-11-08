@@ -834,13 +834,61 @@ fn monitor_cache_health() {
 }
 ```
 
+### Custom Cache Names
+
+Use the `name` attribute to give your caches custom identifiers in the statistics registry:
+
+```rust
+use cachelito::cache;
+
+// API V1 - using custom name
+#[cache(scope = "global", limit = 50, name = "api_v1")]
+fn fetch_data(id: u32) -> String {
+    format!("V1 Data for ID {}", id)
+}
+
+// API V2 - using custom name
+#[cache(scope = "global", limit = 50, name = "api_v2")]
+fn fetch_data_v2(id: u32) -> String {
+    format!("V2 Data for ID {}", id)
+}
+
+// Access statistics using custom names
+#[cfg(feature = "stats")]
+{
+if let Some(stats) = cachelito::stats_registry::get("api_v1") {
+println ! ("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+}
+if let Some(stats) = cachelito::stats_registry::get("api_v2") {
+println ! ("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+}
+}
+```
+
+**Benefits:**
+
+- **Descriptive names**: Use meaningful identifiers instead of function names
+- **Multiple versions**: Track different implementations separately
+- **Easier debugging**: Identify caches by purpose rather than function name
+- **Better monitoring**: Compare performance of different cache strategies
+
+**Default behavior:** If `name` is not provided, the function name is used as the identifier.
+
 ### Important Notes
 
-- **Global scope only**: Statistics are only available for caches with `scope = "global"`
-- **Thread-local limitation**: Thread-local caches (default) track statistics internally but they are not accessible
-  via `stats_registry`
+- **Global scope only**: Statistics are only available via `stats_registry` for caches with `scope = "global"`
+- **Thread-local statistics**: Thread-local caches (default) **DO track statistics** internally via
+  the `ThreadLocalCache::stats` field, but these are **NOT accessible via `stats_registry::get()`**
+  due to architectural limitations. See [THREAD_LOCAL_STATS.md](THREAD_LOCAL_STATS.md) for a detailed explanation.
 - **Performance**: Statistics use atomic operations (minimal overhead)
 - **Feature flag**: Statistics are only compiled when the `stats` feature is enabled
+
+**Why thread-local stats aren't in `stats_registry`:**
+
+- Each thread has its own independent cache and statistics
+- Thread-local statics (`thread_local!`) cannot be registered in a global registry
+- To access statistics programmatically, use `scope = "global"`
+- Thread-local stats are still useful for testing and internal debugging
 
 ## Limitations
 
@@ -870,6 +918,7 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
 - 📈 **Cache Statistics** - Track hit/miss rates and performance metrics with the `stats` feature
 - 🎯 **Stats Registry** - Centralized API for querying statistics: `stats_registry::get("function_name")`
+- 🏷️ **Custom Cache Names** - Use `name` attribute to give caches custom identifiers: `#[cache(name = "my_cache")]`
 - 🔍 **Performance Monitoring** - Monitor cache effectiveness with detailed metrics
 - ⚡ **Thread-safe Statistics** - Atomic counters for concurrent access
 - 📊 **Rich Metrics** - Access hits, misses, total accesses, hit rate, and miss rate
@@ -881,9 +930,17 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 // Enable with feature flag
 cachelito = { version = "0.6.0", features = ["stats"] }
 
-// Access statistics
+// Access statistics with default name (function name)
 if let Some(stats) = cachelito::stats_registry::get("my_function") {
 println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+}
+
+// Or use a custom name for better organization
+#[cache(scope = "global", name = "api_cache")]
+fn fetch_data() -> Data { ... }
+
+if let Some(stats) = cachelito::stats_registry::get("api_cache") {
+println ! ("API cache hit rate: {:.2}%", stats.hit_rate() * 100.0);
 }
 ```
 
@@ -913,5 +970,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 - [CHANGELOG](CHANGELOG.md) - Detailed version history and release notes
 - [Macro Expansion Guide](MACRO_EXPANSION.md) - How to view generated code and understand `format!("{:?}")`
+- [Thread-Local Statistics](THREAD_LOCAL_STATS.md) - Why thread-local cache stats aren't in `stats_registry` and how
+  they work
 - [API Documentation](https://docs.rs/cachelito) - Full API reference
 

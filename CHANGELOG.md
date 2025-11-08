@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `stats_registry::list()` - List all registered cache functions
     - `stats_registry::reset(name)` - Reset statistics for a specific function
     - `stats_registry::clear()` - Clear all statistics registrations
+- **Custom Cache Names**: New optional `name` attribute for `#[cache]` macro
+    - `#[cache(name = "identifier")]` - Give caches custom identifiers in the stats registry
+    - Useful for versioning APIs, descriptive names, and better monitoring
+    - Defaults to function name if not provided
 - **CacheStats metrics**:
     - `hits()` - Number of successful cache lookups
     - `misses()` - Number of cache misses
@@ -25,10 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `reset()` - Reset counters to zero
 - **Thread-safe statistics**: Using `AtomicU64` for concurrent access
 - **Automatic registration**: Global-scoped caches automatically register their statistics
-- New examples: `cache_stats`, `concurrent_stats`, `test_stats_simple`
-- Comprehensive test coverage for statistics functionality (54 tests)
+- New examples: `cache_stats`, `concurrent_stats`, `test_stats_simple`, `custom_cache_name`
+- Comprehensive test coverage for statistics functionality (91 tests total)
 - New module: `cachelito-core/src/stats_registry.rs`
 - New module: `cachelito-core/src/stats.rs`
+- New integration tests: `tests/custom_name_tests.rs`
 
 ### Changed
 

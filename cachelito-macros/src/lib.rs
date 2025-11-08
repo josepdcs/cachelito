@@ -28,6 +28,9 @@ use syn::parse::Parser;
 /// - `scope` (optional): Cache scope - where the cache is stored. Options:
 ///   - `"thread"` - Thread-local storage (default, no synchronization overhead)
 ///   - `"global"` - Global storage shared across all threads (uses Mutex)
+/// - `name` (optional): Custom identifier for the cache in the statistics registry.
+///   Default: the function name. Useful when you want a more descriptive name or
+///   when caching multiple versions of a function. Only relevant with `stats` feature.
 ///
 /// # Cache Behavior
 ///
@@ -164,6 +167,36 @@ use syn::parse::Parser;
 /// }
 /// ```
 ///
+/// ## Custom Cache Name for Statistics
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// // Use a custom name for the cache in the statistics registry
+/// #[cache(scope = "global", name = "user_api_v1")]
+/// fn fetch_user(id: u32) -> User {
+///     // The cache will be registered as "user_api_v1" instead of "fetch_user"
+///     api_call(id)
+/// }
+///
+/// #[cache(scope = "global", name = "user_api_v2")]
+/// fn fetch_user_v2(id: u32) -> UserV2 {
+///     // Different cache with its own statistics
+///     new_api_call(id)
+/// }
+///
+/// // Access statistics using the custom name
+/// #[cfg(feature = "stats")]
+/// {
+///     if let Some(stats) = cachelito::stats_registry::get("user_api_v1") {
+///         println!("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+///     }
+///     if let Some(stats) = cachelito::stats_registry::get("user_api_v2") {
+///         println!("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+///     }
+/// }
+/// ```
+///
 /// # Performance Considerations
 ///
 /// - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method
@@ -211,6 +244,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
     let mut ttl_expr = quote! { None };
     let mut scope_expr = quote! { cachelito_core::CacheScope::ThreadLocal };
+    let mut custom_name: Option<String> = None;
 
     for nv in parsed_args {
         if nv.path.is_ident("limit") {
@@ -285,6 +319,26 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
                 _ => {
                     return quote! {
                         compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`");
+                    }
+                    .into();
+                }
+            }
+        } else if nv.path.is_ident("name") {
+            match nv.value {
+                Expr::Lit(ref expr_lit) => match &expr_lit.lit {
+                    syn::Lit::Str(s) => {
+                        custom_name = Some(s.value());
+                    }
+                    _ => {
+                        return quote! {
+                            compile_error!("Invalid literal for `name`: expected string");
+                        }
+                        .into();
+                    }
+                },
+                _ => {
+                    return quote! {
+                        compile_error!("Invalid syntax for `name`: expected `name = \"identifier\"`");
                     }
                     .into();
                 }
@@ -404,7 +458,8 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     // For global scope we will generate `static` Lazy Mutex maps; for thread we use thread_local!
     // We use cachelito_core::CacheEntry<#ret_type> as stored value in both cases.
 
-    let fn_name_str = ident.to_string();
+    // Use custom name if provided, otherwise use function name
+    let fn_name_str = custom_name.unwrap_or_else(|| ident.to_string());
 
     let expanded = if is_result {
         quote! {

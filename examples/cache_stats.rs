@@ -5,9 +5,22 @@ use cachelito::cache;
 /// This example shows how to use the `stats` feature to monitor
 /// cache hit/miss rates and performance metrics.
 ///
-/// Note: Statistics are only accessible via the `_stats()` function for
-/// caches with `scope = "global"`. Thread-local caches track statistics
-/// internally but they are not accessible through the generated function.
+/// ## Important Note about Thread-Local Caches:
+///
+/// Thread-local caches (default scope) DO track statistics internally via the
+/// `ThreadLocalCache::stats` field, but these statistics are NOT accessible through
+/// `stats_registry` because:
+///
+/// 1. Each thread has its own independent cache instance with its own statistics
+/// 2. Thread-local statics cannot be registered in a global registry
+/// 3. The macro architecture creates separate statics for each thread
+///
+/// **To access statistics via `stats_registry::get()`, you MUST use `scope = "global"`**
+///
+/// Thread-local statistics are still tracked and used internally for debugging
+/// and testing, but are not exposed through the public API.
+///
+/// See `cachelito-core/src/thread_local_cache.rs` for the internal implementation.
 
 #[cache(scope = "global", limit = 5, policy = "lru")]
 fn expensive_computation(n: u32) -> u32 {
