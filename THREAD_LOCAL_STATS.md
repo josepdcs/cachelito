@@ -35,11 +35,18 @@ You **cannot** access thread-local statistics via `stats_registry::get()`:
 
 ```rust
 // This ONLY works for scope = "global"
-#[cache]  // Default is thread-local
+#[cache]  // Default is now global
 fn my_function(x: i32) -> i32 { x * 2 }
 
+// This works for the default global scope
+stats_registry::get("my_function")  // ✅ Returns Some(stats)
+
+// To use thread-local scope, specify it explicitly:
+#[cache(scope = "thread")]
+fn my_thread_local_fn(x: i32) -> i32 { x * 2 }
+
 // This will return None for thread-local caches
-stats_registry::get("my_function")  // ❌ Returns None
+stats_registry::get("my_thread_local_fn")  // ❌ Returns None
 ```
 
 ## Why This Limitation Exists
