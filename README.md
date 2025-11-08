@@ -722,13 +722,13 @@ use cachelito::stats_registry;
 
 // Get a snapshot of statistics for a function
 if let Some(stats) = stats_registry::get("my_function") {
-println ! ("Hits: {}", stats.hits());
-println ! ("Misses: {}", stats.misses());
+println!("Hits: {}", stats.hits());
+println!("Misses: {}", stats.misses());
 }
 
 // Get direct reference (no cloning)
 if let Some(stats) = stats_registry::get_ref("my_function") {
-println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
 }
 ```
 
