@@ -19,8 +19,9 @@ mod tests {
     #[test]
     fn test_custom_name_registration() {
         // Call functions to trigger registration
-        test_function_with_custom_name(5);
-        test_function_default_name(5);
+        // Use unique values to avoid cache pollution
+        test_function_with_custom_name(9001);
+        test_function_default_name(9001);
 
         // Check that both are registered
         let registered = cachelito::stats_registry::list();
@@ -39,11 +40,16 @@ mod tests {
         // Reset stats for this cache
         cachelito::stats_registry::reset("custom_test_cache");
 
+        // Use unique values to avoid cache pollution from other tests
+        // The cache itself is NOT cleared by reset(), only the stats
+        let unique_val1 = 10001;
+        let unique_val2 = 10002;
+
         // Make some calls
-        test_function_with_custom_name(10);
-        test_function_with_custom_name(10); // Hit
-        test_function_with_custom_name(20);
-        test_function_with_custom_name(10); // Hit
+        test_function_with_custom_name(unique_val1);
+        test_function_with_custom_name(unique_val1); // Hit
+        test_function_with_custom_name(unique_val2);
+        test_function_with_custom_name(unique_val1); // Hit
 
         // Check statistics using custom name
         let stats = cachelito::stats_registry::get("custom_test_cache");
