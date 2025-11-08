@@ -106,7 +106,7 @@ For global caches, this works:
 
 ```rust
 static STATS: Lazy<CacheStats> = ...;  // ✅ Can take &'static reference
-stats_registry::register("name", & STATS);
+stats_registry::register("name", &STATS);
 ```
 
 For thread-local, we'd need:
