@@ -1,5 +1,5 @@
 [workspace]
-members = ["cachelito-async", "cachelito-async-macros", "cachelito-core", "cachelito-macros"]
+members = ["cachelito-async", "cachelito-async-macros", "cachelito-core", "cachelito-macros", "cachelito-macro-utils"]
 
 [package]
 name = "cachelito"
