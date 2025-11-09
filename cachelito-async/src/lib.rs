@@ -110,6 +110,9 @@
 // Re-export the macro
 pub use cachelito_async_macros::cache_async;
 
+// Re-export stats functionality from cachelito-core
+pub use cachelito_core::{stats_registry, CacheStats};
+
 // Re-export common dependencies that users might need
 pub use dashmap;
 pub use parking_lot;
@@ -117,4 +120,6 @@ pub use parking_lot;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::cache_async;
+    pub use crate::stats_registry;
+    pub use crate::CacheStats;
 }

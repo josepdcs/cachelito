@@ -3,12 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static EXEC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 async fn simple(x: u32) -> u32 {
-    use std::collections::VecDeque;
-
     static ASYNC_CACHE_SIMPLE: once_cell::sync::Lazy<dashmap::DashMap<String, (u32, u64)>> =
         once_cell::sync::Lazy::new(|| dashmap::DashMap::new());
-    static ASYNC_ORDER_SIMPLE: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> =
-        once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
 
     let __key = {
         let mut __key_parts = Vec::new();

@@ -63,6 +63,7 @@ name = "cachelito-async"
 version = "0.1.0"
 dependencies = [
  "cachelito-async-macros",
+ "cachelito-core",
  "dashmap",
  "once_cell",
  "parking_lot",
@@ -73,6 +74,7 @@ dependencies = [
 name = "cachelito-async-macros"
 version = "0.1.0"
 dependencies = [
+ "cachelito-macro-utils",
  "proc-macro2",
  "quote",
  "syn",
@@ -88,9 +90,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cachelito-macro-utils"
+version = "0.7.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "cachelito-macros"
 version = "0.7.0"
 dependencies = [
+ "cachelito-macro-utils",
  "proc-macro2",
  "quote",
  "syn",

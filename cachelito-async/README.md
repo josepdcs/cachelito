@@ -15,6 +15,7 @@ A flexible and efficient async caching library for Rust async/await functions.
 - 🔍 **Result caching** - Only caches `Ok` values from `Result` types
 - 🌐 **Global cache** - Shared across all tasks and threads
 - ⚡ **Zero async overhead** - No `.await` needed for cache operations
+- 📈 **Statistics** - Track cache hit/miss rates and performance metrics
 
 ## Installation
 
@@ -42,7 +43,7 @@ async fn expensive_operation(x: u32) -> u32 {
 async fn main() {
     // First call: sleeps for 1 second
     let result = expensive_operation(5).await;
-    
+
     // Second call: returns immediately from cache
     let result = expensive_operation(5).await;
 }
@@ -98,6 +99,52 @@ async fn api_call(endpoint: String) -> Result<Response, Error> {
     make_request(&endpoint).await
 }
 ```
+
+### Cache Statistics
+
+Track cache performance with built-in statistics:
+
+```rust
+use cachelito_async::{cache_async, stats_registry};
+
+#[cache_async]
+async fn compute(x: u32) -> u32 {
+    x * x
+}
+
+#[cache_async(name = "my_cache")]
+async fn custom(x: u32) -> u32 {
+    x + 10
+}
+
+#[tokio::main]
+async fn main() {
+    // Make some calls
+    compute(1).await;
+    compute(1).await; // cache hit
+    compute(2).await;
+
+    // Get statistics
+    if let Some(stats) = stats_registry::get("compute") {
+        println!("Hits: {}", stats.hits());
+        println!("Misses: {}", stats.misses());
+        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    }
+
+    // List all caches
+    for name in stats_registry::list() {
+        println!("Cache: {}", name);
+    }
+}
+```
+
+**Statistics Features:**
+
+- Automatic tracking of hits and misses
+- Hit/miss rates calculation
+- Global registry for all async caches
+- Custom cache naming with `name` attribute
+- Thread-safe counters using `AtomicU64`
 
 ### Combining Features
 
@@ -165,6 +212,7 @@ excellent concurrent performance without traditional locks.
 - `async_basic.rs` - Basic async caching
 - `async_lru.rs` - LRU eviction policy
 - `async_concurrent.rs` - Concurrent task access
+- `async_stats.rs` - Cache statistics tracking
 
 Run examples with:
 
@@ -172,6 +220,7 @@ Run examples with:
 cargo run --example async_basic
 cargo run --example async_lru
 cargo run --example async_concurrent
+cargo run --example async_stats
 ```
 
 ## Requirements

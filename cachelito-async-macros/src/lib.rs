@@ -2,8 +2,13 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, punctuated::Punctuated, Expr, FnArg, ItemFn, MetaNameValue, ReturnType,
-    Token,
+    parse_macro_input, punctuated::Punctuated, FnArg, ItemFn, MetaNameValue, ReturnType, Token,
+};
+
+// Import shared utilities from cachelito-macro-utils
+use cachelito_macro_utils::{
+    generate_key_expr, parse_limit_attribute, parse_name_attribute, parse_policy_attribute,
+    parse_ttl_attribute,
 };
 
 /// Parsed macro attributes
@@ -46,95 +51,6 @@ fn parse_attributes(attr: TokenStream) -> CacheAttributes {
     }
 
     attrs
-}
-
-/// Parse the `limit` attribute
-fn parse_limit_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<usize>()
-                    .expect("limit must be a positive integer");
-                quote! { Some(#val) }
-            }
-            _ => quote! { compile_error!("Invalid literal for `limit`: expected integer") },
-        },
-        _ => quote! { compile_error!("Invalid syntax for `limit`: expected `limit = <integer>`") },
-    }
-}
-
-/// Parse the `policy` attribute
-fn parse_policy_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => {
-                let val = s.value();
-                quote! { #val }
-            }
-            _ => quote! { compile_error!("Invalid literal for `policy`: expected string") },
-        },
-        _ => {
-            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`") }
-        }
-    }
-}
-
-/// Parse the `ttl` attribute
-fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<u64>()
-                    .expect("ttl must be a positive integer (seconds)");
-                quote! { Some(#val) }
-            }
-            _ => quote! { compile_error!("Invalid literal for `ttl`: expected integer (seconds)") },
-        },
-        _ => quote! { compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`") },
-    }
-}
-
-/// Parse the `name` attribute
-fn parse_name_attribute(nv: &MetaNameValue) -> Option<String> {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => Some(s.value()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Generate cache key expression based on function arguments
-fn generate_key_expr(has_self: bool, arg_pats: &[TokenStream2]) -> TokenStream2 {
-    if has_self {
-        if arg_pats.is_empty() {
-            quote! {{
-                format!("{:?}", self)
-            }}
-        } else {
-            quote! {{
-                let mut __key_parts = Vec::new();
-                __key_parts.push(format!("{:?}", self));
-                #(
-                    __key_parts.push(format!("{:?}", #arg_pats));
-                )*
-                __key_parts.join("|")
-            }}
-        }
-    } else if arg_pats.is_empty() {
-        quote! {{ String::new() }}
-    } else {
-        quote! {{
-            let mut __key_parts = Vec::new();
-            #(
-                __key_parts.push(format!("{:?}", #arg_pats));
-            )*
-            __key_parts.join("|")
-        }}
-    }
 }
 
 /// A procedural macro that adds automatic async memoization to async functions and methods.
@@ -279,6 +195,11 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Generate unique identifiers for static storage
     let cache_ident = format_ident!("ASYNC_CACHE_{}", ident.to_string().to_uppercase());
     let order_ident = format_ident!("ASYNC_ORDER_{}", ident.to_string().to_uppercase());
+    let stats_ident = format_ident!("ASYNC_STATS_{}", ident.to_string().to_uppercase());
+
+    // Determine cache name (custom or function name)
+    let fn_name_string = ident.to_string();
+    let fn_name_str = attrs.custom_name.as_ref().unwrap_or(&fn_name_string);
 
     // Generate cache key expression
     let key_expr = generate_key_expr(has_self, &arg_pats);
@@ -315,6 +236,9 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let __cached_value = __entry_ref.0.clone();
                     drop(__entry_ref);
 
+                    // Record cache hit
+                    #stats_ident.record_hit();
+
                     // Update LRU order on cache hit
                     if let Some(__limit) = #limit_expr {
                         if #policy_expr == "lru" {
@@ -331,6 +255,9 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 drop(__entry_ref);
                 #cache_ident.remove(&__key);
             }
+
+            // Record cache miss
+            #stats_ident.record_miss();
 
             // Execute original async function (cache miss or expired)
             let __result = (async #block).await;
@@ -387,6 +314,9 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let __cached_value = __entry_ref.0.clone();
                     drop(__entry_ref);
 
+                    // Record cache hit
+                    #stats_ident.record_hit();
+
                     // Update LRU order on cache hit
                     if let Some(__limit) = #limit_expr {
                         if #policy_expr == "lru" {
@@ -403,6 +333,9 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 drop(__entry_ref);
                 #cache_ident.remove(&__key);
             }
+
+            // Record cache miss
+            #stats_ident.record_miss();
 
             // Execute original async function (cache miss or expired)
             let __result = (async #block).await;
@@ -445,6 +378,14 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 once_cell::sync::Lazy::new(|| dashmap::DashMap::new());
             static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> =
                 once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));
+            static #stats_ident: once_cell::sync::Lazy<cachelito_core::CacheStats> =
+                once_cell::sync::Lazy::new(|| cachelito_core::CacheStats::new());
+
+            // Register stats in the registry (happens once on first access)
+            static STATS_REGISTERED: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
+            STATS_REGISTERED.get_or_init(|| {
+                cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
+            });
 
             #cache_logic
         }

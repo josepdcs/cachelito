@@ -2,8 +2,13 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, punctuated::Punctuated, Expr, FnArg, ItemFn, MetaNameValue, ReturnType,
-    Token,
+    parse_macro_input, punctuated::Punctuated, FnArg, ItemFn, MetaNameValue, ReturnType, Token,
+};
+
+// Import shared utilities
+use cachelito_macro_utils::{
+    parse_limit_attribute, parse_name_attribute, parse_policy_attribute as parse_policy_str,
+    parse_scope_attribute as parse_scope_str, parse_ttl_attribute,
 };
 
 /// Parsed macro attributes
@@ -52,84 +57,37 @@ fn parse_attributes(attr: TokenStream) -> CacheAttributes {
     attrs
 }
 
-/// Parse the `limit` attribute
-fn parse_limit_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<usize>()
-                    .expect("limit must be a positive integer");
-                quote! { Some(#val) }
-            }
-            _ => quote! { compile_error!("Invalid literal for `limit`: expected integer") },
-        },
-        _ => quote! { compile_error!("Invalid syntax for `limit`: expected `limit = <integer>`") },
-    }
-}
-
-/// Parse the `policy` attribute
+/// Parse the `policy` attribute and convert to EvictionPolicy enum
 fn parse_policy_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => match s.value().to_lowercase().as_str() {
-                "fifo" => quote! { cachelito_core::EvictionPolicy::FIFO },
-                "lru" => quote! { cachelito_core::EvictionPolicy::LRU },
-                _ => quote! { compile_error!("Invalid policy: expected \"fifo\" or \"lru\"") },
-            },
-            _ => quote! { compile_error!("Invalid literal for `policy`: expected string") },
-        },
-        _ => {
-            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`") }
-        }
+    let policy_str = parse_policy_str(nv);
+    let policy_str_literal = policy_str.to_string();
+
+    if policy_str_literal.contains("\"fifo\"") {
+        quote! { cachelito_core::EvictionPolicy::FIFO }
+    } else if policy_str_literal.contains("\"lru\"") {
+        quote! { cachelito_core::EvictionPolicy::LRU }
+    } else {
+        // Return the error from parse_policy_str
+        policy_str
     }
 }
 
-/// Parse the `ttl` attribute
-fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<u64>()
-                    .expect("ttl must be a positive integer (seconds)");
-                quote! { Some(#val) }
-            }
-            _ => quote! { compile_error!("Invalid literal for `ttl`: expected integer (seconds)") },
-        },
-        _ => quote! { compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`") },
-    }
-}
-
-/// Parse the `scope` attribute
+/// Parse the `scope` attribute and convert to CacheScope enum
 fn parse_scope_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => match s.value().to_lowercase().as_str() {
-                "thread" => quote! { cachelito_core::CacheScope::ThreadLocal },
-                "global" => quote! { cachelito_core::CacheScope::Global },
-                other => quote! { compile_error!(concat!("Invalid scope: ", #other)) },
-            },
-            lit => {
-                quote! { compile_error!(concat!("Invalid literal for `scope`: ", stringify!(#lit))) }
-            }
-        },
-        _ => quote! { compile_error!("Invalid syntax for `scope`") },
+    let scope_str = parse_scope_str(nv);
+    let scope_str_literal = scope_str.to_string();
+
+    if scope_str_literal.contains("\"thread\"") {
+        quote! { cachelito_core::CacheScope::ThreadLocal }
+    } else if scope_str_literal.contains("\"global\"") {
+        quote! { cachelito_core::CacheScope::Global }
+    } else {
+        // Return the error from parse_scope_str
+        scope_str
     }
 }
 
-/// Parse the `name` attribute
-fn parse_name_attribute(nv: &MetaNameValue) -> Option<String> {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => Some(s.value()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Generate cache key expression based on function arguments
+/// Generate cache key expression using CacheableKey trait
 fn generate_key_expr(has_self: bool, arg_pats: &[TokenStream2]) -> TokenStream2 {
     if has_self {
         if arg_pats.is_empty() {

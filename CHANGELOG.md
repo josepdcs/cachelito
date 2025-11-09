@@ -16,16 +16,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Always global scope - cache shared across all tasks and threads
     - Zero blocking - cache operations don't require `.await`
     - Optimized for I/O-bound async operations
+    - **Statistics support**: Automatic hit/miss tracking for async caches
 - **New crate**: `cachelito-async` (v0.1.0)
     - Dedicated async caching with `cache_async` procedural macro
     - DashMap-based storage for lock-free concurrent access
     - Thread-safe across tasks and threads
-    - Examples: `async_basic`, `async_lru`, `async_concurrent`
+    - Built-in statistics via `stats_registry`
+    - Examples: `async_basic`, `async_lru`, `async_concurrent`, `async_stats`
 - **New crate**: `cachelito-async-macros` (v0.1.0)
     - Procedural macro implementation for async caching
     - Same attribute syntax as sync version
     - LRU order tracking on cache hits
     - Result-aware caching (only caches `Ok` values)
+    - Automatic stats registration and tracking
+- **New crate**: `cachelito-macro-utils` (v0.7.0)
+    - Shared utilities for sync and async macro implementations
+    - Eliminates code duplication
+    - Common parsing functions for attributes
+    - Improved maintainability
 - **Documentation**:
     - Comprehensive README for `cachelito-async`
     - Comparison table: sync vs async caching

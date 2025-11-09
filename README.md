@@ -1047,6 +1047,7 @@ Version 0.7.0 introduces comprehensive async support through the new `cachelito-
 - 📊 **Same Policies** - FIFO and LRU eviction policies supported
 - ⏱️ **TTL Support** - Time-based expiration for async caches
 - 🎯 **Result-Aware** - Only caches `Ok` values from async Result types
+- 📈 **Statistics** - Track cache hit/miss rates and performance metrics
 
 **Quick Start:**
 

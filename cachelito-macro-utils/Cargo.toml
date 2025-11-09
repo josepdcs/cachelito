@@ -1,0 +1,19 @@
+[package]
+name = "cachelito-macro-utils"
+version = "0.7.0"
+edition = "2021"
+license = "Apache-2.0"
+
+description = "Shared utilities for cachelito procedural macros"
+authors = ["josepdcs <[email protected]>"]
+repository = "https://github.com/josepdcs/cachelito"
+homepage = "https://github.com/josepdcs/cachelito"
+documentation = "https://docs.rs/cachelito-macro-utils"
+
+rust-version = "1.70.0"
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
