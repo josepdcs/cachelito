@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2025-01-09
+
+### Added
+
+- **🔮 Async/Await Support**: New `cachelito-async` crate for async functions
+    - `#[cache_async]` macro for async function memoization
+    - Lock-free concurrent caching using [DashMap](https://docs.rs/dashmap)
+    - Support for `limit`, `policy` (FIFO/LRU), `ttl`, and `name` attributes
+    - Always global scope - cache shared across all tasks and threads
+    - Zero blocking - cache operations don't require `.await`
+    - Optimized for I/O-bound async operations
+- **New crate**: `cachelito-async` (v0.1.0)
+    - Dedicated async caching with `cache_async` procedural macro
+    - DashMap-based storage for lock-free concurrent access
+    - Thread-safe across tasks and threads
+    - Examples: `async_basic`, `async_lru`, `async_concurrent`
+- **New crate**: `cachelito-async-macros` (v0.1.0)
+    - Procedural macro implementation for async caching
+    - Same attribute syntax as sync version
+    - LRU order tracking on cache hits
+    - Result-aware caching (only caches `Ok` values)
+- **Documentation**:
+    - Comprehensive README for `cachelito-async`
+    - Comparison table: sync vs async caching
+    - Migration guide and best practices
+    - Performance considerations for async contexts
+
+### Changed
+
+- Updated main README with async support section
+- Added async examples to workspace
+- Enhanced documentation with async/await use cases
+
+### Technical Details
+
+- **Storage**: `DashMap<String, (ReturnType, u64)>` for values and timestamps
+- **Eviction**: `parking_lot::Mutex<VecDeque<String>>` for FIFO/LRU tracking
+- **Key generation**: Uses `Debug` formatting (same as sync version)
+- **Concurrency**: Lock-free reads and writes via DashMap sharding
+- **LRU**: Order updated on both cache hits and misses
+
 ## [0.6.0] - 2025-01-09
 
 ### Added

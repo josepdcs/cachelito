@@ -1,23 +1,23 @@
 [package]
-name = "cachelito-macros"
-version = "0.7.0"
+name = "cachelito-async-macros"
+version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
-description = "Procedural macros for cachelito - automatic caching attributes"
+description = "Async procedural macros for cachelito - automatic async caching attributes"
 authors = ["josepdcs <[email protected]>"]
 repository = "https://github.com/josepdcs/cachelito"
 homepage = "https://github.com/josepdcs/cachelito"
-documentation = "https://docs.rs/cachelito-macros"
+documentation = "https://docs.rs/cachelito-async-macros"
 readme = "../README.md"
-keywords = ["cache", "macro", "procedural", "attribute", "memoization"]
-categories = ["development-tools::procedural-macro-helpers", "caching"]
+keywords = ["cache", "async", "macro", "procedural", "attribute"]
+categories = ["development-tools::procedural-macro-helpers", "caching", "asynchronous"]
 
 rust-version = "1.70.0"
 
 [lib]
 proc-macro = true
-name = "cachelito_macros"
+name = "cachelito_async_macros"
 path = "src/lib.rs"
 
 [dependencies]
