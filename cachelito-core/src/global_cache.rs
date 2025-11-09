@@ -291,9 +291,16 @@ impl<R: Clone + 'static> GlobalCache<R> {
 
         if let Some(limit) = self.limit {
             if o.len() > limit {
-                if let Some(evict_key) = o.pop_front() {
-                    // Acquire write lock to remove evicted entry
-                    self.map.write().remove(&evict_key);
+                // Keep trying to evict until we find a valid entry or queue is empty
+                while let Some(evict_key) = o.pop_front() {
+                    // Check if the key still exists in the cache before removing
+                    let mut map_write = self.map.write();
+                    if map_write.contains_key(&evict_key) {
+                        map_write.remove(&evict_key);
+                        break;
+                    }
+                    // Key doesn't exist in cache (already removed), try next one
+                    drop(map_write);
                 }
             }
         }

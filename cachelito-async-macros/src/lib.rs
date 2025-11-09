@@ -272,10 +272,14 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // Handle limit
                 if let Some(__limit) = #limit_expr {
                     if #cache_ident.len() >= __limit && !#cache_ident.contains_key(&__key) {
-                        // Evict based on policy
+                        // Evict based on policy - keep trying until we find a valid entry
                         let mut __order = #order_ident.lock();
-                        if let Some(__evict_key) = __order.pop_front() {
-                            #cache_ident.remove(&__evict_key);
+                        while let Some(__evict_key) = __order.pop_front() {
+                            if #cache_ident.contains_key(&__evict_key) {
+                                #cache_ident.remove(&__evict_key);
+                                break;
+                            }
+                            // Key doesn't exist in cache (already removed), try next one
                         }
                     }
 
@@ -348,10 +352,14 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             // Handle limit
             if let Some(__limit) = #limit_expr {
                 if #cache_ident.len() >= __limit && !#cache_ident.contains_key(&__key) {
-                    // Evict based on policy
+                    // Evict based on policy - keep trying until we find a valid entry
                     let mut __order = #order_ident.lock();
-                    if let Some(__evict_key) = __order.pop_front() {
-                        #cache_ident.remove(&__evict_key);
+                    while let Some(__evict_key) = __order.pop_front() {
+                        if #cache_ident.contains_key(&__evict_key) {
+                            #cache_ident.remove(&__evict_key);
+                            break;
+                        }
+                        // Key doesn't exist in cache (already removed), try next one
                     }
                 }
 

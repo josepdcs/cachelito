@@ -1051,10 +1051,12 @@ Version 0.7.0 introduces comprehensive async support through the new `cachelito-
 
 **Quick Start:**
 
-```rust
+```
 // Add to Cargo.toml
-cachelito- async = "0.1.0"
+cachelito-async = "0.1.0"
+```
 
+```rust
 // Use in your code
 #[cache_async(limit = 100, policy = "lru", ttl = 60)]
 async fn fetch_user(id: u64) -> Result<User, Error> {
