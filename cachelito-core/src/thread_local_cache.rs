@@ -5,6 +5,9 @@ use std::thread::LocalKey;
 
 use crate::{CacheEntry, EvictionPolicy};
 
+#[cfg(feature = "stats")]
+use crate::CacheStats;
+
 /// Core cache abstraction that stores values in a thread-local HashMap with configurable limits.
 ///
 /// This cache is designed to work with static thread-local maps declared using
@@ -102,6 +105,9 @@ pub struct ThreadLocalCache<R: 'static> {
     pub policy: EvictionPolicy,
     /// Optional TTL (in seconds) for cache entries
     pub ttl: Option<u64>,
+    /// Cache statistics (when stats feature is enabled)
+    #[cfg(feature = "stats")]
+    pub stats: CacheStats,
 }
 
 impl<R: Clone + 'static> ThreadLocalCache<R> {
@@ -129,7 +135,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///
     /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, Some(60));
     /// ```
-    pub const fn new(
+    pub fn new(
         cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
         order: &'static LocalKey<RefCell<VecDeque<String>>>,
         limit: Option<usize>,
@@ -142,6 +148,8 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
             limit,
             policy,
             ttl,
+            #[cfg(feature = "stats")]
+            stats: CacheStats::new(),
         }
     }
 
@@ -190,7 +198,19 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
         // If expired, remove key from cache and return None
         if expired {
             self.remove_key(key);
+            #[cfg(feature = "stats")]
+            self.stats.record_miss();
             return None;
+        }
+
+        // Record stats
+        #[cfg(feature = "stats")]
+        {
+            if val.is_some() {
+                self.stats.record_hit();
+            } else {
+                self.stats.record_miss();
+            }
         }
 
         // If LRU, update order queue
@@ -256,6 +276,37 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                 }
             }
         });
+    }
+
+    /// Returns a reference to the cache statistics.
+    ///
+    /// This method is only available when the `stats` feature is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "stats")]
+    /// # {
+    /// # use std::cell::RefCell;
+    /// # use std::collections::{HashMap, VecDeque};
+    /// # use cachelito_core::{ThreadLocalCache, EvictionPolicy, CacheEntry};
+    /// # thread_local! {
+    /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
+    /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
+    /// # }
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
+    /// cache.insert("key1", 100);
+    /// let _ = cache.get("key1");
+    /// let _ = cache.get("key2");
+    ///
+    /// let stats = cache.stats();
+    /// assert_eq!(stats.hits(), 1);
+    /// assert_eq!(stats.misses(), 1);
+    /// # }
+    /// ```
+    #[cfg(feature = "stats")]
+    pub fn stats(&self) -> &CacheStats {
+        &self.stats
     }
 
     fn remove_key(&self, key: &str) {
@@ -465,5 +516,98 @@ mod tests {
         for i in 0..1000 {
             assert_eq!(cache.get(&format!("key{}", i)), Some(i));
         }
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn test_stats_basic() {
+        let cache = setup_cache(None, EvictionPolicy::FIFO, None);
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+
+        let _ = cache.get("k1"); // Hit
+        let _ = cache.get("k2"); // Hit
+        let _ = cache.get("k3"); // Miss
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits(), 2);
+        assert_eq!(stats.misses(), 1);
+        assert_eq!(stats.total_accesses(), 3);
+        assert!((stats.hit_rate() - 0.6666).abs() < 0.001);
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn test_stats_expired_counts_as_miss() {
+        use std::thread;
+        use std::time::Duration;
+
+        let cache = setup_cache(None, EvictionPolicy::FIFO, Some(1));
+        cache.insert("expires", 999);
+
+        // Immediate access - should be a hit
+        let _ = cache.get("expires");
+        assert_eq!(cache.stats().hits(), 1);
+        assert_eq!(cache.stats().misses(), 0);
+
+        // Wait for expiration
+        thread::sleep(Duration::from_secs(2));
+
+        // Access after expiration - should be a miss
+        let _ = cache.get("expires");
+        assert_eq!(cache.stats().hits(), 1);
+        assert_eq!(cache.stats().misses(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn test_stats_reset() {
+        let cache = setup_cache(None, EvictionPolicy::FIFO, None);
+        cache.insert("k1", 1);
+        let _ = cache.get("k1");
+        let _ = cache.get("k2");
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits(), 1);
+        assert_eq!(stats.misses(), 1);
+
+        stats.reset();
+        assert_eq!(stats.hits(), 0);
+        assert_eq!(stats.misses(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn test_stats_all_hits() {
+        let cache = setup_cache(None, EvictionPolicy::FIFO, None);
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+
+        for _ in 0..10 {
+            let _ = cache.get("k1");
+            let _ = cache.get("k2");
+        }
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits(), 20);
+        assert_eq!(stats.misses(), 0);
+        assert_eq!(stats.hit_rate(), 1.0);
+        assert_eq!(stats.miss_rate(), 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn test_stats_all_misses() {
+        let cache = setup_cache(None, EvictionPolicy::FIFO, None);
+
+        for i in 0..10 {
+            let _ = cache.get(&format!("k{}", i));
+        }
+
+        let stats = cache.stats();
+        assert_eq!(stats.hits(), 0);
+        assert_eq!(stats.misses(), 10);
+        assert_eq!(stats.hit_rate(), 0.0);
+        assert_eq!(stats.miss_rate(), 1.0);
     }
 }

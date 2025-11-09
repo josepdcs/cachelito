@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-01-09
+
+### Added
+
+- **Cache Statistics**: New `stats` feature flag for tracking cache performance metrics
+- **Stats Registry**: Centralized statistics management via `cachelito::stats_registry`
+    - `stats_registry::get(name)` - Get statistics snapshot for a cached function
+    - `stats_registry::get_ref(name)` - Get direct reference to statistics
+    - `stats_registry::list()` - List all registered cache functions
+    - `stats_registry::reset(name)` - Reset statistics for a specific function
+    - `stats_registry::clear()` - Clear all statistics registrations
+- **Custom Cache Names**: New optional `name` attribute for `#[cache]` macro
+    - `#[cache(name = "identifier")]` - Give caches custom identifiers in the stats registry
+    - Useful for versioning APIs, descriptive names, and better monitoring
+    - Defaults to function name if not provided
+- **CacheStats metrics**:
+    - `hits()` - Number of successful cache lookups
+    - `misses()` - Number of cache misses
+    - `total_accesses()` - Total cache access count
+    - `hit_rate()` - Ratio of hits to total accesses
+    - `miss_rate()` - Ratio of misses to total accesses
+    - `reset()` - Reset counters to zero
+- **Thread-safe statistics**: Using `AtomicU64` for concurrent access
+- **Automatic registration**: Global-scoped caches automatically register their statistics
+- New examples: `cache_stats`, `concurrent_stats`, `test_stats_simple`, `custom_cache_name`
+- Comprehensive test coverage for statistics functionality (91 tests total)
+- New module: `cachelito-core/src/stats_registry.rs`
+- New module: `cachelito-core/src/stats.rs`
+- New integration tests: `tests/custom_name_tests.rs`
+
+### Changed
+
+- **Global scope is now the default** - Cache is shared across threads by default
+    - Use `scope = "thread"` explicitly if you need thread-local caches
+    - Better integration with statistics (automatically accessible via `stats_registry`)
+    - More intuitive behavior for most use cases
+- Statistics are automatically tracked for all caches (global by default)
+- Enhanced documentation with statistics usage examples and best practices
+- Updated README with comprehensive statistics section
+
+### Fixed
+
+- None
+
+### Breaking Changes
+
+- **Default scope changed from `thread` to `global`**
+    - If you need the old behavior (thread-local caches), add `scope = "thread"` to your `#[cache]` attributes
+    - Migration: `#[cache]` → `#[cache(scope = "thread")]` (if you want thread-local)
+    - Most users won't need to change anything as global scope is more useful in most scenarios
+
+### Notes
+
+- Statistics are only accessible via `stats_registry` for global-scoped caches
+- Thread-local caches track statistics internally but don't expose them via the registry
+- Statistics add minimal overhead (atomic operations only)
+- Feature must be explicitly enabled: `cachelito = { version = "0.6.0", features = ["stats"] }`
+
 ## [0.5.0] - 2025-01-07
 
 ### Added

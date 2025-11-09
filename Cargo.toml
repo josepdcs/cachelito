@@ -3,7 +3,7 @@ members = ["cachelito-core", "cachelito-macros"]
 
 [package]
 name = "cachelito"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -30,15 +30,22 @@ exclude = [
     "benches/**"
 ]
 
+[features]
+default = ["stats"]
+stats = ["cachelito-core/stats"]
+
 [dependencies]
-cachelito-core = { path = "./cachelito-core", version = "0.5.0" }
-cachelito-macros = { path = "./cachelito-macros", version = "0.5.0" }
+cachelito-core = { path = "./cachelito-core", version = "0.6.0" }
+cachelito-macros = { path = "./cachelito-macros", version = "0.6.0" }
 once_cell = "1.21.3"
 parking_lot = "0.12"
 
 [lib]
 name = "cachelito"
 path = "src/lib.rs"
+
+[dev-dependencies]
+serial_test = "3.2"
 
 [badges]
 maintenance = { status = "actively-developed" }
