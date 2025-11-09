@@ -481,26 +481,6 @@ fn generate_global_branch(
 /// - **LRU overhead**: O(n) for cache hits (reordering), O(1) for misses and evictions
 /// - **TTL overhead**: O(1) expiration check on each get()
 ///
-/// # Version History
-///
-/// ## Version 0.4.0 (Current)
-/// - Added `scope` parameter for global cache across threads
-/// - Global cache support with Mutex synchronization
-/// - Enhanced documentation with global scope examples
-///
-/// ## Version 0.3.0
-/// - Added `ttl` parameter for time-to-live expiration
-/// - Automatic removal of expired entries
-/// - Enhanced documentation with TTL examples
-///
-/// ## Version 0.2.0
-/// - Added `limit` parameter for cache size control
-/// - Added `policy` parameter with FIFO and LRU support
-/// - Enhanced documentation with examples
-///
-/// ## Version 0.1.0
-/// - Initial release with basic caching functionality
-///
 #[proc_macro_attribute]
 pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse macro attributes
