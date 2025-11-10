@@ -1,54 +1,22 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, punctuated::Punctuated, ItemFn, MetaNameValue, Token};
+use syn::{parse_macro_input, ItemFn};
 
 // Import shared utilities from cachelito-macro-utils
-use cachelito_macro_utils::{
-    generate_key_expr, parse_limit_attribute, parse_name_attribute, parse_policy_attribute,
-    parse_ttl_attribute,
-};
-
-/// Parsed macro attributes
-struct CacheAttributes {
-    limit: TokenStream2,
-    policy: TokenStream2,
-    ttl: TokenStream2,
-    custom_name: Option<String>,
-}
-
-impl Default for CacheAttributes {
-    fn default() -> Self {
-        Self {
-            limit: quote! { Option::<usize>::None },
-            policy: quote! { "fifo" },
-            ttl: quote! { Option::<u64>::None },
-            custom_name: None,
-        }
-    }
-}
+use cachelito_macro_utils::{generate_key_expr, parse_async_attributes, AsyncCacheAttributes};
 
 /// Parse macro attributes from the attribute token stream
-fn parse_attributes(attr: TokenStream) -> CacheAttributes {
-    use syn::parse::Parser;
-
-    let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
-    let parsed_args = parser.parse(attr).unwrap_or_default();
-    let mut attrs = CacheAttributes::default();
-
-    for nv in parsed_args {
-        if nv.path.is_ident("limit") {
-            attrs.limit = parse_limit_attribute(&nv);
-        } else if nv.path.is_ident("policy") {
-            attrs.policy = parse_policy_attribute(&nv);
-        } else if nv.path.is_ident("ttl") {
-            attrs.ttl = parse_ttl_attribute(&nv);
-        } else if nv.path.is_ident("name") {
-            attrs.custom_name = parse_name_attribute(&nv);
+fn parse_attributes(attr: TokenStream) -> AsyncCacheAttributes {
+    let attr_stream: TokenStream2 = attr.into();
+    match parse_async_attributes(attr_stream) {
+        Ok(attrs) => attrs,
+        Err(err) => {
+            // Return default attributes with the error embedded
+            // This will cause a compile error with a helpful message
+            panic!("Failed to parse attributes: {}", err);
         }
     }
-
-    attrs
 }
 
 /// Generate the cache hit logic (check and return cached value if valid)
