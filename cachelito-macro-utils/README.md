@@ -37,7 +37,8 @@ This crate is not meant to be used directly. It's an internal dependency of:
 
 ### Data Structures
 
-- `CacheAttributes` - Struct holding parsed macro attributes with defaults
+- `SyncCacheAttributes` - Struct holding parsed macro attributes with defaults for sync macros
+- `AsyncCacheAttributes` - Struct holding parsed macro attributes with defaults for async macros
 
 ## Example
 
