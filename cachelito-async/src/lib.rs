@@ -21,7 +21,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! cachelito-async = "0.1"
+//! cachelito-async = "0.1.0"
 //! tokio = { version = "1", features = ["full"] }
 //! ```
 //!
