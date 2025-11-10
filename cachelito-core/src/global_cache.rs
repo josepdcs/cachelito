@@ -299,7 +299,6 @@ impl<R: Clone + 'static> GlobalCache<R> {
                         map_write.remove(&evict_key);
                         break;
                     }
-                    // map_write lock is released here when it goes out of scope
                 }
             }
         }
