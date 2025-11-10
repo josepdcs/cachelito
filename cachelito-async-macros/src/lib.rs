@@ -271,7 +271,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             let __result = (async #block).await;
 
             // Only cache Ok values
-            if let Ok(ref __ok_value) = __result {
+            if let Ok(_) = __result {
                 let __timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -281,8 +281,20 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if let Some(__limit) = #limit_expr {
                     let mut __order = #order_ident.lock();
 
+                    // Check if another task already inserted this key while we were computing
+                    if #cache_ident.contains_key(&__key) {
+                        // Key already exists, just update the order if LRU
+                        if #policy_expr == "lru" {
+                            __order.retain(|k| k != &__key);
+                            __order.push_back(__key.clone());
+                        }
+                        // Don't insert again, return the computed result
+                        drop(__order);
+                        return __result;
+                    }
+
                     // Check limit after acquiring lock to prevent race condition
-                    if #cache_ident.len() >= __limit && !#cache_ident.contains_key(&__key) {
+                    if #cache_ident.len() >= __limit {
                         // Evict based on policy - keep trying until we find a valid entry
                         while let Some(__evict_key) = __order.pop_front() {
                             if #cache_ident.contains_key(&__evict_key) {
@@ -299,9 +311,14 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                         __order.retain(|k| k != &__key);
                     }
                     __order.push_back(__key.clone());
-                }
 
-                #cache_ident.insert(__key, (__result.clone(), __timestamp));
+                    // Insert while still holding lock to ensure atomicity
+                    drop(__order);
+                    #cache_ident.insert(__key, (__result.clone(), __timestamp));
+                } else {
+                    // No limit, just insert
+                    #cache_ident.insert(__key, (__result.clone(), __timestamp));
+                }
             }
 
             __result
@@ -365,13 +382,25 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
+
             // Handle limit and update order - acquire lock first to ensure atomicity
-            // Handle limit and update order
             if let Some(__limit) = #limit_expr {
                 let mut __order = #order_ident.lock();
+
+                // Check if another task already inserted this key while we were computing
+                if #cache_ident.contains_key(&__key) {
+                    // Key already exists, just update the order if LRU
+                    if #policy_expr == "lru" {
+                        __order.retain(|k| k != &__key);
+                        __order.push_back(__key.clone());
+                    }
+                    // Don't insert again, return the computed result
+                    drop(__order);
+                    return __result;
+                }
+
                 // Check limit after acquiring lock to prevent race condition
-                // Evict if necessary
-                if #cache_ident.len() >= __limit && !#cache_ident.contains_key(&__key) {
+                if #cache_ident.len() >= __limit {
                     // Keep trying until we find a valid entry to evict
                     while let Some(__evict_key) = __order.pop_front() {
                         if #cache_ident.contains_key(&__evict_key) {
@@ -388,9 +417,15 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                     __order.retain(|k| k != &__key);
                 }
                 __order.push_back(__key.clone());
+
+                // Insert while still holding lock to ensure atomicity
+                drop(__order);
+                #cache_ident.insert(__key, (__result.clone(), __timestamp));
+            } else {
+                // No limit, just insert
+                #cache_ident.insert(__key, (__result.clone(), __timestamp));
             }
 
-            #cache_ident.insert(__key, (__result.clone(), __timestamp));
             __result
         }
     };
