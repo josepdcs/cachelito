@@ -124,9 +124,13 @@ fn generate_cache_insert_logic(
             // No need to retain/remove since we already verified the key doesn't exist
             __order.push_back(__key.clone());
 
-            // Insert while still holding lock to ensure atomicity
+            // Insert into cache while still holding the order lock to ensure atomicity
+            // This prevents race conditions where another task could modify the order queue
+            // between updating the queue and inserting into the cache
+            #cache_ident.insert(__key.clone(), (__result.clone(), __timestamp));
+
+            // Release the lock after insertion is complete
             drop(__order);
-            #cache_ident.insert(__key, (__result.clone(), __timestamp));
         } else {
             // No limit, just insert
             #cache_ident.insert(__key, (__result.clone(), __timestamp));
