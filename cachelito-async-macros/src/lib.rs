@@ -120,11 +120,8 @@ fn generate_cache_insert_logic(
                 }
             }
 
-            // Update order for the new entry
-            if #policy_expr == "lru" {
-                // Remove and re-add to mark as recently used
-                __order.retain(|k| k != &__key);
-            }
+            // Add the new entry to the order queue
+            // No need to retain/remove since we already verified the key doesn't exist
             __order.push_back(__key.clone());
 
             // Insert while still holding lock to ensure atomicity
