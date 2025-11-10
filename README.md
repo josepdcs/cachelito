@@ -40,6 +40,7 @@ cachelito = { version = "0.6.0", features = ["stats"] }
 
 ### For Async Functions (v0.7.0)
 
+> **Note:** `cachelito-async` uses independent versioning from `cachelito`. The version numbers do not correspond; use the latest compatible version as indicated below.
 ```toml
 [dependencies]
 cachelito-async = "0.1.0"
