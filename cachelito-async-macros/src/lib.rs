@@ -1,9 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
-use syn::{
-    parse_macro_input, punctuated::Punctuated, FnArg, ItemFn, MetaNameValue, ReturnType, Token,
-};
+use quote::quote;
+use syn::{parse_macro_input, punctuated::Punctuated, ItemFn, MetaNameValue, Token};
 
 // Import shared utilities from cachelito-macro-utils
 use cachelito_macro_utils::{
@@ -53,6 +51,124 @@ fn parse_attributes(attr: TokenStream) -> CacheAttributes {
     attrs
 }
 
+/// Generate the cache hit logic (check and return cached value if valid)
+fn generate_cache_hit_logic(
+    cache_ident: &syn::Ident,
+    order_ident: &syn::Ident,
+    stats_ident: &syn::Ident,
+    limit_expr: &TokenStream2,
+    policy_expr: &TokenStream2,
+    ttl_expr: &TokenStream2,
+) -> TokenStream2 {
+    quote! {
+        // Check cache first - return early if valid cached value exists
+        if let Some(__entry_ref) = #cache_ident.get(&__key) {
+            let __now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let __is_expired = if let Some(__ttl) = #ttl_expr {
+                __now - __entry_ref.1 > __ttl
+            } else {
+                false
+            };
+
+            if !__is_expired {
+                let __cached_value = __entry_ref.0.clone();
+                drop(__entry_ref);
+
+                // Record cache hit
+                #stats_ident.record_hit();
+
+                // Update LRU order on cache hit
+                // Verify key still exists to avoid orphaned keys in the order queue
+                if let Some(__limit) = #limit_expr {
+                    if #policy_expr == "lru" && #cache_ident.contains_key(&__key) {
+                        let mut __order = #order_ident.lock();
+                        // Double-check after acquiring lock
+                        if #cache_ident.contains_key(&__key) {
+                            __order.retain(|k| k != &__key);
+                            __order.push_back(__key.clone());
+                        }
+                    }
+                }
+
+                return __cached_value;
+            }
+
+            // Expired - remove and continue to execute
+            drop(__entry_ref);
+            #cache_ident.remove(&__key);
+
+            // Also remove from order queue to prevent orphaned keys
+            let mut __order = #order_ident.lock();
+            __order.retain(|k| k != &__key);
+        }
+
+        // Record cache miss
+        #stats_ident.record_miss();
+    }
+}
+
+/// Generate the cache insert logic (evict if needed, update order, insert)
+fn generate_cache_insert_logic(
+    cache_ident: &syn::Ident,
+    order_ident: &syn::Ident,
+    limit_expr: &TokenStream2,
+    policy_expr: &TokenStream2,
+) -> TokenStream2 {
+    quote! {
+        let __timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Handle limit and update order - acquire lock first to ensure atomicity
+        if let Some(__limit) = #limit_expr {
+            let mut __order = #order_ident.lock();
+
+            // Check if another task already inserted this key while we were computing
+            if #cache_ident.contains_key(&__key) {
+                // Key already exists, just update the order if LRU
+                if #policy_expr == "lru" {
+                    __order.retain(|k| k != &__key);
+                    __order.push_back(__key.clone());
+                }
+                // Don't insert again, return the computed result
+                drop(__order);
+                return __result;
+            }
+
+            // Check limit after acquiring lock to prevent race condition
+            if #cache_ident.len() >= __limit {
+                // Keep trying until we find a valid entry to evict
+                while let Some(__evict_key) = __order.pop_front() {
+                    if #cache_ident.contains_key(&__evict_key) {
+                        #cache_ident.remove(&__evict_key);
+                        break;
+                    }
+                    // Key doesn't exist in cache (already removed), try next one
+                }
+            }
+
+            // Update order for the new entry
+            if #policy_expr == "lru" {
+                // Remove and re-add to mark as recently used
+                __order.retain(|k| k != &__key);
+            }
+            __order.push_back(__key.clone());
+
+            // Insert while still holding lock to ensure atomicity
+            drop(__order);
+            #cache_ident.insert(__key, (__result.clone(), __timestamp));
+        } else {
+            // No limit, just insert
+            #cache_ident.insert(__key, (__result.clone(), __timestamp));
+        }
+    }
+}
+
 /// A procedural macro that adds automatic async memoization to async functions and methods.
 ///
 /// This macro transforms an async function into a cached version that stores results
@@ -100,50 +216,6 @@ fn parse_attributes(attr: TokenStream) -> CacheAttributes {
 ///     tokio::time::sleep(Duration::from_secs(1)).await;
 ///     User { id, name: format!("User {}", id) }
 /// }
-///
-/// // First call fetches and caches
-/// let user1 = fetch_user(42).await;
-/// // Second call returns cached result (instant)
-/// let user2 = fetch_user(42).await;
-/// ```
-///
-/// ## Cache with Limit and LRU Policy
-///
-/// ```ignore
-/// use cachelito_async::cache_async;
-///
-/// #[cache_async(limit = 100, policy = "lru")]
-/// async fn expensive_async_computation(x: i32) -> i32 {
-///     tokio::time::sleep(Duration::from_millis(100)).await;
-///     x * x
-/// }
-/// ```
-///
-/// ## Cache with TTL (Time To Live)
-///
-/// ```ignore
-/// use cachelito_async::cache_async;
-///
-/// #[cache_async(ttl = 60)]
-/// async fn fetch_data(endpoint: &str) -> Result<Data, Error> {
-///     // Cache expires after 60 seconds
-///     make_http_request(endpoint).await
-/// }
-/// ```
-///
-/// ## Combining All Features
-///
-/// ```ignore
-/// use cachelito_async::cache_async;
-///
-/// #[cache_async(limit = 50, policy = "lru", ttl = 300, name = "api_v1")]
-/// async fn api_call(endpoint: String) -> Result<Response, Error> {
-///     // - Max 50 entries
-///     // - LRU eviction
-///     // - 5 minute TTL
-///     // - Only Ok values cached
-///     make_request(&endpoint).await
-/// }
 /// ```
 ///
 /// # Performance Considerations
@@ -155,51 +227,52 @@ fn parse_attributes(attr: TokenStream) -> CacheAttributes {
 ///
 #[proc_macro_attribute]
 pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse macro attributes
+    let input = parse_macro_input!(item as ItemFn);
     let attrs = parse_attributes(attr);
 
-    // Parse function
-    let input = parse_macro_input!(item as ItemFn);
+    // Extract function components
     let vis = &input.vis;
     let sig = &input.sig;
-    let ident = &sig.ident;
     let block = &input.block;
+    let fn_name = &sig.ident;
+    let fn_name_string = fn_name.to_string();
+    let fn_name_str = attrs.custom_name.as_ref().unwrap_or(&fn_name_string);
 
-    // Verify that function is async
-    if sig.asyncness.is_none() {
-        return quote! {
-            compile_error!("cache_async can only be used with async functions");
-        }
-        .into();
-    }
-
-    // Extract return type (strip Future wrapper if present)
+    // Extract return type
     let ret_type = match &sig.output {
-        ReturnType::Type(_, ty) => quote! { #ty },
-        ReturnType::Default => quote! { () },
+        syn::ReturnType::Default => quote! { () },
+        syn::ReturnType::Type(_, ty) => quote! { #ty },
     };
 
-    // Parse arguments and detect self
-    let mut arg_pats = Vec::new();
+    // Collect function arguments for key generation
     let mut has_self = false;
-    for arg in sig.inputs.iter() {
+    let mut arg_pats = Vec::new();
+
+    for arg in &sig.inputs {
         match arg {
-            FnArg::Receiver(_) => has_self = true,
-            FnArg::Typed(pat_type) => {
+            syn::FnArg::Receiver(_) => {
+                has_self = true;
+            }
+            syn::FnArg::Typed(pat_type) => {
                 let pat = &pat_type.pat;
                 arg_pats.push(quote! { #pat });
             }
         }
     }
 
-    // Generate unique identifiers for static storage
-    let cache_ident = format_ident!("ASYNC_CACHE_{}", ident.to_string().to_uppercase());
-    let order_ident = format_ident!("ASYNC_ORDER_{}", ident.to_string().to_uppercase());
-    let stats_ident = format_ident!("ASYNC_STATS_{}", ident.to_string().to_uppercase());
-
-    // Determine cache name (custom or function name)
-    let fn_name_string = ident.to_string();
-    let fn_name_str = attrs.custom_name.as_ref().unwrap_or(&fn_name_string);
+    // Generate identifiers for the cache components
+    let cache_ident = syn::Ident::new(
+        &format!("__CACHE_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span(),
+    );
+    let order_ident = syn::Ident::new(
+        &format!("__ORDER_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span(),
+    );
+    let stats_ident = syn::Ident::new(
+        &format!("__STATS_{}", fn_name.to_string().to_uppercase()),
+        fn_name.span(),
+    );
 
     // Generate cache key expression
     let key_expr = generate_key_expr(has_self, &arg_pats);
@@ -214,111 +287,33 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     let policy_expr = &attrs.policy;
     let ttl_expr = &attrs.ttl;
 
-    // Generate cache insert based on Result or regular return
+    // Generate cache hit logic (shared between Result and non-Result)
+    let cache_hit_logic = generate_cache_hit_logic(
+        &cache_ident,
+        &order_ident,
+        &stats_ident,
+        limit_expr,
+        policy_expr,
+        ttl_expr,
+    );
+
+    // Generate cache insert logic (shared between Result and non-Result)
+    let cache_insert_logic =
+        generate_cache_insert_logic(&cache_ident, &order_ident, limit_expr, policy_expr);
+
+    // Generate cache logic based on Result or regular return
     let cache_logic = if is_result {
         quote! {
             let __key = #key_expr;
 
-            // Check cache first - return early if valid cached value exists
-            if let Some(__entry_ref) = #cache_ident.get(&__key) {
-                let __now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-
-                let __is_expired = if let Some(__ttl) = #ttl_expr {
-                    __now - __entry_ref.1 > __ttl
-                } else {
-                    false
-                };
-
-                if !__is_expired {
-                    let __cached_value = __entry_ref.0.clone();
-                    drop(__entry_ref);
-
-                    // Record cache hit
-                    #stats_ident.record_hit();
-
-                    // Update LRU order on cache hit
-                    // Verify key still exists to avoid orphaned keys in the order queue
-                    if let Some(__limit) = #limit_expr {
-                        if #policy_expr == "lru" && #cache_ident.contains_key(&__key) {
-                            let mut __order = #order_ident.lock();
-                            // Double-check after acquiring lock
-                            if #cache_ident.contains_key(&__key) {
-                                __order.retain(|k| k != &__key);
-                                __order.push_back(__key.clone());
-                            }
-                        }
-                    }
-
-                    return __cached_value;
-                }
-
-                // Expired - remove and continue to execute
-                drop(__entry_ref);
-                #cache_ident.remove(&__key);
-
-                // Also remove from order queue to prevent orphaned keys
-                let mut __order = #order_ident.lock();
-                __order.retain(|k| k != &__key);
-            }
-
-            // Record cache miss
-            #stats_ident.record_miss();
+            #cache_hit_logic
 
             // Execute original async function (cache miss or expired)
             let __result = (async #block).await;
 
             // Only cache Ok values
             if let Ok(_) = __result {
-                let __timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-
-                // Handle limit - acquire lock first to ensure atomicity
-                if let Some(__limit) = #limit_expr {
-                    let mut __order = #order_ident.lock();
-
-                    // Check if another task already inserted this key while we were computing
-                    if #cache_ident.contains_key(&__key) {
-                        // Key already exists, just update the order if LRU
-                        if #policy_expr == "lru" {
-                            __order.retain(|k| k != &__key);
-                            __order.push_back(__key.clone());
-                        }
-                        // Don't insert again, return the computed result
-                        drop(__order);
-                        return __result;
-                    }
-
-                    // Check limit after acquiring lock to prevent race condition
-                    if #cache_ident.len() >= __limit {
-                        // Evict based on policy - keep trying until we find a valid entry
-                        while let Some(__evict_key) = __order.pop_front() {
-                            if #cache_ident.contains_key(&__evict_key) {
-                                #cache_ident.remove(&__evict_key);
-                                break;
-                            }
-                            // Key doesn't exist in cache (already removed), try next one
-                        }
-                    }
-
-                    // Update order for the new entry
-                    if #policy_expr == "lru" {
-                        // Remove and re-add to mark as recently used
-                        __order.retain(|k| k != &__key);
-                    }
-                    __order.push_back(__key.clone());
-
-                    // Insert while still holding lock to ensure atomicity
-                    drop(__order);
-                    #cache_ident.insert(__key, (__result.clone(), __timestamp));
-                } else {
-                    // No limit, just insert
-                    #cache_ident.insert(__key, (__result.clone(), __timestamp));
-                }
+                #cache_insert_logic
             }
 
             __result
@@ -327,104 +322,12 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             let __key = #key_expr;
 
-            // Check cache first - return early if valid cached value exists
-            if let Some(__entry_ref) = #cache_ident.get(&__key) {
-                let __now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-
-                let __is_expired = if let Some(__ttl) = #ttl_expr {
-                    __now - __entry_ref.1 > __ttl
-                } else {
-                    false
-                };
-
-                if !__is_expired {
-                    let __cached_value = __entry_ref.0.clone();
-                    drop(__entry_ref);
-
-                    // Record cache hit
-                    #stats_ident.record_hit();
-
-                    // Update LRU order on cache hit
-                    // Verify key still exists to avoid orphaned keys in the order queue
-                    if let Some(__limit) = #limit_expr {
-                        if #policy_expr == "lru" && #cache_ident.contains_key(&__key) {
-                            let mut __order = #order_ident.lock();
-                            // Double-check after acquiring lock
-                            if #cache_ident.contains_key(&__key) {
-                                __order.retain(|k| k != &__key);
-                                __order.push_back(__key.clone());
-                            }
-                        }
-                    }
-
-                    return __cached_value;
-                }
-
-                // Expired - remove and continue to execute
-                drop(__entry_ref);
-                #cache_ident.remove(&__key);
-
-                // Also remove from order queue to prevent orphaned keys
-                let mut __order = #order_ident.lock();
-                __order.retain(|k| k != &__key);
-            }
-
-            // Record cache miss
-            #stats_ident.record_miss();
+            #cache_hit_logic
 
             // Execute original async function (cache miss or expired)
             let __result = (async #block).await;
 
-            let __timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            // Handle limit and update order - acquire lock first to ensure atomicity
-            if let Some(__limit) = #limit_expr {
-                let mut __order = #order_ident.lock();
-
-                // Check if another task already inserted this key while we were computing
-                if #cache_ident.contains_key(&__key) {
-                    // Key already exists, just update the order if LRU
-                    if #policy_expr == "lru" {
-                        __order.retain(|k| k != &__key);
-                        __order.push_back(__key.clone());
-                    }
-                    // Don't insert again, return the computed result
-                    drop(__order);
-                    return __result;
-                }
-
-                // Check limit after acquiring lock to prevent race condition
-                if #cache_ident.len() >= __limit {
-                    // Keep trying until we find a valid entry to evict
-                    while let Some(__evict_key) = __order.pop_front() {
-                        if #cache_ident.contains_key(&__evict_key) {
-                            #cache_ident.remove(&__evict_key);
-                            break;
-                        }
-                        // Key doesn't exist in cache (already removed), try next one
-                    }
-                }
-
-                // Update order for the new entry
-                if #policy_expr == "lru" {
-                    // Remove and re-add to mark as recently used
-                    __order.retain(|k| k != &__key);
-                }
-                __order.push_back(__key.clone());
-
-                // Insert while still holding lock to ensure atomicity
-                drop(__order);
-                #cache_ident.insert(__key, (__result.clone(), __timestamp));
-            } else {
-                // No limit, just insert
-                #cache_ident.insert(__key, (__result.clone(), __timestamp));
-            }
+            #cache_insert_logic
 
             __result
         }
