@@ -32,10 +32,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.6.0"
+cachelito = "0.7.0"
 
 # Optional: Enable statistics tracking
-cachelito = { version = "0.6.0", features = ["stats"] }
+cachelito = { version = "0.7.0", features = ["stats"] }
 ```
 
 ### For Async Functions (v0.7.0)
