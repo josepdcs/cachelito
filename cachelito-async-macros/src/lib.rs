@@ -240,11 +240,15 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                     #stats_ident.record_hit();
 
                     // Update LRU order on cache hit
+                    // Verify key still exists to avoid orphaned keys in the order queue
                     if let Some(__limit) = #limit_expr {
-                        if #policy_expr == "lru" {
+                        if #policy_expr == "lru" && #cache_ident.contains_key(&__key) {
                             let mut __order = #order_ident.lock();
-                            __order.retain(|k| k != &__key);
-                            __order.push_back(__key.clone());
+                            // Double-check after acquiring lock
+                            if #cache_ident.contains_key(&__key) {
+                                __order.retain(|k| k != &__key);
+                                __order.push_back(__key.clone());
+                            }
                         }
                     }
 
@@ -254,6 +258,12 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // Expired - remove and continue to execute
                 drop(__entry_ref);
                 #cache_ident.remove(&__key);
+
+                // Also remove from order queue if present
+                if let Some(__limit) = #limit_expr {
+                    let mut __order = #order_ident.lock();
+                    __order.retain(|k| k != &__key);
+                }
             }
 
             // Record cache miss
@@ -322,11 +332,15 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                     #stats_ident.record_hit();
 
                     // Update LRU order on cache hit
+                    // Verify key still exists to avoid orphaned keys in the order queue
                     if let Some(__limit) = #limit_expr {
-                        if #policy_expr == "lru" {
+                        if #policy_expr == "lru" && #cache_ident.contains_key(&__key) {
                             let mut __order = #order_ident.lock();
-                            __order.retain(|k| k != &__key);
-                            __order.push_back(__key.clone());
+                            // Double-check after acquiring lock
+                            if #cache_ident.contains_key(&__key) {
+                                __order.retain(|k| k != &__key);
+                                __order.push_back(__key.clone());
+                            }
                         }
                     }
 
@@ -336,6 +350,12 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // Expired - remove and continue to execute
                 drop(__entry_ref);
                 #cache_ident.remove(&__key);
+
+                // Also remove from order queue if present
+                if let Some(__limit) = #limit_expr {
+                    let mut __order = #order_ident.lock();
+                    __order.retain(|k| k != &__key);
+                }
             }
 
             // Record cache miss
@@ -349,11 +369,13 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .unwrap()
                 .as_secs();
 
-            // Handle limit
+            // Handle limit and update order
             if let Some(__limit) = #limit_expr {
+                let mut __order = #order_ident.lock();
+
+                // Evict if necessary
                 if #cache_ident.len() >= __limit && !#cache_ident.contains_key(&__key) {
-                    // Evict based on policy - keep trying until we find a valid entry
-                    let mut __order = #order_ident.lock();
+                    // Keep trying until we find a valid entry to evict
                     while let Some(__evict_key) = __order.pop_front() {
                         if #cache_ident.contains_key(&__evict_key) {
                             #cache_ident.remove(&__evict_key);
@@ -363,8 +385,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
 
-                // Update order
-                let mut __order = #order_ident.lock();
+                // Update order for the new entry
                 if #policy_expr == "lru" {
                     // Remove and re-add to mark as recently used
                     __order.retain(|k| k != &__key);
