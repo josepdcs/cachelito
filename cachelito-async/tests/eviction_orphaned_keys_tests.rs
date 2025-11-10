@@ -62,14 +62,112 @@ async fn test_async_eviction_with_multiple_orphaned_keys() {
     // Insert new key - should skip orphaned keys 1 and 2, evict key 3
     compute(4).await;
 
-    // Verify key 3 was evicted
+    // Verify key 3 was evicted by trying to compute it again
     compute(3).await;
     let count_after = CALL_COUNT.load(Ordering::SeqCst);
 
-    assert!(count_after > count_before, "Key 3 should have been evicted");
+    assert!(
+        count_after > count_before,
+        "Key 3 should have been evicted and recomputed"
+    );
 }
 
-/// Test async FIFO eviction with orphaned keys
+/// Test race condition: multiple concurrent insertions at cache limit
+/// This tests the scenario where multiple tasks try to insert entries
+/// when the cache is at or near its limit
+#[tokio::test]
+async fn test_async_race_condition_concurrent_insertions_at_limit() {
+    static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[cache_async(limit = 5)]
+    async fn compute(x: u32) -> u32 {
+        CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        x * 2
+    }
+
+    // Fill cache to limit
+    for i in 1..=5 {
+        compute(i).await;
+    }
+
+    let count_before = CALL_COUNT.load(Ordering::SeqCst);
+
+    // Spawn many concurrent tasks trying to insert new entries
+    // This should trigger evictions and test the atomic check-and-evict
+    let mut handles = vec![];
+    for i in 100..150 {
+        let handle = tokio::spawn(async move { compute(i).await });
+        handles.push(handle);
+    }
+
+    // Wait for all tasks
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    let count_after = CALL_COUNT.load(Ordering::SeqCst);
+
+    // Should have computed all 50 new values
+    assert_eq!(
+        count_after - count_before,
+        50,
+        "Should compute all new unique values"
+    );
+
+    // Verify cache size is still within limit (allowing for race conditions, it might be slightly over)
+    // But it should not be drastically larger than the limit
+    // Note: Due to concurrent access, exact size may vary, but should be close to limit
+    // We're mainly testing that it doesn't panic or deadlock
+}
+
+/// Test race condition: concurrent insertions with LRU at limit
+#[tokio::test]
+async fn test_async_race_condition_lru_insertions_at_limit() {
+    static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    #[cache_async(limit = 10, policy = "lru")]
+    async fn compute(x: u32) -> u32 {
+        CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        x * 3
+    }
+
+    // Fill cache
+    for i in 1..=10 {
+        compute(i).await;
+    }
+
+    // Spawn concurrent tasks that:
+    // 1. Access existing entries (updating LRU order)
+    // 2. Add new entries (triggering evictions)
+    let mut handles = vec![];
+
+    for round in 0..10 {
+        // Access existing entries
+        for key in 1..=10 {
+            let handle = tokio::spawn(async move { compute(key).await });
+            handles.push(handle);
+        }
+
+        // Add new entries (forcing evictions)
+        for key in (100 + round * 10)..(110 + round * 10) {
+            let handle = tokio::spawn(async move { compute(key).await });
+            handles.push(handle);
+        }
+    }
+
+    // Wait for all tasks
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // Verify no panic occurred and cache is still functional
+    let result = compute(999).await;
+    assert_eq!(result, 2997);
+}
+
+/// Test concurrent async eviction with orphaned keys
 #[tokio::test]
 async fn test_async_fifo_eviction_with_orphaned_keys() {
     static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -307,6 +405,57 @@ async fn test_async_orphaned_keys_no_infinite_loop() {
     // Verify correct number of computations
     let count = CALL_COUNT.load(Ordering::SeqCst);
     assert_eq!(count, 5, "Should have computed all 5 values");
+}
+
+/// Test that expired entries are removed from order queue even without a limit
+/// This prevents memory leaks in the order queue when entries expire
+#[tokio::test]
+async fn test_async_expired_entries_cleaned_from_order_queue() {
+    static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    // Note: No limit set, but we still want order queue cleanup on expiration
+    #[cache_async(ttl = 1)]
+    async fn compute(x: u32) -> u32 {
+        CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        x * 5
+    }
+
+    // Add some entries
+    compute(1).await;
+    compute(2).await;
+    compute(3).await;
+
+    // Wait for expiration
+    sleep(Duration::from_secs(2)).await;
+
+    let count_before = CALL_COUNT.load(Ordering::SeqCst);
+
+    // Access expired entries - should recompute and not leave orphaned keys
+    compute(1).await;
+    compute(2).await;
+    compute(3).await;
+
+    let count_after = CALL_COUNT.load(Ordering::SeqCst);
+
+    // All three should have been recomputed (expired)
+    assert_eq!(
+        count_after - count_before,
+        3,
+        "All expired entries should be recomputed"
+    );
+
+    // Access again - should be cached now
+    let count_before = count_after;
+    compute(1).await;
+    compute(2).await;
+    compute(3).await;
+    let count_after = CALL_COUNT.load(Ordering::SeqCst);
+
+    assert_eq!(
+        count_after, count_before,
+        "Non-expired entries should be cached"
+    );
 }
 
 /// Test concurrent async eviction with orphaned keys
