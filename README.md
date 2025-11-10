@@ -559,11 +559,13 @@ With Mutex:     ~40ms  (threads wait in queue)
 With `parking_lot`, the internal code is cleaner:
 
 ```rust
-// Read operation (concurrent with RwLock)
-let value = self .map.read().get(key).cloned();
+fn main() {
+    // Read operation (concurrent with RwLock)
+    let value = self.map.read().get(key).cloned();
 
-// Write operation (exclusive)
-self .map.write().insert(key, value);
+    // Write operation (exclusive)
+    self.map.write().insert(key, value);
+}
 ```
 
 ### Running the Benchmarks
@@ -831,15 +833,17 @@ The `stats_registry` module provides centralized access to all cache statistics:
 ```rust
 use cachelito::stats_registry;
 
-// Get a snapshot of statistics for a function
-if let Some(stats) = stats_registry::get("my_function") {
-println ! ("Hits: {}", stats.hits());
-println ! ("Misses: {}", stats.misses());
-}
+fn main() {
+    // Get a snapshot of statistics for a function
+    if let Some(stats) = stats_registry::get("my_function") {
+        println!("Hits: {}", stats.hits());
+        println!("Misses: {}", stats.misses());
+    }
 
-// Get direct reference (no cloning)
-if let Some(stats) = stats_registry::get_ref("my_function") {
-println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    // Get direct reference (no cloning)
+    if let Some(stats) = stats_registry::get_ref("my_function") {
+        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+  }
 }
 ```
 
@@ -848,12 +852,14 @@ println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
 ```rust
 use cachelito::stats_registry;
 
-// Get names of all registered cache functions
-let functions = stats_registry::list();
-for name in functions {
-if let Some(stats) = stats_registry::get( & name) {
-println ! ("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
-}
+fn main(){ 
+    // Get names of all registered cache functions 
+    let functions = stats_registry::list();
+    for name in functions { 
+        if let Some(stats) = stats_registry::get(&name) {
+            println!("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
+        }
+    }
 }
 ```
 
@@ -862,13 +868,15 @@ println ! ("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
 ```rust
 use cachelito::stats_registry;
 
-// Reset stats for a specific function
-if stats_registry::reset("my_function") {
-println ! ("Statistics reset successfully");
-}
+fn main(){
+    // Reset stats for a specific function
+    if stats_registry::reset("my_function") {
+        println!("Statistics reset successfully");
+    }
 
-// Clear all registrations (useful for testing)
-stats_registry::clear();
+    // Clear all registrations (useful for testing)
+    stats_registry::clear();
+}
 ```
 
 ### Statistics Metrics
@@ -973,15 +981,23 @@ fn fetch_data_v2(id: u32) -> String {
     format!("V2 Data for ID {}", id)
 }
 
-// Access statistics using custom names
-#[cfg(feature = "stats")]
-{
-if let Some(stats) = cachelito::stats_registry::get("api_v1") {
-println ! ("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
-}
-if let Some(stats) = cachelito::stats_registry::get("api_v2") {
-println ! ("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
-}
+fn main() {
+    // Make some calls
+    fetch_data(1);
+    fetch_data(1);
+    fetch_data_v2(2);
+    fetch_data_v2(2);
+    fetch_data_v2(3);
+    // Access statistics using custom names
+    #[cfg(feature = "stats")]
+    {
+        if let Some(stats) = cachelito::stats_registry::get("api_v1") {
+            println!("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+        }
+        if let Some(stats) = cachelito::stats_registry::get("api_v2") {
+            println!("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+        }
+    }
 }
 ```
 
