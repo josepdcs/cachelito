@@ -554,20 +554,6 @@ With Mutex:     ~40ms  (threads wait in queue)
 20x improvement for concurrent reads!
 ```
 
-### Code Simplification
-
-With `parking_lot`, the internal code is cleaner:
-
-```rust
-fn main() {
-    // Read operation (concurrent with RwLock)
-    let value = self.map.read().get(key).cloned();
-
-    // Write operation (exclusive)
-    self.map.write().insert(key, value);
-}
-```
-
 ### Running the Benchmarks
 
 You can run the included benchmarks to see the performance on your hardware:
@@ -841,9 +827,9 @@ fn main() {
     }
 
     // Get direct reference (no cloning)
-    if let Some(stats) = stats_registry::get_ref("my_function") {
-        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
-  }
+    if let Some(stats) = stats_registry::get_ref("my_function"){
+        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0); 
+    }
 }
 ```
 
@@ -852,7 +838,7 @@ fn main() {
 ```rust
 use cachelito::stats_registry;
 
-fn main(){ 
+fn main() { 
     // Get names of all registered cache functions 
     let functions = stats_registry::list();
     for name in functions { 
@@ -868,7 +854,7 @@ fn main(){
 ```rust
 use cachelito::stats_registry;
 
-fn main(){
+fn main() {
     // Reset stats for a specific function
     if stats_registry::reset("my_function") {
         println!("Statistics reset successfully");
