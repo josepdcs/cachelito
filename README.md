@@ -828,8 +828,8 @@ fn main() {
     }
 
     // Get direct reference (no cloning)
-    if let Some(stats) = stats_registry::get_ref("my_function"){
-        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0); 
+    if let Some(stats) = stats_registry::get_ref("my_function") {
+        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
     }
 }
 ```
