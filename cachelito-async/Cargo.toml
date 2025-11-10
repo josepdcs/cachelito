@@ -1,0 +1,38 @@
+[package]
+name = "cachelito-async"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+description = "Async caching library with multiple eviction policies for async/await functions"
+authors = ["josepdcs <[email protected]>"]
+repository = "https://github.com/josepdcs/cachelito"
+homepage = "https://github.com/josepdcs/cachelito"
+documentation = "https://docs.rs/cachelito-async"
+readme = "README.md"
+keywords = ["cache", "async", "lru", "fifo", "memoization"]
+categories = ["caching", "asynchronous"]
+
+rust-version = "1.70.0"
+
+[dependencies]
+cachelito-async-macros = { version = "0.1.0", path = "../cachelito-async-macros" }
+cachelito-core = { version = "0.7.0", path = "../cachelito-core" }
+dashmap = "6.1"
+parking_lot = "0.12"
+once_cell = "1.19"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[[example]]
+name = "async_basic"
+path = "examples/async_basic.rs"
+
+[[example]]
+name = "async_lru"
+path = "examples/async_lru.rs"
+
+[[example]]
+name = "async_concurrent"
+path = "examples/async_concurrent.rs"

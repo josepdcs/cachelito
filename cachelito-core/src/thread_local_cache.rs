@@ -268,10 +268,20 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 
             if let Some(limit) = self.limit {
                 if order.len() > limit {
-                    if let Some(evict_key) = order.pop_front() {
+                    // Keep trying to evict until we find a valid entry or queue is empty
+                    while let Some(evict_key) = order.pop_front() {
+                        let mut removed = false;
                         self.cache.with(|c| {
-                            c.borrow_mut().remove(&evict_key);
+                            let mut cache = c.borrow_mut();
+                            if cache.contains_key(&evict_key) {
+                                cache.remove(&evict_key);
+                                removed = true;
+                            }
                         });
+                        if removed {
+                            break;
+                        }
+                        // Key doesn't exist in cache (already removed), try next one
                     }
                 }
             }

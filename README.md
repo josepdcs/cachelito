@@ -20,10 +20,13 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 📊 **Eviction policies**: Choose between FIFO (First In, First Out) and LRU (Least Recently Used)
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - 📈 **Statistics**: Track cache hit/miss rates and performance metrics (with `stats` feature)
+- 🔮 **Async/await support** *(v0.7.0)*: Dedicated `cachelito-async` crate for async functions with lock-free DashMap
 - ✅ **Type-safe**: Full compile-time type checking
 - 📦 **Minimal dependencies**: Uses `parking_lot` for optimal performance
 
 ## Quick Start
+
+### For Synchronous Functions
 
 Add this to your `Cargo.toml`:
 
@@ -34,6 +37,33 @@ cachelito = "0.6.0"
 # Optional: Enable statistics tracking
 cachelito = { version = "0.6.0", features = ["stats"] }
 ```
+
+### For Async Functions (v0.7.0)
+
+> **Note:** `cachelito-async` uses independent versioning from `cachelito`. The version numbers do not correspond; use the latest compatible version as indicated below.
+```toml
+[dependencies]
+cachelito-async = "0.1.0"
+tokio = { version = "1", features = ["full"] }
+```
+
+## Which Version Should I Use?
+
+Choose the right crate based on your use case:
+
+| Use Case                | Crate                            | Macro                           | Best For                                       |
+|-------------------------|----------------------------------|---------------------------------|------------------------------------------------|
+| **Sync functions**      | `cachelito`                      | `#[cache]`                      | CPU-bound computations, mathematical functions |
+| **Async functions**     | `cachelito-async`                | `#[cache_async]`                | I/O operations, database queries, API calls    |
+| **Thread-local cache**  | `cachelito`                      | `#[cache(scope = "thread")]`    | Per-thread isolated cache                      |
+| **Global shared cache** | `cachelito` or `cachelito-async` | `#[cache]` or `#[cache_async]`  | Cross-thread/task cache sharing                |
+| **High concurrency**    | `cachelito-async`                | `#[cache_async]`                | Many concurrent async tasks                    |
+| **Statistics tracking** | `cachelito` (v0.6.0+)            | `#[cache]` with `stats` feature | Performance monitoring                         |
+
+**Quick Decision:**
+
+- 🔄 Synchronous code? → Use `cachelito`
+- ⚡ Async/await code? → Use `cachelito-async`
 
 ## Usage
 
@@ -525,18 +555,6 @@ With Mutex:     ~40ms  (threads wait in queue)
 20x improvement for concurrent reads!
 ```
 
-### Code Simplification
-
-With `parking_lot`, the internal code is cleaner:
-
-```rust
-// Read operation (concurrent with RwLock)
-let value = self .map.read().get(key).cloned();
-
-// Write operation (exclusive)
-self .map.write().insert(key, value);
-```
-
 ### Running the Benchmarks
 
 You can run the included benchmarks to see the performance on your hardware:
@@ -572,6 +590,83 @@ The `#[cache]` macro generates code that:
     - **FIFO**: Removes the oldest inserted entry
     - **LRU**: Removes the least recently accessed entry
 
+## Async/Await Support (v0.7.0)
+
+Starting with version 0.7.0, Cachelito provides dedicated support for async/await functions through the
+`cachelito-async` crate.
+
+### Installation
+
+```toml
+[dependencies]
+cachelito-async = "0.1.0"
+tokio = { version = "1", features = ["full"] }
+# or use async-std, smol, etc.
+```
+
+### Quick Example
+
+```rust
+use cachelito_async::cache_async;
+use std::time::Duration;
+
+#[cache_async(limit = 100, policy = "lru", ttl = 60)]
+async fn fetch_user(id: u64) -> Result<User, Error> {
+    // Expensive async operation (database, API call, etc.)
+    let user = database::get_user(id).await?;
+    Ok(user)
+}
+
+#[tokio::main]
+async fn main() {
+    // First call: fetches from database (~100ms)
+    let user1 = fetch_user(42).await.unwrap();
+
+    // Second call: returns cached result (instant)
+    let user2 = fetch_user(42).await.unwrap();
+
+    assert_eq!(user1.id, user2.id);
+}
+```
+
+### Key Features of Async Cache
+
+| Feature            | Sync (`#[cache]`)                       | Async (`#[cache_async]`)       |
+|--------------------|-----------------------------------------|--------------------------------|
+| **Scope**          | Global or Thread-local                  | **Always Global**              |
+| **Storage**        | `RwLock<HashMap>` or `RefCell<HashMap>` | **`DashMap`** (lock-free)      |
+| **Concurrency**    | `parking_lot::RwLock`                   | **Lock-free concurrent**       |
+| **Best for**       | CPU-bound operations                    | **I/O-bound async operations** |
+| **Blocking**       | May block on lock                       | **No blocking**                |
+| **Policies**       | FIFO, LRU                               | FIFO, LRU                      |
+| **TTL**            | ✅ Supported                             | ✅ Supported                    |
+| **Result caching** | Only `Ok` values                        | Only `Ok` values               |
+
+### Why DashMap for Async?
+
+The async version uses [DashMap](https://docs.rs/dashmap) instead of traditional locks because:
+
+- ✅ **Lock-free**: No blocking, perfect for async contexts
+- ✅ **High concurrency**: Multiple tasks can access cache simultaneously
+- ✅ **No async overhead**: Cache operations don't require `.await`
+- ✅ **Thread-safe**: Safe to share across tasks and threads
+- ✅ **Performance**: Optimized for high-concurrency scenarios
+
+### Limitations
+
+- **Always Global**: No thread-local option (not needed in async context)
+- **Cache Stampede**: Multiple concurrent requests for the same key may execute simultaneously
+  (consider using request coalescing patterns for production use)
+
+### Complete Documentation
+
+See the [`cachelito-async` README](cachelito-async/README.md) for:
+
+- Detailed API documentation
+- More examples (LRU, concurrent access, TTL)
+- Performance considerations
+- Migration guide from sync version
+
 ## Examples
 
 The library includes several comprehensive examples demonstrating different features:
@@ -605,6 +700,11 @@ cargo run --example ttl
 
 # Global scope cache (shared across threads)
 cargo run --example global_scope
+
+# Async examples (requires cachelito-async)
+cargo run --example async_basic --manifest-path cachelito-async/Cargo.toml
+cargo run --example async_lru --manifest-path cachelito-async/Cargo.toml
+cargo run --example async_concurrent --manifest-path cachelito-async/Cargo.toml
 ```
 
 ### Example Output (LRU Policy):
@@ -720,15 +820,17 @@ The `stats_registry` module provides centralized access to all cache statistics:
 ```rust
 use cachelito::stats_registry;
 
-// Get a snapshot of statistics for a function
-if let Some(stats) = stats_registry::get("my_function") {
-println!("Hits: {}", stats.hits());
-println!("Misses: {}", stats.misses());
-}
+fn main() {
+    // Get a snapshot of statistics for a function
+    if let Some(stats) = stats_registry::get("my_function") {
+        println!("Hits: {}", stats.hits());
+        println!("Misses: {}", stats.misses());
+    }
 
-// Get direct reference (no cloning)
-if let Some(stats) = stats_registry::get_ref("my_function") {
-println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    // Get direct reference (no cloning)
+    if let Some(stats) = stats_registry::get_ref("my_function") {
+        println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    }
 }
 ```
 
@@ -737,12 +839,14 @@ println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
 ```rust
 use cachelito::stats_registry;
 
-// Get names of all registered cache functions
-let functions = stats_registry::list();
-for name in functions {
-if let Some(stats) = stats_registry::get( & name) {
-println ! ("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
-}
+fn main() { 
+    // Get names of all registered cache functions 
+    let functions = stats_registry::list();
+    for name in functions { 
+        if let Some(stats) = stats_registry::get(&name) {
+            println!("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
+        }
+    }
 }
 ```
 
@@ -751,13 +855,15 @@ println ! ("{}: {} hits, {} misses", name, stats.hits(), stats.misses());
 ```rust
 use cachelito::stats_registry;
 
-// Reset stats for a specific function
-if stats_registry::reset("my_function") {
-println ! ("Statistics reset successfully");
-}
+fn main() {
+    // Reset stats for a specific function
+    if stats_registry::reset("my_function") {
+        println!("Statistics reset successfully");
+    }
 
-// Clear all registrations (useful for testing)
-stats_registry::clear();
+    // Clear all registrations (useful for testing)
+    stats_registry::clear();
+}
 ```
 
 ### Statistics Metrics
@@ -862,15 +968,23 @@ fn fetch_data_v2(id: u32) -> String {
     format!("V2 Data for ID {}", id)
 }
 
-// Access statistics using custom names
-#[cfg(feature = "stats")]
-{
-if let Some(stats) = cachelito::stats_registry::get("api_v1") {
-println!("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
-}
-if let Some(stats) = cachelito::stats_registry::get("api_v2") {
-println!("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
-}
+fn main() {
+    // Make some calls
+    fetch_data(1);
+    fetch_data(1);
+    fetch_data_v2(2);
+    fetch_data_v2(2);
+    fetch_data_v2(3);
+    // Access statistics using custom names
+    #[cfg(feature = "stats")]
+    {
+        if let Some(stats) = cachelito::stats_registry::get("api_v1") {
+            println!("V1 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+        }
+        if let Some(stats) = cachelito::stats_registry::get("api_v2") {
+            println!("V2 hit rate: {:.2}%", stats.hit_rate() * 100.0);
+        }
+    }
 }
 ```
 
@@ -921,42 +1035,61 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.6.0
+### Latest Release: Version 0.7.0
 
-**Highlights:**
+**🔮 Async/Await Support is Here!**
+
+Version 0.7.0 introduces comprehensive async support through the new `cachelito-async` crate:
+
+**New Features:**
+
+- 🚀 **Async Function Caching** - Use `#[cache_async]` for async/await functions
+- 🔓 **Lock-Free Concurrency** - DashMap provides non-blocking cache access
+- 🌐 **Global Async Cache** - Shared across all tasks and threads automatically
+- ⚡ **Zero Blocking** - Cache operations don't require `.await`
+- 📊 **Same Policies** - FIFO and LRU eviction policies supported
+- ⏱️ **TTL Support** - Time-based expiration for async caches
+- 🎯 **Result-Aware** - Only caches `Ok` values from async Result types
+- 📈 **Statistics** - Track cache hit/miss rates and performance metrics
+
+**Quick Start:**
+
+```
+// Add to Cargo.toml
+cachelito-async = "0.1.0"
+```
+
+```rust
+// Use in your code
+#[cache_async(limit = 100, policy = "lru", ttl = 60)]
+async fn fetch_user(id: u64) -> Result<User, Error> {
+    database::get_user(id).await
+}
+```
+
+**Why DashMap?**
+
+- ✅ Lock-free concurrent access
+- ✅ No blocking in async contexts
+- ✅ Excellent performance under high concurrency
+- ✅ Thread-safe without traditional locks
+
+See the [Async/Await Support](#asyncawait-support-v070) section for complete details.
+
+---
+
+### Version 0.6.0
+
+**Statistics & Global Scope:**
 
 - 🌐 **Global scope by default** - Cache is now shared across threads by default for better statistics and sharing
 - 📈 **Cache Statistics** - Track hit/miss rates and performance metrics with the `stats` feature
 - 🎯 **Stats Registry** - Centralized API for querying statistics: `stats_registry::get("function_name")`
 - 🏷️ **Custom Cache Names** - Use `name` attribute to give caches custom identifiers: `#[cache(name = "my_cache")]`
-- 🔍 **Performance Monitoring** - Monitor cache effectiveness with detailed metrics
-- ⚡ **Thread-safe Statistics** - Atomic counters for concurrent access
-- 📊 **Rich Metrics** - Access hits, misses, total accesses, hit rate, and miss rate
-- 🧹 **Statistics Management** - Reset, clear, and list all cached functions
 
 **Breaking Change:**
 
 - Default scope changed from `thread` to `global`. If you need thread-local caches, explicitly use `scope = "thread"`
-
-**Statistics Features:**
-
-```rust
-// Enable with feature flag
-cachelito = { version = "0.6.0", features = ["stats"] }
-
-// Access statistics with default name (function name)
-if let Some(stats) = cachelito::stats_registry::get("my_function") {
-println ! ("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
-}
-
-// Or use a custom name for better organization
-#[cache(scope = "global", name = "api_cache")]
-fn fetch_data() -> Data { ... }
-
-if let Some(stats) = cachelito::stats_registry::get("api_cache") {
-println ! ("API cache hit rate: {:.2}%", stats.hit_rate() * 100.0);
-}
-```
 
 For full details, see the [complete changelog](CHANGELOG.md).
 

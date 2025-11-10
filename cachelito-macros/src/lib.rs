@@ -1,164 +1,23 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::{
-    parse_macro_input, punctuated::Punctuated, Expr, FnArg, ItemFn, MetaNameValue, ReturnType,
-    Token,
+use syn::{parse_macro_input, FnArg, ItemFn, ReturnType};
+
+// Import shared utilities
+use cachelito_macro_utils::{
+    generate_key_expr_with_cacheable_key, parse_sync_attributes, SyncCacheAttributes,
 };
 
-/// Parsed macro attributes
-struct CacheAttributes {
-    limit: TokenStream2,
-    policy: TokenStream2,
-    ttl: TokenStream2,
-    scope: TokenStream2,
-    custom_name: Option<String>,
-}
-
-impl Default for CacheAttributes {
-    fn default() -> Self {
-        Self {
-            limit: quote! { None },
-            policy: quote! { cachelito_core::EvictionPolicy::FIFO },
-            ttl: quote! { None },
-            scope: quote! { cachelito_core::CacheScope::Global },
-            custom_name: None,
-        }
-    }
-}
-
 /// Parse macro attributes from the attribute token stream
-fn parse_attributes(attr: TokenStream) -> CacheAttributes {
-    use syn::parse::Parser;
-
-    let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
-    let parsed_args = parser.parse(attr).unwrap_or_default();
-    let mut attrs = CacheAttributes::default();
-
-    for nv in parsed_args {
-        if nv.path.is_ident("limit") {
-            attrs.limit = parse_limit_attribute(&nv);
-        } else if nv.path.is_ident("policy") {
-            attrs.policy = parse_policy_attribute(&nv);
-        } else if nv.path.is_ident("ttl") {
-            attrs.ttl = parse_ttl_attribute(&nv);
-        } else if nv.path.is_ident("scope") {
-            attrs.scope = parse_scope_attribute(&nv);
-        } else if nv.path.is_ident("name") {
-            attrs.custom_name = parse_name_attribute(&nv);
+fn parse_attributes(attr: TokenStream) -> SyncCacheAttributes {
+    let attr_stream: TokenStream2 = attr.into();
+    match parse_sync_attributes(attr_stream) {
+        Ok(attrs) => attrs,
+        Err(err) => {
+            // Return default attributes with the error embedded
+            // This will cause a compile error with a helpful message
+            panic!("Failed to parse attributes: {}", err);
         }
-    }
-
-    attrs
-}
-
-/// Parse the `limit` attribute
-fn parse_limit_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<usize>()
-                    .expect("limit must be a positive integer");
-                quote! { Some(#val) }
-            }
-            _ => quote! { compile_error!("Invalid literal for `limit`: expected integer") },
-        },
-        _ => quote! { compile_error!("Invalid syntax for `limit`: expected `limit = <integer>`") },
-    }
-}
-
-/// Parse the `policy` attribute
-fn parse_policy_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => match s.value().to_lowercase().as_str() {
-                "fifo" => quote! { cachelito_core::EvictionPolicy::FIFO },
-                "lru" => quote! { cachelito_core::EvictionPolicy::LRU },
-                _ => quote! { compile_error!("Invalid policy: expected \"fifo\" or \"lru\"") },
-            },
-            _ => quote! { compile_error!("Invalid literal for `policy`: expected string") },
-        },
-        _ => {
-            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`") }
-        }
-    }
-}
-
-/// Parse the `ttl` attribute
-fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<u64>()
-                    .expect("ttl must be a positive integer (seconds)");
-                quote! { Some(#val) }
-            }
-            _ => quote! { compile_error!("Invalid literal for `ttl`: expected integer (seconds)") },
-        },
-        _ => quote! { compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`") },
-    }
-}
-
-/// Parse the `scope` attribute
-fn parse_scope_attribute(nv: &MetaNameValue) -> TokenStream2 {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => match s.value().to_lowercase().as_str() {
-                "thread" => quote! { cachelito_core::CacheScope::ThreadLocal },
-                "global" => quote! { cachelito_core::CacheScope::Global },
-                other => quote! { compile_error!(concat!("Invalid scope: ", #other)) },
-            },
-            lit => {
-                quote! { compile_error!(concat!("Invalid literal for `scope`: ", stringify!(#lit))) }
-            }
-        },
-        _ => quote! { compile_error!("Invalid syntax for `scope`") },
-    }
-}
-
-/// Parse the `name` attribute
-fn parse_name_attribute(nv: &MetaNameValue) -> Option<String> {
-    match &nv.value {
-        Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Str(s) => Some(s.value()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Generate cache key expression based on function arguments
-fn generate_key_expr(has_self: bool, arg_pats: &[TokenStream2]) -> TokenStream2 {
-    if has_self {
-        if arg_pats.is_empty() {
-            quote! {{
-                use cachelito_core::CacheableKey;
-                self.to_cache_key()
-            }}
-        } else {
-            quote! {{
-                use cachelito_core::CacheableKey;
-                let mut __key_parts = Vec::new();
-                __key_parts.push(self.to_cache_key());
-                #(
-                    __key_parts.push((#arg_pats).to_cache_key());
-                )*
-                __key_parts.join("|")
-            }}
-        }
-    } else if arg_pats.is_empty() {
-        quote! {{ String::new() }}
-    } else {
-        quote! {{
-            use cachelito_core::CacheableKey;
-            let mut __key_parts = Vec::new();
-            #(
-                __key_parts.push((#arg_pats).to_cache_key());
-            )*
-            __key_parts.join("|")
-        }}
     }
 }
 
@@ -527,7 +386,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     );
 
     // Generate cache key expression
-    let key_expr = generate_key_expr(has_self, &arg_pats);
+    let key_expr = generate_key_expr_with_cacheable_key(has_self, &arg_pats);
 
     // Detect Result type
     let is_result = {
