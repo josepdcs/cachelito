@@ -130,11 +130,9 @@ where
     T: MemoryEstimator,
 {
     fn estimate_memory(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + match self {
-                Some(val) => val.estimate_memory(),
-                None => 0,
-            }
+        std::mem::size_of::<Self>() + self.as_ref().map_or(0, |val| {
+            val.estimate_memory() - std::mem::size_of_val(val)
+        })
     }
 }
 
