@@ -39,7 +39,7 @@ cachelito = "0.8.0"
 cachelito = { version = "0.8.0", features = ["stats"] }
 ```
 
-### For Async Functions (v0.7.0)
+### For Async Functions
 
 > **Note:** `cachelito-async` uses independent versioning from `cachelito`. The version numbers do not correspond; use the latest compatible version as indicated below.
 ```toml
@@ -608,7 +608,7 @@ The `#[cache]` macro generates code that:
     - **FIFO**: Removes the oldest inserted entry
     - **LRU**: Removes the least recently accessed entry
 
-## Async/Await Support (v0.7.0)
+## Async/Await Support
 
 Starting with version 0.7.0, Cachelito provides dedicated support for async/await functions through the
 `cachelito-async` crate.
@@ -617,7 +617,7 @@ Starting with version 0.7.0, Cachelito provides dedicated support for async/awai
 
 ```toml
 [dependencies]
-cachelito-async = "0.1.0"
+cachelito-async = "0.2.0"
 tokio = { version = "1", features = ["full"] }
 # or use async-std, smol, etc.
 ```
