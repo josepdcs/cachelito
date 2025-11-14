@@ -116,8 +116,11 @@ where
 {
     fn estimate_memory(&self) -> usize {
         let base = std::mem::size_of::<Self>();
-        let elements: usize = self.iter().map(|item| item.estimate_memory()).sum();
-        base + elements
+        let buffer = self.capacity() * std::mem::size_of::<T>();
+        let elements: usize = self.iter()
+            .map(|item| item.estimate_memory() - std::mem::size_of::<T>())
+            .sum();
+        base + buffer + elements
     }
 }
 
