@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Frequency counter tracking for each cache entry
     - Ideal for workloads where popular items should remain cached
     - Available for both sync (`cachelito`) and async (`cachelito-async`) versions
+- **📏 MemoryEstimator Trait**: Foundation for memory-based cache limits (v0.9.0)
+    - New `MemoryEstimator` trait for estimating value memory size
+    - Implementations for common types (`String`, `Vec`, `Option`, `Result`, tuples, etc.)
+    - Allows custom memory estimation for user types
+    - Example: `examples/memory_estimation.rs`
+    - Prepares infrastructure for future `max_memory` parameter
 - **Frequency Tracking**: 
     - `CacheEntry` now includes a `frequency` field (u64)
     - `increment_frequency()` method for updating access counts
@@ -24,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - LFU eviction scans all entries to find minimum frequency (O(n))
 - **Examples**: 
     - `examples/lfu.rs` - Demonstrates LFU policy behavior
+    - `examples/memory_estimation.rs` - Shows MemoryEstimator usage
     - `cachelito-async/examples/async_lfu.rs` - Async LFU example
 - **Tests**:
     - `tests/lfu_tests.rs` - Comprehensive LFU test suite (5 tests)
