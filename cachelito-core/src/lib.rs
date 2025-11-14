@@ -30,6 +30,7 @@ mod cache_entry;
 mod eviction_policy;
 mod global_cache;
 mod keys;
+mod memory_estimator;
 mod thread_local_cache;
 
 #[cfg(feature = "stats")]
@@ -43,6 +44,7 @@ pub use cache_entry::CacheEntry;
 pub use eviction_policy::EvictionPolicy;
 pub use global_cache::GlobalCache;
 pub use keys::{CacheableKey, DefaultCacheableKey};
+pub use memory_estimator::MemoryEstimator;
 pub use thread_local_cache::ThreadLocalCache;
 
 #[cfg(feature = "stats")]
