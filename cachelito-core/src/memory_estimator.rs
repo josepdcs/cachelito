@@ -117,7 +117,8 @@ where
     fn estimate_memory(&self) -> usize {
         let base = std::mem::size_of::<Self>();
         let buffer = self.capacity() * std::mem::size_of::<T>();
-        let elements: usize = self.iter()
+        let elements: usize = self
+            .iter()
             .map(|item| item.estimate_memory() - std::mem::size_of::<T>())
             .sum();
         base + buffer + elements
@@ -130,9 +131,10 @@ where
     T: MemoryEstimator,
 {
     fn estimate_memory(&self) -> usize {
-        std::mem::size_of::<Self>() + self.as_ref().map_or(0, |val| {
-            val.estimate_memory() - std::mem::size_of_val(val)
-        })
+        std::mem::size_of::<Self>()
+            + self
+                .as_ref()
+                .map_or(0, |val| val.estimate_memory() - std::mem::size_of_val(val))
     }
 }
 
@@ -158,7 +160,9 @@ where
     T2: MemoryEstimator,
 {
     fn estimate_memory(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.estimate_memory() + self.1.estimate_memory()
+        std::mem::size_of::<Self>()
+            + (self.0.estimate_memory() - std::mem::size_of_val(&self.0))
+            + (self.1.estimate_memory() - std::mem::size_of_val(&self.1))
     }
 }
 
@@ -170,9 +174,9 @@ where
 {
     fn estimate_memory(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.0.estimate_memory()
-            + self.1.estimate_memory()
-            + self.2.estimate_memory()
+            + (self.0.estimate_memory() - std::mem::size_of_val(&self.0))
+            + (self.1.estimate_memory() - std::mem::size_of_val(&self.1))
+            + (self.2.estimate_memory() - std::mem::size_of_val(&self.2))
     }
 }
 
@@ -214,11 +218,21 @@ mod tests {
 
     #[test]
     fn test_option_memory() {
-        let some = Some(42i32);
+        // Option with primitive type (no heap allocation)
+        let some_int = Some(42i32);
         let none: Option<i32> = None;
 
-        assert!(some.estimate_memory() > std::mem::size_of::<Option<i32>>());
+        assert_eq!(
+            some_int.estimate_memory(),
+            std::mem::size_of::<Option<i32>>()
+        );
         assert_eq!(none.estimate_memory(), std::mem::size_of::<Option<i32>>());
+
+        // Option with heap-allocated type
+        let some_string = Some(String::from("hello"));
+        let expected =
+            std::mem::size_of::<Option<String>>() + some_string.as_ref().unwrap().capacity();
+        assert_eq!(some_string.estimate_memory(), expected);
     }
 
     #[test]
@@ -242,5 +256,24 @@ mod tests {
 
         let expected = std::mem::size_of::<MyStruct>() + s.name.capacity() + s.data.capacity();
         assert_eq!(s.estimate_memory(), expected);
+    }
+
+    #[test]
+    fn test_tuple_memory() {
+        // Test 2-tuple with primitives (no heap allocation)
+        let tuple2 = (42i32, true);
+        assert_eq!(tuple2.estimate_memory(), std::mem::size_of::<(i32, bool)>());
+
+        // Test 2-tuple with heap-allocated data
+        let tuple_heap = (42i32, String::from("hello"));
+        let expected = std::mem::size_of::<(i32, String)>() + tuple_heap.1.capacity();
+        assert_eq!(tuple_heap.estimate_memory(), expected);
+
+        // Test 3-tuple with mixed types
+        let tuple3 = (42i32, String::from("test"), vec![1u8, 2, 3]);
+        let expected = std::mem::size_of::<(i32, String, Vec<u8>)>()
+            + tuple3.1.capacity()
+            + tuple3.2.capacity() * std::mem::size_of::<u8>();
+        assert_eq!(tuple3.estimate_memory(), expected);
     }
 }
