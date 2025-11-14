@@ -145,8 +145,8 @@ where
     fn estimate_memory(&self) -> usize {
         std::mem::size_of::<Self>()
             + match self {
-                Ok(val) => val.estimate_memory(),
-                Err(err) => err.estimate_memory(),
+                Ok(val) => val.estimate_memory() - std::mem::size_of_val(val),
+                Err(err) => err.estimate_memory() - std::mem::size_of_val(err),
             }
     }
 }
