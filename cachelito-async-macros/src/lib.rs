@@ -30,7 +30,7 @@ fn generate_cache_hit_logic(
 ) -> TokenStream2 {
     quote! {
         // Check cache first - return early if valid cached value exists
-        if let Some(__entry_ref) = #cache_ident.get(&__key) {
+        if let Some(mut __entry_ref) = #cache_ident.get_mut(&__key) {
             let __now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -44,6 +44,12 @@ fn generate_cache_hit_logic(
 
             if !__is_expired {
                 let __cached_value = __entry_ref.0.clone();
+
+                // Increment frequency for LFU policy
+                if #policy_expr == "lfu" {
+                    __entry_ref.2 = __entry_ref.2.saturating_add(1);
+                }
+
                 drop(__entry_ref);
 
                 // Record cache hit
@@ -110,13 +116,36 @@ fn generate_cache_insert_logic(
 
             // Check limit after acquiring lock to prevent race condition
             if #cache_ident.len() >= __limit {
-                // Keep trying until we find a valid entry to evict
-                while let Some(__evict_key) = __order.pop_front() {
-                    if #cache_ident.contains_key(&__evict_key) {
-                        #cache_ident.remove(&__evict_key);
-                        break;
+                match #policy_expr {
+                    "lfu" => {
+                        // Find and evict the entry with minimum frequency
+                        let mut __min_freq_key: Option<String> = None;
+                        let mut __min_freq = u64::MAX;
+
+                        for __evict_key in __order.iter() {
+                            if let Some(__entry) = #cache_ident.get(__evict_key) {
+                                if __entry.2 < __min_freq {
+                                    __min_freq = __entry.2;
+                                    __min_freq_key = Some(__evict_key.clone());
+                                }
+                            }
+                        }
+
+                        if let Some(__evict_key) = __min_freq_key {
+                            #cache_ident.remove(&__evict_key);
+                            __order.retain(|k| k != &__evict_key);
+                        }
                     }
-                    // Key doesn't exist in cache (already removed), try next one
+                    _ => {
+                        // FIFO and LRU: evict from front of queue
+                        while let Some(__evict_key) = __order.pop_front() {
+                            if #cache_ident.contains_key(&__evict_key) {
+                                #cache_ident.remove(&__evict_key);
+                                break;
+                            }
+                            // Key doesn't exist in cache (already removed), try next one
+                        }
+                    }
                 }
             }
 
@@ -124,16 +153,13 @@ fn generate_cache_insert_logic(
             // No need to retain/remove since we already verified the key doesn't exist
             __order.push_back(__key.clone());
 
-            // Insert into cache while still holding the order lock to ensure atomicity
+            // Insert into cache with frequency initialized to 0
             // This prevents race conditions where another task could modify the order queue
             // between updating the queue and inserting into the cache
-            #cache_ident.insert(__key.clone(), (__result.clone(), __timestamp));
-
-            // Release the lock after insertion is complete
-            drop(__order);
+            #cache_ident.insert(__key.clone(), (__result.clone(), __timestamp, 0));
         } else {
-            // No limit, just insert
-            #cache_ident.insert(__key, (__result.clone(), __timestamp));
+            // No limit - just insert with frequency 0
+            #cache_ident.insert(__key.clone(), (__result.clone(), __timestamp, 0));
         }
     }
 }
@@ -157,8 +183,9 @@ fn generate_cache_insert_logic(
 /// - `limit` (optional): Maximum number of entries in the cache. When the limit is reached,
 ///   entries are evicted according to the specified policy. Default: unlimited.
 /// - `policy` (optional): Eviction policy to use when the cache is full. Options:
-///   - `"fifo"` - First In, First Out (default)
-///   - `"lru"` - Least Recently Used
+///   - `"fifo"` - First In, First Out
+///   - `"lru"` - Least Recently Used (default)
+///   - `"lfu"` - Least Frequently Used
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
 /// - `name` (optional): Custom identifier for the cache. Default: the function name.
@@ -307,7 +334,8 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
         #vis #sig {
             use std::collections::VecDeque;
 
-            static #cache_ident: once_cell::sync::Lazy<dashmap::DashMap<String, (#ret_type, u64)>> =
+            // DashMap stores: (value, timestamp, frequency)
+            static #cache_ident: once_cell::sync::Lazy<dashmap::DashMap<String, (#ret_type, u64, u64)>> =
                 once_cell::sync::Lazy::new(|| dashmap::DashMap::new());
             static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> =
                 once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(VecDeque::new()));

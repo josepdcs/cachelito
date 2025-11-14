@@ -17,7 +17,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
-- 📊 **Eviction policies**: Choose between FIFO (First In, First Out) and LRU (Least Recently Used)
+- 📊 **Eviction policies**: Choose between FIFO, LRU (default), and LFU
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - 📈 **Statistics**: Track cache hit/miss rates and performance metrics (with `stats` feature)
 - 🔮 **Async/await support** *(v0.7.0)*: Dedicated `cachelito-async` crate for async functions with lock-free DashMap
@@ -32,10 +32,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.7.0"
+cachelito = "0.8.0"
 
 # Optional: Enable statistics tracking
-cachelito = { version = "0.7.0", features = ["stats"] }
+cachelito = { version = "0.8.0", features = ["stats"] }
 ```
 
 ### For Async Functions (v0.7.0)
@@ -43,7 +43,7 @@ cachelito = { version = "0.7.0", features = ["stats"] }
 > **Note:** `cachelito-async` uses independent versioning from `cachelito`. The version numbers do not correspond; use the latest compatible version as indicated below.
 ```toml
 [dependencies]
-cachelito-async = "0.1.0"
+cachelito-async = "0.2.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -184,26 +184,7 @@ fn main() {
 
 Control memory usage by setting cache limits and choosing an eviction policy:
 
-#### FIFO (First In, First Out) - Default
-
-```rust
-use cachelito::cache;
-
-// Cache with a limit of 100 entries using FIFO eviction
-#[cache(limit = 100, policy = "fifo")]
-fn expensive_computation(x: i32) -> i32 {
-    // When cache is full, oldest entry is evicted
-    x * x
-}
-
-// FIFO is the default policy, so this is equivalent:
-#[cache(limit = 100)]
-fn another_computation(x: i32) -> i32 {
-    x * x
-}
-```
-
-#### LRU (Least Recently Used)
+#### LRU (Least Recently Used) - Default
 
 ```rust
 use cachelito::cache;
@@ -215,12 +196,48 @@ fn expensive_computation(x: i32) -> i32 {
     // Accessing a cached value moves it to the end of the queue
     x * x
 }
+
+// LRU is the default policy, so this is equivalent:
+#[cache(limit = 100)]
+fn another_computation(x: i32) -> i32 {
+    x * x
+}
 ```
 
-**Key Differences:**
+#### FIFO (First In, First Out)
 
-- **FIFO**: Evicts the oldest inserted entry, regardless of usage
-- **LRU**: Evicts the least recently accessed entry, keeping frequently used items longer
+```rust
+use cachelito::cache;
+
+// Cache with a limit of 100 entries using FIFO eviction
+#[cache(limit = 100, policy = "fifo")]
+fn expensive_computation(x: i32) -> i32 {
+    // When cache is full, oldest entry is evicted
+    x * x
+}
+```
+
+#### LFU (Least Frequently Used)
+
+```rust
+use cachelito::cache;
+
+// Cache with a limit of 100 entries using LFU eviction
+#[cache(limit = 100, policy = "lfu")]
+fn expensive_computation(x: i32) -> i32 {
+    // When cache is full, least frequently accessed entry is evicted
+    // Each access increments the frequency counter
+    x * x
+}
+```
+
+**Policy Comparison:**
+
+| Policy | Evicts                            | Best For                                  | Performance     |
+|--------|-----------------------------------|-------------------------------------------|-----------------|
+| **LRU** | Least recently accessed          | Temporal locality (recent items matter)   | O(n) on hit     |
+| **FIFO** | Oldest inserted                 | Simple, predictable behavior              | O(1)            |
+| **LFU** | Least frequently accessed        | Frequency patterns (popular items matter) | O(n) on evict   |
 
 ### Time-To-Live (TTL) Expiration
 
@@ -1035,73 +1052,72 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.7.0
+### Latest Release: Version 0.8.0
 
-**🔮 Async/Await Support is Here!**
+**🔥 LFU Eviction Policy & LRU as Default!**
 
-Version 0.7.0 introduces comprehensive async support through the new `cachelito-async` crate:
+Version 0.8.0 completes the eviction policy trio and improves defaults:
 
 **New Features:**
+
+- 🔥 **LFU Eviction Policy** - Least Frequently Used eviction strategy
+- 📊 **Frequency Tracking** - Automatic access frequency counters for each cache entry
+- 🎯 **Three Policies** - Choose between FIFO, LRU (default), and LFU
+- 📈 **Smart Eviction** - LFU keeps frequently accessed items cached longer
+- ⚡ **Optimized Performance** - O(1) cache hits for LFU, O(n) eviction
+- 🔄 **Both Sync & Async** - LFU available in `cachelito` and `cachelito-async`
+
+**Breaking Change:**
+
+- **Default policy changed from FIFO to LRU** - LRU is more effective for most use cases. To keep FIFO behavior, explicitly use `policy = "fifo"`
+
+**Quick Start:**
+
+```rust
+// LFU policy - keeps frequently accessed items
+#[cache(limit = 100, policy = "lfu")]
+fn expensive_computation(x: i32) -> i32 {
+    x * x
+}
+
+// LRU is now the default (was FIFO in v0.7.0)
+#[cache(limit = 100)]  // Uses LRU by default
+fn another_function(x: i32) -> i32 {
+    x + x
+}
+```
+
+**Policy Comparison:**
+
+| Policy | Eviction | Cache Hit | Best For |
+|--------|----------|-----------|----------|
+| FIFO | O(1) | O(1) | Simple, predictable |
+| LRU (default) | O(1) | O(n) | Temporal locality |
+| LFU (new) | O(n) | O(1) | Frequency patterns |
+
+See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
+
+---
+
+### Version 0.7.0
+
+**🔮 Async/Await Support:**
 
 - 🚀 **Async Function Caching** - Use `#[cache_async]` for async/await functions
 - 🔓 **Lock-Free Concurrency** - DashMap provides non-blocking cache access
 - 🌐 **Global Async Cache** - Shared across all tasks and threads automatically
 - ⚡ **Zero Blocking** - Cache operations don't require `.await`
-- 📊 **Same Policies** - FIFO and LRU eviction policies supported
+- 📊 **FIFO and LRU Policies** - Eviction policies supported
 - ⏱️ **TTL Support** - Time-based expiration for async caches
-- 🎯 **Result-Aware** - Only caches `Ok` values from async Result types
-- 📈 **Statistics** - Track cache hit/miss rates and performance metrics
 
-**Quick Start:**
-
-```
-// Add to Cargo.toml
-cachelito-async = "0.1.0"
-```
-
-```rust
-// Use in your code
-#[cache_async(limit = 100, policy = "lru", ttl = 60)]
-async fn fetch_user(id: u64) -> Result<User, Error> {
-    database::get_user(id).await
-}
-```
-
-**Why DashMap?**
-
-- ✅ Lock-free concurrent access
-- ✅ No blocking in async contexts
-- ✅ Excellent performance under high concurrency
-- ✅ Thread-safe without traditional locks
-
-See the [Async/Await Support](#asyncawait-support-v070) section for complete details.
-
----
-
-### Version 0.6.0
+### Previous Release: Version 0.6.0
 
 **Statistics & Global Scope:**
 
-- 🌐 **Global scope by default** - Cache is now shared across threads by default for better statistics and sharing
-- 📈 **Cache Statistics** - Track hit/miss rates and performance metrics with the `stats` feature
-- 🎯 **Stats Registry** - Centralized API for querying statistics: `stats_registry::get("function_name")`
-- 🏷️ **Custom Cache Names** - Use `name` attribute to give caches custom identifiers: `#[cache(name = "my_cache")]`
-
-**Breaking Change:**
-
-- Default scope changed from `thread` to `global`. If you need thread-local caches, explicitly use `scope = "thread"`
-
-For full details, see the [complete changelog](CHANGELOG.md).
-
-### Previous Release: Version 0.5.0
-
-**Highlights:**
-
-- ⚡ **RwLock for concurrent reads** - 4-5x faster for read-heavy workloads
-- 🚀 **20x improvement** for pure concurrent reads
-- 💾 **40x smaller memory footprint** with parking_lot
-- 📊 **Enhanced benchmarks** and examples
-- 🔧 **Idiomatic crate naming** (`cachelito-core`, `cachelito-macros`)
+- 🌐 **Global scope by default** - Cache is now shared across threads by default
+- 📈 **Cache Statistics** - Track hit/miss rates and performance metrics
+- 🎯 **Stats Registry** - Centralized API: `stats_registry::get("function_name")`
+- 🏷️ **Custom Cache Names** - Use `name` attribute for custom identifiers
 
 For full details, see the [complete changelog](CHANGELOG.md).
 

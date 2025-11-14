@@ -220,12 +220,27 @@ impl<R: Clone + 'static> GlobalCache<R> {
             }
         }
 
-        // Update LRU order after releasing map lock
-        if result.is_some() && self.policy == EvictionPolicy::LRU {
-            let mut o = self.order.lock();
-            if let Some(pos) = o.iter().position(|k| k == key) {
-                o.remove(pos);
-                o.push_back(key.to_string());
+        // Update access patterns based on policy
+        if result.is_some() {
+            match self.policy {
+                EvictionPolicy::LRU => {
+                    // Move key to end of order queue (most recently used)
+                    let mut o = self.order.lock();
+                    if let Some(pos) = o.iter().position(|k| k == key) {
+                        o.remove(pos);
+                        o.push_back(key.to_string());
+                    }
+                }
+                EvictionPolicy::LFU => {
+                    // Increment frequency counter
+                    let mut m = self.map.write();
+                    if let Some(entry) = m.get_mut(key) {
+                        entry.increment_frequency();
+                    }
+                }
+                EvictionPolicy::FIFO => {
+                    // No update needed for FIFO
+                }
             }
         }
 
@@ -257,6 +272,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///
     /// - **FIFO**: Oldest inserted entry is evicted (front of queue)
     /// - **LRU**: Least recently used entry is evicted (front of queue, updated by `get()`)
+    /// - **LFU**: Least frequently used entry is evicted (entry with minimum frequency counter)
     ///
     /// # Thread Safety
     ///
@@ -291,13 +307,39 @@ impl<R: Clone + 'static> GlobalCache<R> {
 
         if let Some(limit) = self.limit {
             if o.len() > limit {
-                // Keep trying to evict until we find a valid entry or queue is empty
-                let mut map_write = self.map.write();
-                while let Some(evict_key) = o.pop_front() {
-                    // Check if the key still exists in the cache before removing
-                    if map_write.contains_key(&evict_key) {
-                        map_write.remove(&evict_key);
-                        break;
+                match self.policy {
+                    EvictionPolicy::LFU => {
+                        // Find and evict the entry with the minimum frequency
+                        let mut map_write = self.map.write();
+                        let mut min_freq_key: Option<String> = None;
+                        let mut min_freq = u64::MAX;
+
+                        for evict_key in o.iter() {
+                            if let Some(entry) = map_write.get(evict_key) {
+                                if entry.frequency < min_freq {
+                                    min_freq = entry.frequency;
+                                    min_freq_key = Some(evict_key.clone());
+                                }
+                            }
+                        }
+
+                        if let Some(evict_key) = min_freq_key {
+                            map_write.remove(&evict_key);
+                            if let Some(pos) = o.iter().position(|k| *k == evict_key) {
+                                o.remove(pos);
+                            }
+                        }
+                    }
+                    EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                        // Keep trying to evict until we find a valid entry or queue is empty
+                        let mut map_write = self.map.write();
+                        while let Some(evict_key) = o.pop_front() {
+                            // Check if the key still exists in the cache before removing
+                            if map_write.contains_key(&evict_key) {
+                                map_write.remove(&evict_key);
+                                break;
+                            }
+                        }
                     }
                 }
             }

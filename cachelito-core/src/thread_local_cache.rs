@@ -213,15 +213,32 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
             }
         }
 
-        // If LRU, update order queue
-        if val.is_some() && self.policy == EvictionPolicy::LRU {
-            self.order.with(|o| {
-                let mut o = o.borrow_mut();
-                if let Some(pos) = o.iter().position(|k| k == key) {
-                    o.remove(pos);
-                    o.push_back(key.to_string());
+        // Update access patterns based on policy
+        if val.is_some() {
+            match self.policy {
+                EvictionPolicy::LRU => {
+                    // Move key to end of order queue (most recently used)
+                    self.order.with(|o| {
+                        let mut o = o.borrow_mut();
+                        if let Some(pos) = o.iter().position(|k| k == key) {
+                            o.remove(pos);
+                            o.push_back(key.to_string());
+                        }
+                    });
                 }
-            });
+                EvictionPolicy::LFU => {
+                    // Increment frequency counter
+                    self.cache.with(|c| {
+                        let mut c = c.borrow_mut();
+                        if let Some(entry) = c.get_mut(key) {
+                            entry.increment_frequency();
+                        }
+                    });
+                }
+                EvictionPolicy::FIFO => {
+                    // No update needed for FIFO
+                }
+            }
         }
 
         val
@@ -268,20 +285,50 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 
             if let Some(limit) = self.limit {
                 if order.len() > limit {
-                    // Keep trying to evict until we find a valid entry or queue is empty
-                    while let Some(evict_key) = order.pop_front() {
-                        let mut removed = false;
-                        self.cache.with(|c| {
-                            let mut cache = c.borrow_mut();
-                            if cache.contains_key(&evict_key) {
-                                cache.remove(&evict_key);
-                                removed = true;
+                    match self.policy {
+                        EvictionPolicy::LFU => {
+                            // Find and evict the entry with the minimum frequency
+                            let mut min_freq_key: Option<String> = None;
+                            let mut min_freq = u64::MAX;
+
+                            self.cache.with(|c| {
+                                let cache = c.borrow();
+                                for evict_key in order.iter() {
+                                    if let Some(entry) = cache.get(evict_key) {
+                                        if entry.frequency < min_freq {
+                                            min_freq = entry.frequency;
+                                            min_freq_key = Some(evict_key.clone());
+                                        }
+                                    }
+                                }
+                            });
+
+                            if let Some(evict_key) = min_freq_key {
+                                self.cache.with(|c| {
+                                    c.borrow_mut().remove(&evict_key);
+                                });
+                                if let Some(pos) = order.iter().position(|k| *k == evict_key) {
+                                    order.remove(pos);
+                                }
                             }
-                        });
-                        if removed {
-                            break;
                         }
-                        // Key doesn't exist in cache (already removed), try next one
+                        EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                            // Keep trying to evict until we find a valid entry or queue is empty
+                            while let Some(evict_key) = order.pop_front() {
+                                let mut removed = false;
+                                self.cache.with(|c| {
+                                    let mut cache = c.borrow_mut();
+                                    if cache.contains_key(&evict_key) {
+                                        cache.remove(&evict_key);
+                                        removed = true;
+                                    }
+                                });
+                                if removed {
+                                    break;
+                                }
+                                // Key doesn't exist in cache (already removed), try next one
+                            }
+                        }
                     }
                 }
             }
