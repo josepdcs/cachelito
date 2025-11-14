@@ -240,8 +240,8 @@ mod tests {
 
         // Test Vec with nested Vecs
         let v_nested = vec![vec![1, 2], vec![3, 4, 5]];
-        let base_nested = size_of::<Vec<Vec<i32>>>();
-        let buffer_nested = v_nested.capacity() * size_of::<Vec<i32>>();
+        let base_nested = std::mem::size_of::<Vec<Vec<i32>>>();
+        let buffer_nested = v_nested.capacity() * std::mem::size_of::<Vec<i32>>();
         let heap_nested: usize = v_nested
             .iter()
             .map(|inner| inner.capacity() * std::mem::size_of::<i32>())
