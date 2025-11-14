@@ -14,12 +14,19 @@ use std::cmp::PartialEq;
 ///   - Simple and predictable behavior
 ///   - O(1) eviction performance
 ///
-/// * `LRU` - **Least Recently Used** eviction policy
+/// * `LRU` - **Least Recently Used** eviction policy (default)
 ///   - Elements are evicted based on when they were last accessed
 ///   - The least recently accessed element is removed first
 ///   - Accessing a cached value moves it to the "most recent" position
 ///   - Better for workloads with temporal locality
 ///   - O(n) overhead on cache hits for reordering
+///
+/// * `LFU` - **Least Frequently Used** eviction policy
+///   - Elements are evicted based on access frequency
+///   - The least frequently accessed element is removed first
+///   - Each cache hit increments the frequency counter
+///   - Better for workloads where popular items should stay cached
+///   - O(n) overhead on eviction to find minimum frequency
 ///
 /// # Examples
 ///
@@ -29,10 +36,11 @@ use std::cmp::PartialEq;
 /// // Creating policies
 /// let fifo = EvictionPolicy::FIFO;
 /// let lru = EvictionPolicy::LRU;
+/// let lfu = EvictionPolicy::LFU;
 ///
-/// // Using default (FIFO)
+/// // Using default (LRU)
 /// let default_policy = EvictionPolicy::default();
-/// assert_eq!(default_policy, EvictionPolicy::FIFO);
+/// assert_eq!(default_policy, EvictionPolicy::LRU);
 ///
 /// // Converting from string
 /// let policy: EvictionPolicy = "lru".into();
@@ -45,6 +53,7 @@ use std::cmp::PartialEq;
 /// |--------|----------|-----------|------------|----------|
 /// | FIFO   | O(1)     | O(1)      | O(1)       | Simple, predictable caching |
 /// | LRU    | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
+/// | LFU    | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
 ///
 /// # Derives
 ///
@@ -58,15 +67,16 @@ use std::cmp::PartialEq;
 pub enum EvictionPolicy {
     FIFO,
     LRU,
+    LFU,
 }
 
 impl EvictionPolicy {
-    /// Returns the default eviction policy (FIFO).
+    /// Returns the default eviction policy (LRU).
     ///
-    /// FIFO is chosen as the default because:
-    /// - Simple and predictable behavior
-    /// - Lower overhead (O(1) for all operations)
-    /// - No additional bookkeeping on cache hits
+    /// LRU is chosen as the default because:
+    /// - Good balance between simplicity and effectiveness
+    /// - Works well for most caching scenarios with temporal locality
+    /// - Commonly expected behavior for caches
     ///
     /// # Examples
     ///
@@ -74,22 +84,23 @@ impl EvictionPolicy {
     /// use cachelito_core::EvictionPolicy;
     ///
     /// let default = EvictionPolicy::default();
-    /// assert_eq!(default, EvictionPolicy::FIFO);
+    /// assert_eq!(default, EvictionPolicy::LRU);
     /// ```
     pub const fn default() -> Self {
-        EvictionPolicy::FIFO
+        EvictionPolicy::LRU
     }
 }
 
 /// Converts a string slice to an `EvictionPolicy`.
 ///
-/// The conversion is case-insensitive and defaults to FIFO for unrecognized values.
+/// The conversion is case-insensitive and defaults to LRU for unrecognized values.
 ///
 /// # Supported Values
 ///
 /// - `"fifo"` or `"FIFO"` → `EvictionPolicy::FIFO`
 /// - `"lru"` or `"LRU"` → `EvictionPolicy::LRU`
-/// - Any other value → `EvictionPolicy::FIFO` (default)
+/// - `"lfu"` or `"LFU"` → `EvictionPolicy::LFU`
+/// - Any other value → `EvictionPolicy::LRU` (default)
 ///
 /// # Examples
 ///
@@ -102,14 +113,18 @@ impl EvictionPolicy {
 /// let lru: EvictionPolicy = "LRU".into();
 /// assert_eq!(lru, EvictionPolicy::LRU);
 ///
+/// let lfu: EvictionPolicy = "lfu".into();
+/// assert_eq!(lfu, EvictionPolicy::LFU);
+///
 /// let unknown: EvictionPolicy = "random".into();
-/// assert_eq!(unknown, EvictionPolicy::FIFO); // defaults to FIFO
+/// assert_eq!(unknown, EvictionPolicy::LRU); // defaults to LRU
 /// ```
 impl From<&str> for EvictionPolicy {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "lru" => EvictionPolicy::LRU,
-            _ => EvictionPolicy::FIFO,
+            "fifo" => EvictionPolicy::FIFO,
+            "lfu" => EvictionPolicy::LFU,
+            _ => EvictionPolicy::LRU,
         }
     }
 }
@@ -119,6 +134,7 @@ impl PartialEq for EvictionPolicy {
         match (self, other) {
             (EvictionPolicy::FIFO, EvictionPolicy::FIFO) => true,
             (EvictionPolicy::LRU, EvictionPolicy::LRU) => true,
+            (EvictionPolicy::LFU, EvictionPolicy::LFU) => true,
             _ => false,
         }
     }

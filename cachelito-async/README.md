@@ -172,18 +172,35 @@ async fn complex_operation(x: i32, y: i32) -> Result<i32, Error> {
 
 ## Eviction Policies
 
-### FIFO (First In, First Out)
-
-- Default policy
-- Evicts oldest entries first
-- O(1) performance for all operations
-- Best for simple use cases
-
-### LRU (Least Recently Used)
+### LRU (Least Recently Used) - Default
 
 - Evicts least recently accessed entries
 - O(n) performance for cache hits (reordering)
 - Best when access patterns matter
+- Ideal for temporal locality workloads
+
+### FIFO (First In, First Out)
+
+- Evicts oldest entries first
+- O(1) performance for all operations
+- Best for simple use cases
+- Predictable behavior
+
+### LFU (Least Frequently Used)
+
+- Evicts least frequently accessed entries
+- O(n) performance for eviction (finding minimum frequency)
+- O(1) performance for cache hits (increment counter)
+- Best for workloads with "hot" data
+- Popular items remain cached longer
+
+**Policy Comparison:**
+
+| Policy | Eviction | Cache Hit | Use Case |
+|--------|----------|-----------|----------|
+| **LRU** | O(1) | O(n) | Recent access matters |
+| **FIFO** | O(1) | O(1) | Simple predictable caching |
+| **LFU** | O(n) | O(1) | Frequency patterns matter |
 
 ## Performance
 

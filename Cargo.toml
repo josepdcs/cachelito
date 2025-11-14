@@ -3,11 +3,11 @@ members = ["cachelito-async", "cachelito-async-macros", "cachelito-core", "cache
 
 [package]
 name = "cachelito"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "Apache-2.0"
 
-description = "Procedural macro for automatic function caching with LRU/FIFO policies, expiration, limits, and thread-local or global scope"
+description = "Procedural macro for automatic function caching with LRU/FIFO/LFU policies, expiration, limits, and thread-local or global scope"
 authors = ["Josep Damia Carbonell Segui <josepdcs@gmail.com>"]
 repository = "https://github.com/josepdcs/cachelito"
 homepage = "https://github.com/josepdcs/cachelito"
@@ -35,8 +35,8 @@ default = ["stats"]
 stats = ["cachelito-core/stats"]
 
 [dependencies]
-cachelito-core = { path = "./cachelito-core", version = "0.7.0" }
-cachelito-macros = { path = "./cachelito-macros", version = "0.7.0" }
+cachelito-core = { path = "./cachelito-core", version = "0.8.0" }
+cachelito-macros = { path = "./cachelito-macros", version = "0.8.0" }
 once_cell = "1.21.3"
 parking_lot = "0.12"
 

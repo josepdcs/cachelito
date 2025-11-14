@@ -25,6 +25,7 @@
 //! - [`thread_local_cache`] - Thread-local caching with zero synchronization overhead
 //! - [`global_cache`] - Thread-safe global cache with mutex protection
 //!
+mod async_global_cache;
 mod cache_entry;
 mod eviction_policy;
 mod global_cache;
@@ -37,6 +38,7 @@ mod stats;
 #[cfg(feature = "stats")]
 pub mod stats_registry;
 
+pub use async_global_cache::AsyncGlobalCache;
 pub use cache_entry::CacheEntry;
 pub use eviction_policy::EvictionPolicy;
 pub use global_cache::GlobalCache;

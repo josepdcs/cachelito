@@ -15,6 +15,7 @@ use std::time::Instant;
 ///
 /// * `value` - The actual cached value
 /// * `inserted_at` - The `Instant` when this entry was created
+/// * `frequency` - The number of times this entry has been accessed (for LFU policy)
 ///
 /// # Examples
 ///
@@ -23,6 +24,7 @@ use std::time::Instant;
 ///
 /// let entry = CacheEntry::new(42);
 /// assert_eq!(entry.value, 42);
+/// assert_eq!(entry.frequency, 0);
 ///
 /// // Check if expired (TTL of 60 seconds)
 /// assert!(!entry.is_expired(Some(60)));
@@ -31,6 +33,7 @@ use std::time::Instant;
 pub struct CacheEntry<R> {
     pub value: R,
     pub inserted_at: Instant,
+    pub frequency: u64,
 }
 
 impl<R> CacheEntry<R> {
@@ -42,11 +45,12 @@ impl<R> CacheEntry<R> {
     ///
     /// # Returns
     ///
-    /// A new `CacheEntry` with `inserted_at` set to `Instant::now()`
+    /// A new `CacheEntry` with `inserted_at` set to `Instant::now()` and `frequency` set to 0
     pub fn new(value: R) -> Self {
         Self {
             value,
             inserted_at: Instant::now(),
+            frequency: 0,
         }
     }
 
@@ -88,6 +92,29 @@ impl<R> CacheEntry<R> {
         } else {
             false
         }
+    }
+
+    /// Increments the access frequency counter.
+    ///
+    /// This method is used by the LFU (Least Frequently Used) eviction policy
+    /// to track how many times an entry has been accessed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachelito_core::CacheEntry;
+    ///
+    /// let mut entry = CacheEntry::new(42);
+    /// assert_eq!(entry.frequency, 0);
+    ///
+    /// entry.increment_frequency();
+    /// assert_eq!(entry.frequency, 1);
+    ///
+    /// entry.increment_frequency();
+    /// assert_eq!(entry.frequency, 2);
+    /// ```
+    pub fn increment_frequency(&mut self) {
+        self.frequency = self.frequency.saturating_add(1);
     }
 }
 

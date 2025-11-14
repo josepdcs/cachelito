@@ -1,23 +1,23 @@
 [package]
 name = "cachelito-async"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 
-description = "Async caching library with multiple eviction policies for async/await functions"
+description = "Async caching library with LRU/FIFO/LFU eviction policies for async/await functions"
 authors = ["josepdcs <[email protected]>"]
 repository = "https://github.com/josepdcs/cachelito"
 homepage = "https://github.com/josepdcs/cachelito"
 documentation = "https://docs.rs/cachelito-async"
 readme = "README.md"
-keywords = ["cache", "async", "lru", "fifo", "memoization"]
+keywords = ["cache", "async", "lru", "lfu", "memoization"]
 categories = ["caching", "asynchronous"]
 
 rust-version = "1.70.0"
 
 [dependencies]
-cachelito-async-macros = { version = "0.1.0", path = "../cachelito-async-macros" }
-cachelito-core = { version = "0.7.0", path = "../cachelito-core" }
+cachelito-async-macros = { version = "0.2.0", path = "../cachelito-async-macros" }
+cachelito-core = { version = "0.8.0", path = "../cachelito-core" }
 dashmap = "6.1"
 parking_lot = "0.12"
 once_cell = "1.19"

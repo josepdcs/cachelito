@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2025-01-14
+
+### Added
+
+- **🔥 LFU Eviction Policy**: New Least Frequently Used eviction policy
+    - `#[cache(policy = "lfu")]` - Evicts entries based on access frequency
+    - Frequency counter tracking for each cache entry
+    - Ideal for workloads where popular items should remain cached
+    - Available for both sync (`cachelito`) and async (`cachelito-async`) versions
+- **Frequency Tracking**: 
+    - `CacheEntry` now includes a `frequency` field (u64)
+    - `increment_frequency()` method for updating access counts
+    - Saturating addition prevents overflow
+- **Enhanced Eviction Logic**:
+    - Sync: Updated `ThreadLocalCache` and `GlobalCache` for LFU support
+    - Async: Updated DashMap structure to store `(value, timestamp, frequency)`
+    - LFU eviction scans all entries to find minimum frequency (O(n))
+- **Examples**: 
+    - `examples/lfu.rs` - Demonstrates LFU policy behavior
+    - `cachelito-async/examples/async_lfu.rs` - Async LFU example
+- **Tests**:
+    - `tests/lfu_tests.rs` - Comprehensive LFU test suite (5 tests)
+    - `cachelito-async/tests/lfu_tests.rs` - Async LFU tests (4 tests)
+- **Documentation**:
+    - Updated `EvictionPolicy` enum documentation
+    - Added LFU to policy comparison table
+    - Performance characteristics for each policy
+
+### Changed
+
+- **Default eviction policy changed from FIFO to LRU**
+    - LRU provides better cache effectiveness for most use cases
+    - FIFO and LFU remain available as explicit options
+- **Macro validation**: Updated to accept "fifo", "lru", or "lfu" policies
+- **Policy comparison table**: Added performance characteristics
+- **README.md**: Updated eviction policies section with LFU examples
+- **🏗️ Async Architecture Refactoring**:
+    - Created `AsyncGlobalCache` struct in `cachelito-core`
+    - Moved cache logic from macro code to testable Rust code
+    - Reduced macro complexity by ~48% (135 lines removed)
+    - Improved maintainability and consistency with sync version
+    - No breaking changes - public API remains the same
+
+### Improved
+
+- **Code Organization**:
+    - Async cache logic now in `cachelito-core/src/async_global_cache.rs`
+    - Consistent architecture between sync and async versions
+    - Easier to test, maintain, and extend
+- **Testability**:
+    - Added 2 unit tests for `AsyncGlobalCache`
+    - Can now test async cache logic independently of macro code
+
+### Technical Details
+
+- **LRU update on cache hit**: Moves entry to end of order queue (O(n))
+- **LFU update on cache hit**: Increments frequency counter (O(1))
+- **LFU eviction**: Scans all entries to find minimum frequency (O(n))
+- **Frequency reset**: New entries start with frequency = 0
+- **TTL interaction**: Expired entries reset frequency on re-insertion
+
 ## [0.7.0] - 2025-01-10
 
 ### Added

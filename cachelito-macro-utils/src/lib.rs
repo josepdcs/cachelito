@@ -70,16 +70,18 @@ pub fn parse_policy_attribute(nv: &MetaNameValue) -> Result<String, TokenStream2
             syn::Lit::Str(s) => {
                 let val = s.value();
                 // Validate the policy value
-                if val == "fifo" || val == "lru" {
+                if val == "fifo" || val == "lru" || val == "lfu" {
                     Ok(val)
                 } else {
-                    Err(quote! { compile_error!("Invalid policy: expected \"fifo\" or \"lru\"") })
+                    Err(
+                        quote! { compile_error!("Invalid policy: expected \"fifo\", \"lru\", or \"lfu\"") },
+                    )
                 }
             }
             _ => Err(quote! { compile_error!("Invalid literal for `policy`: expected string") }),
         },
         _ => Err(
-            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"`") },
+            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"|\"lfu\"`") },
         ),
     }
 }
@@ -252,9 +254,11 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                         quote! { cachelito_core::EvictionPolicy::FIFO }
                     } else if policy_str == "lru" {
                         quote! { cachelito_core::EvictionPolicy::LRU }
+                    } else if policy_str == "lfu" {
+                        quote! { cachelito_core::EvictionPolicy::LFU }
                     } else {
                         return Err(
-                            quote! { compile_error!("Invalid policy: expected \"fifo\" or \"lru\"") },
+                            quote! { compile_error!("Invalid policy: expected \"fifo\", \"lru\", or \"lfu\"") },
                         );
                     };
                 }
