@@ -8,7 +8,7 @@ struct LargeData {
 }
 impl MemoryEstimator for LargeData {
     fn estimate_memory(&self) -> usize {
-        std::mem::size_of::<Self>() + self.payload.capacity() + self.metadata.capacity()
+        std::mem::size_of::<Self>() + self.payload.capacity() * std::mem::size_of::<u8>() + self.metadata.capacity()
     }
 }
 #[cache(limit = 10, policy = "lru")]
