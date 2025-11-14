@@ -115,13 +115,21 @@ where
     T: MemoryEstimator,
 {
     fn estimate_memory(&self) -> usize {
-        let base = std::mem::size_of::<Self>();
-        let buffer = self.capacity() * std::mem::size_of::<T>();
-        let elements: usize = self
+        // Base struct size (stack-allocated Vec metadata)
+        let base = size_of::<Self>();
+
+        // Buffer capacity (heap-allocated array of T elements)
+        let buffer = self.capacity() * size_of::<T>();
+
+        // Additional heap memory for each element (beyond their stack size)
+        // For primitives, this will be 0
+        // For types like String/Vec, this counts their heap allocations
+        let heap_extras: usize = self
             .iter()
-            .map(|item| item.estimate_memory() - std::mem::size_of::<T>())
+            .map(|item| item.estimate_memory().saturating_sub(size_of_val(item)))
             .sum();
-        base + buffer + elements
+
+        base + buffer + heap_extras
     }
 }
 
@@ -210,10 +218,70 @@ mod tests {
 
     #[test]
     fn test_vec_memory() {
-        let v = vec![1i32, 2, 3, 4, 5];
+        // Test Vec with primitives (no heap extras)
+        let v_primitives = vec![1i32, 2, 3, 4, 5];
         let base = std::mem::size_of::<Vec<i32>>();
-        let elements = 5 * std::mem::size_of::<i32>();
-        assert_eq!(v.estimate_memory(), base + elements);
+        let buffer = v_primitives.capacity() * std::mem::size_of::<i32>();
+        assert_eq!(v_primitives.estimate_memory(), base + buffer);
+
+        // Test Vec with heap-allocated types (Strings)
+        let v_strings = vec![String::from("hello"), String::from("world")];
+        let base_str = size_of::<Vec<String>>();
+        let buffer_str = v_strings.capacity() * size_of::<String>();
+        let heap_extras: usize = v_strings.iter().map(|s| s.capacity()).sum();
+        assert_eq!(
+            v_strings.estimate_memory(),
+            base_str + buffer_str + heap_extras
+        );
+
+        // Test empty Vec
+        let v_empty: Vec<i32> = Vec::new();
+        assert_eq!(v_empty.estimate_memory(), std::mem::size_of::<Vec<i32>>());
+
+        // Test Vec with nested Vecs
+        let v_nested = vec![vec![1, 2], vec![3, 4, 5]];
+        let base_nested = size_of::<Vec<Vec<i32>>>();
+        let buffer_nested = v_nested.capacity() * size_of::<Vec<i32>>();
+        let heap_nested: usize = v_nested
+            .iter()
+            .map(|inner| inner.capacity() * std::mem::size_of::<i32>())
+            .sum();
+        assert_eq!(
+            v_nested.estimate_memory(),
+            base_nested + buffer_nested + heap_nested
+        );
+    }
+
+    #[test]
+    fn test_vec_with_capacity() {
+        // Test that we account for capacity, not just length
+        let mut v = Vec::with_capacity(100);
+        v.push(1i32);
+        v.push(2i32);
+
+        let base = std::mem::size_of::<Vec<i32>>();
+        let buffer = 100 * std::mem::size_of::<i32>(); // capacity, not length
+        assert_eq!(v.estimate_memory(), base + buffer);
+        assert!(v.estimate_memory() > base + 2 * std::mem::size_of::<i32>());
+    }
+
+    #[test]
+    fn test_vec_complex_types() {
+        // Test with complex nested structures
+        let v = vec![
+            (String::from("key1"), vec![1, 2, 3]),
+            (String::from("key2"), vec![4, 5, 6, 7, 8]),
+        ];
+
+        let base = std::mem::size_of::<Vec<(String, Vec<i32>)>>();
+        let buffer = v.capacity() * std::mem::size_of::<(String, Vec<i32>)>();
+
+        let heap_extras: usize = v
+            .iter()
+            .map(|(s, vec)| s.capacity() + vec.capacity() * std::mem::size_of::<i32>())
+            .sum();
+
+        assert_eq!(v.estimate_memory(), base + buffer + heap_extras);
     }
 
     #[test]
