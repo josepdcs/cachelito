@@ -85,6 +85,7 @@ name = "cachelito-core"
 version = "0.8.0"
 dependencies = [
  "criterion",
+ "dashmap",
  "once_cell",
  "parking_lot",
 ]

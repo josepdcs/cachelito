@@ -41,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Macro validation**: Updated to accept "fifo", "lru", or "lfu" policies
 - **Policy comparison table**: Added performance characteristics
 - **README.md**: Updated eviction policies section with LFU examples
+- **🏗️ Async Architecture Refactoring**:
+    - Created `AsyncGlobalCache` struct in `cachelito-core`
+    - Moved cache logic from macro code to testable Rust code
+    - Reduced macro complexity by ~48% (135 lines removed)
+    - Improved maintainability and consistency with sync version
+    - No breaking changes - public API remains the same
+
+### Improved
+
+- **Code Organization**:
+    - Async cache logic now in `cachelito-core/src/async_global_cache.rs`
+    - Consistent architecture between sync and async versions
+    - Easier to test, maintain, and extend
+- **Testability**:
+    - Added 2 unit tests for `AsyncGlobalCache`
+    - Can now test async cache logic independently of macro code
 
 ### Technical Details
 
