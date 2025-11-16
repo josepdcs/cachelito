@@ -310,11 +310,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                             );
 
                             if let Some(evict_key) = min_freq_key {
-                                //self.remove_key(&evict_key);
-                                self.cache.with(|c| {
-                                    let mut cache = c.borrow_mut();
-                                    remove_key_from_cache_local(&mut cache, &mut order, &evict_key);
-                                });
+                                self.remove_key(&evict_key);
                             }
                         }
                         EvictionPolicy::ARC => {
@@ -339,11 +335,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                             });
 
                             if let Some(evict_key) = best_evict_key {
-                                //self.remove_key(&evict_key);
-                                self.cache.with(|c| {
-                                    let mut cache = c.borrow_mut();
-                                    remove_key_from_cache_local(&mut cache, &mut order, &evict_key);
-                                });
+                                self.remove_key(&evict_key);
                             }
                         }
                         EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -403,13 +395,9 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// Removes a key from the cache and its associated ordering.
     fn remove_key(&self, key: &str) {
         self.cache.with(|c| {
-            c.borrow_mut().remove(key);
-        });
-        self.order.with(|o| {
-            let mut o = o.borrow_mut();
-            if let Some(pos) = o.iter().position(|k| k == key) {
-                o.remove(pos);
-            }
+            self.order.with(|o| {
+                remove_key_from_cache_local(&mut c.borrow_mut(), &mut o.borrow_mut(), key);
+            });
         });
     }
 }

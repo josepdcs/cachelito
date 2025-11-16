@@ -205,7 +205,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
         } // Read lock released here
 
         if expired {
-            self.remove_key(key);
+            let mut o = self.order.lock();
+            // Acquire write lock to modify the map
+            let mut map_write = self.map.write();
+            remove_key_from_cache(&mut map_write, &mut o, key);
             #[cfg(feature = "stats")]
             self.stats.record_miss();
             return None;
@@ -366,32 +369,6 @@ impl<R: Clone + 'static> GlobalCache<R> {
                     }
                 }
             }
-        }
-    }
-
-    /// Removes an entry from the cache by key.
-    ///
-    /// This method removes the entry from both the map and the order queue.
-    /// It acquires locks on both data structures to ensure consistency.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The cache key to remove
-    ///
-    /// # Thread Safety
-    ///
-    /// This method is thread-safe. Multiple threads can safely call this method
-    /// concurrently. The method uses write lock for the map and mutex for the order queue.
-    fn remove_key(&self, key: &str) {
-        // Acquire write lock to modify the map
-        let mut o = self.order.lock();
-        // Acquire write lock to modify the map
-        let mut map_write = self.map.write();
-
-        map_write.remove(key);
-
-        if let Some(pos) = o.iter().position(|k| k == key) {
-            o.remove(pos);
         }
     }
 
