@@ -28,6 +28,14 @@ use std::cmp::PartialEq;
 ///   - Better for workloads where popular items should stay cached
 ///   - O(n) overhead on eviction to find minimum frequency
 ///
+/// * `ARC` - **Adaptive Replacement Cache** eviction policy
+///   - Dynamically balances between recency (LRU) and frequency (LFU)
+///   - Uses two lists: T1 (recent one-time hits) and T2 (frequent items)
+///   - Maintains ghost lists B1 and B2 for adaptive learning
+///   - Self-tuning parameter `p` adjusts based on workload
+///   - Best for mixed workloads with varying access patterns
+///   - O(1) operations for all cache operations
+///
 /// # Examples
 ///
 /// ```
@@ -37,6 +45,7 @@ use std::cmp::PartialEq;
 /// let fifo = EvictionPolicy::FIFO;
 /// let lru = EvictionPolicy::LRU;
 /// let lfu = EvictionPolicy::LFU;
+/// let arc = EvictionPolicy::ARC;
 ///
 /// // Using default (LRU)
 /// let default_policy = EvictionPolicy::default();
@@ -54,6 +63,7 @@ use std::cmp::PartialEq;
 /// | FIFO   | O(1)     | O(1)      | O(1)       | Simple, predictable caching |
 /// | LRU    | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
 /// | LFU    | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
+/// | ARC    | O(1)     | O(1)      | O(1)       | Mixed workloads, self-tuning |
 ///
 /// # Derives
 ///
@@ -68,6 +78,7 @@ pub enum EvictionPolicy {
     FIFO,
     LRU,
     LFU,
+    ARC,
 }
 
 impl EvictionPolicy {
@@ -89,6 +100,23 @@ impl EvictionPolicy {
     pub const fn default() -> Self {
         EvictionPolicy::LRU
     }
+
+    /// Returns true if the given string is a valid eviction policy.
+    ///
+    /// # Examples
+    ////
+    /// ```
+    /// use cachelito_core::EvictionPolicy;
+    ////
+    /// assert!(EvictionPolicy::is_valid("fifo"));
+    /// assert!(EvictionPolicy::is_valid("LRU"));
+    /// assert!(!EvictionPolicy::is_valid("random"));
+    /// assert!(EvictionPolicy::is_valid("lfu"));
+    /// assert!(EvictionPolicy::is_valid("arc"));
+    /// ```
+    pub fn is_valid(p: &str) -> bool {
+        matches!(p.to_lowercase().as_str(), "fifo" | "lru" | "lfu" | "arc")
+    }
 }
 
 /// Converts a string slice to an `EvictionPolicy`.
@@ -100,6 +128,7 @@ impl EvictionPolicy {
 /// - `"fifo"` or `"FIFO"` → `EvictionPolicy::FIFO`
 /// - `"lru"` or `"LRU"` → `EvictionPolicy::LRU`
 /// - `"lfu"` or `"LFU"` → `EvictionPolicy::LFU`
+/// - `"arc"` or `"ARC"` → `EvictionPolicy::ARC`
 /// - Any other value → `EvictionPolicy::LRU` (default)
 ///
 /// # Examples
@@ -116,6 +145,9 @@ impl EvictionPolicy {
 /// let lfu: EvictionPolicy = "lfu".into();
 /// assert_eq!(lfu, EvictionPolicy::LFU);
 ///
+/// let arc: EvictionPolicy = "arc".into();
+/// assert_eq!(arc, EvictionPolicy::ARC);
+///
 /// let unknown: EvictionPolicy = "random".into();
 /// assert_eq!(unknown, EvictionPolicy::LRU); // defaults to LRU
 /// ```
@@ -124,6 +156,7 @@ impl From<&str> for EvictionPolicy {
         match s.to_lowercase().as_str() {
             "fifo" => EvictionPolicy::FIFO,
             "lfu" => EvictionPolicy::LFU,
+            "arc" => EvictionPolicy::ARC,
             _ => EvictionPolicy::LRU,
         }
     }
@@ -135,6 +168,7 @@ impl PartialEq for EvictionPolicy {
             (EvictionPolicy::FIFO, EvictionPolicy::FIFO) => true,
             (EvictionPolicy::LRU, EvictionPolicy::LRU) => true,
             (EvictionPolicy::LFU, EvictionPolicy::LFU) => true,
+            (EvictionPolicy::ARC, EvictionPolicy::ARC) => true,
             _ => false,
         }
     }

@@ -5,6 +5,7 @@ use std::fmt::Debug;
 
 use crate::{CacheEntry, EvictionPolicy};
 
+use crate::utils::{find_min_frequency_key, move_key_to_end, remove_key_from_cache};
 #[cfg(feature = "stats")]
 use crate::CacheStats;
 
@@ -225,18 +226,19 @@ impl<R: Clone + 'static> GlobalCache<R> {
             match self.policy {
                 EvictionPolicy::LRU => {
                     // Move key to end of order queue (most recently used)
-                    let mut o = self.order.lock();
-                    if let Some(pos) = o.iter().position(|k| k == key) {
-                        o.remove(pos);
-                        o.push_back(key.to_string());
-                    }
+                    move_key_to_end(&mut self.order.lock(), key);
                 }
                 EvictionPolicy::LFU => {
                     // Increment frequency counter
-                    let mut m = self.map.write();
-                    if let Some(entry) = m.get_mut(key) {
-                        entry.increment_frequency();
-                    }
+                    self.increment_frequency(key);
+                }
+                EvictionPolicy::ARC => {
+                    // Adaptive Replacement: Update both recency (LRU) and frequency (LFU)
+                    // Move key to end (recency)
+                    move_key_to_end(&mut self.order.lock(), key);
+                    // Increment frequency counter
+                    drop(self.order.lock()); // Release order lock before acquiring map lock
+                    self.increment_frequency(key);
                 }
                 EvictionPolicy::FIFO => {
                     // No update needed for FIFO
@@ -245,6 +247,14 @@ impl<R: Clone + 'static> GlobalCache<R> {
         }
 
         result
+    }
+
+    /// Increments the frequency counter for the specified key.
+    fn increment_frequency(&self, key: &str) {
+        let mut m = self.map.write();
+        if let Some(entry) = m.get_mut(key) {
+            entry.increment_frequency();
+        }
     }
 
     /// Inserts or updates a value in the cache.
@@ -311,23 +321,36 @@ impl<R: Clone + 'static> GlobalCache<R> {
                     EvictionPolicy::LFU => {
                         // Find and evict the entry with the minimum frequency
                         let mut map_write = self.map.write();
-                        let mut min_freq_key: Option<String> = None;
-                        let mut min_freq = u64::MAX;
+                        let min_freq_key = find_min_frequency_key(&map_write, &o);
 
-                        for evict_key in o.iter() {
+                        if let Some(evict_key) = min_freq_key {
+                            remove_key_from_cache(&mut map_write, &mut o, &evict_key);
+                        }
+                    }
+                    EvictionPolicy::ARC => {
+                        // Adaptive Replacement Cache: Use a hybrid approach
+                        // Consider both recency (position in queue) and frequency
+                        let mut map_write = self.map.write();
+                        let mut best_evict_key: Option<String> = None;
+                        let mut best_score = f64::MAX;
+
+                        // Score = frequency / (queue_position + 1)
+                        // Lower score = better candidate for eviction
+                        for (idx, evict_key) in o.iter().enumerate() {
                             if let Some(entry) = map_write.get(evict_key) {
-                                if entry.frequency < min_freq {
-                                    min_freq = entry.frequency;
-                                    min_freq_key = Some(evict_key.clone());
+                                let frequency = entry.frequency as f64;
+                                let position_weight = (o.len() - idx) as f64; // Higher for more recent
+                                let score = frequency * position_weight;
+
+                                if score < best_score {
+                                    best_score = score;
+                                    best_evict_key = Some(evict_key.clone());
                                 }
                             }
                         }
 
-                        if let Some(evict_key) = min_freq_key {
-                            map_write.remove(&evict_key);
-                            if let Some(pos) = o.iter().position(|k| *k == evict_key) {
-                                o.remove(pos);
-                            }
+                        if let Some(evict_key) = best_evict_key {
+                            remove_key_from_cache(&mut map_write, &mut o, &evict_key);
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -361,9 +384,12 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// concurrently. The method uses write lock for the map and mutex for the order queue.
     fn remove_key(&self, key: &str) {
         // Acquire write lock to modify the map
-        self.map.write().remove(key);
-
         let mut o = self.order.lock();
+        // Acquire write lock to modify the map
+        let mut map_write = self.map.write();
+
+        map_write.remove(key);
+
         if let Some(pos) = o.iter().position(|k| k == key) {
             o.remove(pos);
         }

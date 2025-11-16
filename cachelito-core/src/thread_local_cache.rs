@@ -8,6 +8,8 @@ use crate::{CacheEntry, EvictionPolicy};
 #[cfg(feature = "stats")]
 use crate::CacheStats;
 
+use crate::utils::{find_min_frequency_key, move_key_to_end, remove_key_from_cache_local};
+
 /// Core cache abstraction that stores values in a thread-local HashMap with configurable limits.
 ///
 /// This cache is designed to work with static thread-local maps declared using
@@ -218,22 +220,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
             match self.policy {
                 EvictionPolicy::LRU => {
                     // Move key to end of order queue (most recently used)
-                    self.order.with(|o| {
-                        let mut o = o.borrow_mut();
-                        if let Some(pos) = o.iter().position(|k| k == key) {
-                            o.remove(pos);
-                            o.push_back(key.to_string());
-                        }
-                    });
+                    self.move_to_end(key);
                 }
                 EvictionPolicy::LFU => {
                     // Increment frequency counter
-                    self.cache.with(|c| {
-                        let mut c = c.borrow_mut();
-                        if let Some(entry) = c.get_mut(key) {
-                            entry.increment_frequency();
-                        }
-                    });
+                    self.increment_frequency(key);
+                }
+                EvictionPolicy::ARC => {
+                    // Adaptive Replacement: Update both recency and frequency
+                    // Update order (recency)
+                    self.move_to_end(key);
+                    // Increment frequency counter
+                    self.increment_frequency(key);
                 }
                 EvictionPolicy::FIFO => {
                     // No update needed for FIFO
@@ -242,6 +240,24 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
         }
 
         val
+    }
+
+    /// Moves a key to the end of the order queue (marks as most recently used)
+    fn move_to_end(&self, key: &str) {
+        self.order.with(|o| {
+            let mut o = o.borrow_mut();
+            move_key_to_end(&mut o, key);
+        });
+    }
+
+    /// Increments the frequency counter for the specified key.
+    fn increment_frequency(&self, key: &str) {
+        self.cache.with(|c| {
+            let mut c = c.borrow_mut();
+            if let Some(entry) = c.get_mut(key) {
+                entry.increment_frequency();
+            }
+        });
     }
 
     /// Inserts a value into the cache with the specified key.
@@ -288,28 +304,46 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                     match self.policy {
                         EvictionPolicy::LFU => {
                             // Find and evict the entry with the minimum frequency
-                            let mut min_freq_key: Option<String> = None;
-                            let mut min_freq = u64::MAX;
+                            let min_freq_key = find_min_frequency_key(
+                                &self.cache.with(|c| c.borrow().clone()),
+                                &order,
+                            );
+
+                            if let Some(evict_key) = min_freq_key {
+                                //self.remove_key(&evict_key);
+                                self.cache.with(|c| {
+                                    let mut cache = c.borrow_mut();
+                                    remove_key_from_cache_local(&mut cache, &mut order, &evict_key);
+                                });
+                            }
+                        }
+                        EvictionPolicy::ARC => {
+                            // Adaptive Replacement Cache: Use hybrid score
+                            let mut best_evict_key: Option<String> = None;
+                            let mut best_score = f64::MAX;
 
                             self.cache.with(|c| {
                                 let cache = c.borrow();
-                                for evict_key in order.iter() {
+                                for (idx, evict_key) in order.iter().enumerate() {
                                     if let Some(entry) = cache.get(evict_key) {
-                                        if entry.frequency < min_freq {
-                                            min_freq = entry.frequency;
-                                            min_freq_key = Some(evict_key.clone());
+                                        let frequency = entry.frequency as f64;
+                                        let position_weight = (order.len() - idx) as f64;
+                                        let score = frequency * position_weight;
+
+                                        if score < best_score {
+                                            best_score = score;
+                                            best_evict_key = Some(evict_key.clone());
                                         }
                                     }
                                 }
                             });
 
-                            if let Some(evict_key) = min_freq_key {
+                            if let Some(evict_key) = best_evict_key {
+                                //self.remove_key(&evict_key);
                                 self.cache.with(|c| {
-                                    c.borrow_mut().remove(&evict_key);
+                                    let mut cache = c.borrow_mut();
+                                    remove_key_from_cache_local(&mut cache, &mut order, &evict_key);
                                 });
-                                if let Some(pos) = order.iter().position(|k| *k == evict_key) {
-                                    order.remove(pos);
-                                }
                             }
                         }
                         EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -366,6 +400,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
         &self.stats
     }
 
+    /// Removes a key from the cache and its associated ordering.
     fn remove_key(&self, key: &str) {
         self.cache.with(|c| {
             c.borrow_mut().remove(key);

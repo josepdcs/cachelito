@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - TBD
+
+### Added
+
+- **🎯 ARC Eviction Policy**: New Adaptive Replacement Cache policy
+    - `#[cache(policy = "arc")]` - Self-tuning cache that adapts between recency and frequency
+    - Combines benefits of LRU (recency) and LFU (frequency) dynamically
+    - Eviction score: `frequency × recency_weight` (lower score = evicted first)
+    - Ideal for mixed workloads with varying access patterns
+    - Scan-resistant: protects frequently accessed items from sequential scans
+    - O(1) operations for all cache access (get, insert)
+    - Available for both sync and async versions
+- **Examples**:
+    - `examples/arc_policy.rs` - Comprehensive ARC policy demonstration
+    - Shows adaptive behavior with mixed access patterns
+    - Demonstrates scan-resistance
+- **Tests**:
+    - `tests/arc_policy_tests.rs` - Complete ARC test suite (11 tests)
+    - Tests for basic caching, limit enforcement, frequency tracking, recency tracking
+    - Tests for adaptive behavior, global scope, scan resistance
+- **Documentation**:
+    - Updated `EvictionPolicy` enum with ARC variant
+    - Added ARC to policy comparison table
+    - Enhanced macro validation to accept "arc" policy
+
+### Changed
+
+- **Policy validation**: Updated to accept "fifo", "lru", "lfu", or "arc"
+- **Cache implementations**: All cache types now support ARC eviction
+    - `ThreadLocalCache`: ARC support with frequency + recency tracking
+    - `GlobalCache`: ARC support with parking_lot synchronization
+    - `AsyncGlobalCache`: ARC support with DashMap
+- **Performance table**: Added ARC characteristics (O(1) for all operations)
+
 ## [0.8.0] - 2025-01-14
 
 ### Added
