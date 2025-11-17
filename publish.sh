@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# This script automates the process of publishing a package to crate.io.
+# This script automates the process of publishing a package to crates.io.
 
 # Publish each crate in the correct order
 cargo publish -p cachelito-macro-utils
