@@ -1116,7 +1116,7 @@ ARC dynamically combines:
 | FIFO | O(1) | O(1) | Simple, predictable |
 | LRU (default) | O(1) | O(n) | Temporal locality |
 | LFU | O(n) | O(1) | Frequency patterns |
-| ARC (new) | O(1) | O(1) | Mixed workloads, self-tuning |
+| ARC (new) | O(n) | O(n) | Mixed workloads, self-tuning |
 
 See the [examples/arc_policy.rs](examples/arc_policy.rs) for a comprehensive demonstration.
 
