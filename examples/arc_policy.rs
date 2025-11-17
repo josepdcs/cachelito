@@ -137,5 +137,5 @@ fn main() {
     println!("✓ Protects frequently used items from eviction");
     println!("✓ Handles sequential scans without polluting cache");
     println!("✓ Self-tuning - no manual parameter adjustment needed");
-    println!("✓ O(1) operations for all cache access");
+    println!("✓ Efficiently balances recency and frequency (not all operations are O(1))");
 }
