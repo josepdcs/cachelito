@@ -306,10 +306,9 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                     match self.policy {
                         EvictionPolicy::LFU => {
                             // Find and evict the entry with the minimum frequency
-                            let min_freq_key = find_min_frequency_key(
-                                &self.cache.with(|c| c.borrow().clone()),
-                                &order,
-                            );
+                            let min_freq_key = self.cache.with(|c| {
+                                find_min_frequency_key(&c.borrow(), &order)
+                            });
 
                             if let Some(evict_key) = min_freq_key {
                                 self.remove_key(&evict_key);
