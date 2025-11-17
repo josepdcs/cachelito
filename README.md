@@ -255,7 +255,7 @@ fn expensive_computation(x: i32) -> i32 {
 | **LRU** | Least recently accessed          | Temporal locality (recent items matter)   | O(n) on hit     |
 | **FIFO** | Oldest inserted                 | Simple, predictable behavior              | O(1)            |
 | **LFU** | Least frequently accessed        | Frequency patterns (popular items matter) | O(n) on evict   |
-| **ARC** | Adaptive (recency + frequency)   | Mixed workloads, self-tuning              | O(1)            |
+| **ARC** | Adaptive (recency + frequency)   | Mixed workloads, self-tuning              | O(n) on evict/hit |
 
 ### Time-To-Live (TTL) Expiration
 
