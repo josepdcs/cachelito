@@ -7,6 +7,17 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{punctuated::Punctuated, Expr, MetaNameValue, Token};
 
+/// List of supported eviction policies
+static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc"];
+
+pub fn policies_str_with_separator(separator: &str) -> String {
+    POLICIES
+        .iter()
+        .map(|p| format!("\"{}\"", p))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 /// Parsed macro attributes for async caching
 pub struct AsyncCacheAttributes {
     pub limit: TokenStream2,
@@ -70,19 +81,26 @@ pub fn parse_policy_attribute(nv: &MetaNameValue) -> Result<String, TokenStream2
             syn::Lit::Str(s) => {
                 let val = s.value();
                 // Validate the policy value
-                if val == "fifo" || val == "lru" || val == "lfu" {
+                if POLICIES.contains(&val.as_str()) {
                     Ok(val)
                 } else {
-                    Err(
-                        quote! { compile_error!("Invalid policy: expected \"fifo\", \"lru\", or \"lfu\"") },
-                    )
+                    let policies = policies_str_with_separator(", ");
+                    let err_msg = format!("Invalid policy: expected one of {}", policies);
+                    Err(quote! { compile_error!(#err_msg) })
                 }
             }
             _ => Err(quote! { compile_error!("Invalid literal for `policy`: expected string") }),
         },
-        _ => Err(
-            quote! { compile_error!("Invalid syntax for `policy`: expected `policy = \"fifo\"|\"lru\"|\"lfu\"`") },
-        ),
+        _ => {
+            let policies = policies_str_with_separator("|");
+            let err_msg = format!(
+                "Invalid syntax for `policy`: expected `policy = \"{}\"`",
+                policies
+            );
+            Err(quote! {
+                compile_error!(#err_msg)
+            })
+        }
     }
 }
 
@@ -256,9 +274,11 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                         quote! { cachelito_core::EvictionPolicy::LRU }
                     } else if policy_str == "lfu" {
                         quote! { cachelito_core::EvictionPolicy::LFU }
+                    } else if policy_str == "arc" {
+                        quote! { cachelito_core::EvictionPolicy::ARC }
                     } else {
                         return Err(
-                            quote! { compile_error!("Invalid policy: expected \"fifo\", \"lru\", or \"lfu\"") },
+                            quote! { compile_error!("Invalid policy: expected \"fifo\", \"lru\", \"lfu\", or \"arc\"") },
                         );
                     };
                 }
@@ -287,4 +307,163 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
     }
 
     Ok(attrs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+    use syn::parse_quote;
+
+    #[test]
+    fn test_policies_str_with_separator() {
+        let result = policies_str_with_separator(", ");
+        assert_eq!(result, "\"fifo\", \"lru\", \"lfu\", \"arc\"");
+
+        let result = policies_str_with_separator("|");
+        assert_eq!(result, "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"");
+    }
+
+    #[test]
+    fn test_parse_limit_attribute_valid() {
+        let nv: MetaNameValue = parse_quote! { limit = 100 };
+        let result = parse_limit_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (100usize)");
+    }
+
+    #[test]
+    fn test_parse_policy_attribute_valid() {
+        let nv: MetaNameValue = parse_quote! { policy = "fifo" };
+        let result = parse_policy_attribute(&nv);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "fifo");
+
+        let nv: MetaNameValue = parse_quote! { policy = "lru" };
+        let result = parse_policy_attribute(&nv);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "lru");
+    }
+
+    #[test]
+    fn test_parse_policy_attribute_invalid() {
+        let nv: MetaNameValue = parse_quote! { policy = "invalid" };
+        let result = parse_policy_attribute(&nv);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_ttl_attribute_valid() {
+        let nv: MetaNameValue = parse_quote! { ttl = 60 };
+        let result = parse_ttl_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (60u64)");
+    }
+
+    #[test]
+    fn test_parse_name_attribute() {
+        let nv: MetaNameValue = parse_quote! { name = "my_cache" };
+        let result = parse_name_attribute(&nv);
+        assert_eq!(result, Some("my_cache".to_string()));
+    }
+
+    #[test]
+    fn test_parse_scope_attribute_valid() {
+        let nv: MetaNameValue = parse_quote! { scope = "global" };
+        let result = parse_scope_attribute(&nv);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "global");
+
+        let nv: MetaNameValue = parse_quote! { scope = "thread" };
+        let result = parse_scope_attribute(&nv);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "thread");
+    }
+
+    #[test]
+    fn test_parse_scope_attribute_invalid() {
+        let nv: MetaNameValue = parse_quote! { scope = "invalid" };
+        let result = parse_scope_attribute(&nv);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_key_expr_no_self_no_args() {
+        let result = generate_key_expr(false, &[]);
+        assert_eq!(result.to_string(), "{ String :: new () }");
+    }
+
+    #[test]
+    fn test_generate_key_expr_with_self_no_args() {
+        let result = generate_key_expr(true, &[]);
+        let expected = quote! {{ format!("{:?}", self) }};
+        assert_eq!(result.to_string(), expected.to_string());
+    }
+
+    #[test]
+    fn test_generate_key_expr_with_args() {
+        let args = vec![quote! { arg1 }, quote! { arg2 }];
+        let result = generate_key_expr(false, &args);
+        assert!(result.to_string().contains("__key_parts"));
+    }
+
+    #[test]
+    fn test_parse_async_attributes_defaults() {
+        let attrs = parse_async_attributes(quote! {}).unwrap();
+        assert_eq!(attrs.limit.to_string(), "Option :: < usize > :: None");
+        assert_eq!(attrs.policy.to_string(), "\"fifo\"");
+        assert_eq!(attrs.ttl.to_string(), "Option :: < u64 > :: None");
+        assert_eq!(attrs.custom_name, None);
+    }
+
+    #[test]
+    fn test_parse_async_attributes_complete() {
+        let attrs = parse_async_attributes(quote! {
+            limit = 50,
+            policy = "lru",
+            ttl = 120,
+            name = "test_cache"
+        })
+        .unwrap();
+
+        assert_eq!(attrs.limit.to_string(), "Some (50usize)");
+        assert_eq!(attrs.policy.to_string(), "\"lru\"");
+        assert_eq!(attrs.ttl.to_string(), "Some (120u64)");
+        assert_eq!(attrs.custom_name, Some("test_cache".to_string()));
+    }
+
+    #[test]
+    fn test_parse_sync_attributes_defaults() {
+        let attrs = parse_sync_attributes(quote! {}).unwrap();
+        assert_eq!(attrs.limit.to_string(), "None");
+        assert_eq!(
+            attrs.policy.to_string(),
+            "cachelito_core :: EvictionPolicy :: FIFO"
+        );
+        assert_eq!(
+            attrs.scope.to_string(),
+            "cachelito_core :: CacheScope :: Global"
+        );
+    }
+
+    #[test]
+    fn test_parse_sync_attributes_complete() {
+        let attrs = parse_sync_attributes(quote! {
+            limit = 100,
+            policy = "arc",
+            ttl = 300,
+            scope = "thread",
+            name = "sync_cache"
+        })
+        .unwrap();
+
+        assert_eq!(attrs.limit.to_string(), "Some (100usize)");
+        assert_eq!(
+            attrs.policy.to_string(),
+            "cachelito_core :: EvictionPolicy :: ARC"
+        );
+        assert_eq!(
+            attrs.scope.to_string(),
+            "cachelito_core :: CacheScope :: ThreadLocal"
+        );
+        assert_eq!(attrs.custom_name, Some("sync_cache".to_string()));
+    }
 }

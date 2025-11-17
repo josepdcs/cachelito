@@ -33,6 +33,8 @@ mod keys;
 mod memory_estimator;
 mod thread_local_cache;
 
+pub mod utils;
+
 #[cfg(feature = "stats")]
 mod stats;
 

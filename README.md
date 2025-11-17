@@ -17,7 +17,8 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
-- 📊 **Eviction policies**: Choose between FIFO, LRU (default), and LFU
+- 📊 **Eviction policies**: Choose between FIFO, LRU (default), LFU, and ARC *(v0.9.0)*
+- 🎯 **ARC (Adaptive Replacement Cache)**: Self-tuning policy that adapts between recency and frequency
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - 📏 **Memory estimation**: `MemoryEstimator` trait for tracking value memory footprint (foundation for incoming memory limits feature)
 - 📈 **Statistics**: Track cache hit/miss rates and performance metrics (with `stats` feature)
@@ -33,10 +34,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.8.0"
+cachelito = "0.9.0"
 
 # Optional: Enable statistics tracking
-cachelito = { version = "0.8.0", features = ["stats"] }
+cachelito = { version = "0.9.0", features = ["stats"] }
 ```
 
 ### For Async Functions
@@ -232,6 +233,21 @@ fn expensive_computation(x: i32) -> i32 {
 }
 ```
 
+#### ARC (Adaptive Replacement Cache)
+
+```rust
+use cachelito::cache;
+
+// Cache with a limit of 100 entries using ARC eviction
+#[cache(limit = 100, policy = "arc")]
+fn expensive_computation(x: i32) -> i32 {
+    // Self-tuning cache that adapts between recency and frequency
+    // Combines the benefits of LRU and LFU automatically
+    // Best for mixed workloads with varying access patterns
+    x * x
+}
+```
+
 **Policy Comparison:**
 
 | Policy | Evicts                            | Best For                                  | Performance     |
@@ -239,6 +255,7 @@ fn expensive_computation(x: i32) -> i32 {
 | **LRU** | Least recently accessed          | Temporal locality (recent items matter)   | O(n) on hit     |
 | **FIFO** | Oldest inserted                 | Simple, predictable behavior              | O(1)            |
 | **LFU** | Least frequently accessed        | Frequency patterns (popular items matter) | O(n) on evict   |
+| **ARC** | Adaptive (recency + frequency)   | Mixed workloads, self-tuning              | O(n) on evict/hit |
 
 ### Time-To-Live (TTL) Expiration
 
@@ -1053,7 +1070,59 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.8.0
+### Latest Release: Version 0.9.0
+
+**🎯 ARC - Adaptive Replacement Cache!**
+
+Version 0.9.0 introduces a self-tuning cache policy that automatically adapts to your workload:
+
+**New Features:**
+
+- 🎯 **ARC Eviction Policy** - Adaptive Replacement Cache that combines LRU and LFU
+- 🧠 **Self-Tuning** - Automatically balances between recency and frequency
+- 🛡️ **Scan-Resistant** - Protects frequently accessed items from sequential scans
+- ⚡ **Operation Complexity** - Insert is O(1); get and evict are O(n)
+- 🔄 **Mixed Workloads** - Ideal for workloads with varying access patterns
+- 📊 **Both Sync & Async** - ARC available in `cachelito` and `cachelito-async`
+
+**Quick Start:**
+
+```rust
+// ARC policy - self-tuning, adapts to your workload
+#[cache(limit = 100, policy = "arc")]
+fn smart_computation(x: i32) -> i32 {
+    x * x
+}
+```
+
+**How ARC Works:**
+
+ARC dynamically combines:
+- **Recency** (LRU-like): Recently accessed items stay cached
+- **Frequency** (LFU-like): Frequently accessed items stay cached
+- **Adaptive scoring**: Eviction score = `frequency × recency_weight`
+
+**When to Use ARC:**
+
+- ✅ Mixed access patterns (some frequent, some recent)
+- ✅ Workloads with sequential scans that shouldn't pollute cache
+- ✅ When you want automatic tuning without manual configuration
+- ✅ Applications where both hot items and recent items matter
+
+**Policy Comparison:**
+
+| Policy | Eviction | Cache Hit | Best For |
+|--------|----------|-----------|----------|
+| FIFO | O(1) | O(1) | Simple, predictable |
+| LRU (default) | O(1) | O(n) | Temporal locality |
+| LFU | O(n) | O(1) | Frequency patterns |
+| ARC (new) | O(n) | O(n) | Mixed workloads, self-tuning |
+
+See the [examples/arc_policy.rs](examples/arc_policy.rs) for a comprehensive demonstration.
+
+---
+
+### Previous Release: Version 0.8.0
 
 **🔥 LFU Eviction Policy & LRU as Default!**
 
@@ -1072,29 +1141,6 @@ Version 0.8.0 completes the eviction policy trio and improves defaults:
 
 - **Default policy changed from FIFO to LRU** - LRU is more effective for most use cases. To keep FIFO behavior, explicitly use `policy = "fifo"`
 
-**Quick Start:**
-
-```rust
-// LFU policy - keeps frequently accessed items
-#[cache(limit = 100, policy = "lfu")]
-fn expensive_computation(x: i32) -> i32 {
-    x * x
-}
-
-// LRU is now the default (was FIFO in v0.7.0)
-#[cache(limit = 100)]  // Uses LRU by default
-fn another_function(x: i32) -> i32 {
-    x + x
-}
-```
-
-**Policy Comparison:**
-
-| Policy | Eviction | Cache Hit | Best For |
-|--------|----------|-----------|----------|
-| FIFO | O(1) | O(1) | Simple, predictable |
-| LRU (default) | O(1) | O(n) | Temporal locality |
-| LFU (new) | O(n) | O(1) | Frequency patterns |
 
 See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
 

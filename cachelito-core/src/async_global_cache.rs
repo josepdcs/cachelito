@@ -190,6 +190,11 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         // Increment frequency counter
                         entry_ref.2 = entry_ref.2.saturating_add(1);
                     }
+                    EvictionPolicy::ARC => {
+                        // Increment frequency counter for ARC
+                        entry_ref.2 = entry_ref.2.saturating_add(1);
+                        // LRU update happens after releasing the entry lock
+                    }
                     EvictionPolicy::LRU => {
                         // LRU update happens after releasing the entry lock
                     }
@@ -205,7 +210,9 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                 self.stats.record_hit();
 
                 // Update LRU order on cache hit (after releasing DashMap lock)
-                if self.limit.is_some() && self.policy == EvictionPolicy::LRU {
+                if self.limit.is_some()
+                    && (self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC)
+                {
                     if self.cache.contains_key(key) {
                         let mut order = self.order.lock();
                         // Double-check after acquiring lock
@@ -279,8 +286,8 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
 
             // Check if another task already inserted this key while we were computing
             if self.cache.contains_key(key) {
-                // Key already exists, just update the order if LRU
-                if self.policy == EvictionPolicy::LRU {
+                // Key already exists, just update the order if LRU or ARC
+                if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
                     order.retain(|k| k != key);
                     order.push_back(key.to_string());
                 }
@@ -306,6 +313,30 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         }
 
                         if let Some(evict_key) = min_freq_key {
+                            self.cache.remove(&evict_key);
+                            order.retain(|k| k != &evict_key);
+                        }
+                    }
+                    EvictionPolicy::ARC => {
+                        // Adaptive Replacement Cache: Use hybrid score
+                        // Score = frequency * recency_weight
+                        let mut best_evict_key: Option<String> = None;
+                        let mut best_score = f64::MAX;
+
+                        for (idx, evict_key) in order.iter().enumerate() {
+                            if let Some(entry) = self.cache.get(evict_key) {
+                                let frequency = entry.2 as f64;
+                                let position_weight = (order.len() - idx) as f64;
+                                let score = frequency * position_weight;
+
+                                if score < best_score {
+                                    best_score = score;
+                                    best_evict_key = Some(evict_key.clone());
+                                }
+                            }
+                        }
+
+                        if let Some(evict_key) = best_evict_key {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                         }
