@@ -180,7 +180,7 @@ pub fn find_min_frequency_key<R>(
 ///
 /// ```
 /// use std::collections::{HashMap, VecDeque};
-/// use cachelito_core::{CacheEntry, utils::remove_key_from_cache};
+/// use cachelito_core::{CacheEntry, utils::remove_key_from_global_cache};
 /// use parking_lot::RwLock;
 /// use std::time::Instant;
 ///
@@ -200,12 +200,12 @@ pub fn find_min_frequency_key<R>(
 ///
 /// // Remove the entry
 /// let mut map = cache.write();
-/// let removed = remove_key_from_cache(&mut map, &mut order, "key1");
+/// let removed = remove_key_from_global_cache(&mut map, &mut order, "key1");
 /// assert!(removed);
 /// assert!(!map.contains_key("key1"));
 /// assert!(order.is_empty());
 /// ```
-pub fn remove_key_from_cache<R>(
+pub fn remove_key_from_global_cache<R>(
     map: &mut RwLockWriteGuard<HashMap<String, CacheEntry<R>>>,
     order: &mut VecDeque<String>,
     key: &str,
@@ -312,6 +312,81 @@ fn remove_from_maps<R>(
         false
     };
     (removed_from_map, removed_from_order)
+}
+
+/// Finds the key with the lowest ARC (Adaptive Replacement Cache) score for eviction.
+///
+/// The ARC policy combines recency and frequency by calculating a score for each key:
+/// - **Frequency**: How many times the entry has been accessed
+/// - **Recency**: Position in the access order (more recent = higher weight)
+/// - **Score**: `frequency × position_weight`, where position_weight is higher for recent entries
+///
+/// The key with the **lowest score** is chosen for eviction, meaning entries that are both
+/// infrequently accessed and old are prioritized for removal.
+///
+/// # Arguments
+///
+/// * `map` - Reference to the HashMap containing cache entries with frequency counters
+/// * `keys_iter` - Iterator over (index, key) tuples representing the access order
+///
+/// # Returns
+///
+/// * `Some(K)` - The key with the lowest ARC score (candidate for eviction)
+/// * `None` - If the iterator is empty or no valid keys exist in the map
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use std::time::Instant;
+/// use cachelito_core::{CacheEntry, utils::find_arc_eviction_key};
+///
+/// let mut map = HashMap::new();
+/// map.insert("recent_freq".to_string(), CacheEntry {
+///     value: 2,
+///     inserted_at: Instant::now(),
+///     frequency: 10, // High frequency
+/// });
+/// map.insert("old_rare".to_string(), CacheEntry {
+///     value: 1,
+///     inserted_at: Instant::now(),
+///     frequency: 1, // Low frequency
+/// });
+///
+/// // Order: most recent first (recent_freq), oldest last (old_rare)
+/// let order = vec!["recent_freq".to_string(), "old_rare".to_string()];
+/// let evict_key = find_arc_eviction_key(&map, order.iter().enumerate());
+///
+/// assert_eq!(evict_key, Some("old_rare".to_string())); // Low frequency + old position
+/// ```
+pub fn find_arc_eviction_key<'a, K, V, I>(
+    map: &HashMap<K, CacheEntry<V>>,
+    keys_iter: I,
+) -> Option<K>
+where
+    K: std::hash::Hash + Eq + Clone + 'a,
+    V: Clone,
+    I: Iterator<Item = (usize, &'a K)>,
+{
+    let mut best_evict_key: Option<K> = None;
+    let mut best_score = f64::MAX;
+    let keys_vec: Vec<_> = keys_iter.collect();
+    let total_len = keys_vec.len();
+
+    for (idx, evict_key) in keys_vec {
+        if let Some(entry) = map.get(evict_key) {
+            let frequency = entry.frequency as f64;
+            let position_weight = (total_len - idx) as f64;
+            let score = frequency * position_weight;
+
+            if score < best_score {
+                best_score = score;
+                best_evict_key = Some(evict_key.clone());
+            }
+        }
+    }
+
+    best_evict_key
 }
 
 #[cfg(test)]
@@ -740,7 +815,7 @@ mod tests {
 
         // Remove the entry
         let mut map = cache.write();
-        let removed = remove_key_from_cache(&mut map, &mut order, "key1");
+        let removed = remove_key_from_global_cache(&mut map, &mut order, "key1");
 
         assert!(removed);
         assert!(!map.contains_key("key1"));
@@ -761,7 +836,7 @@ mod tests {
         }
 
         let mut map = cache.write();
-        let removed = remove_key_from_cache(&mut map, &mut order, "key2");
+        let removed = remove_key_from_global_cache(&mut map, &mut order, "key2");
 
         assert!(!removed);
         assert_eq!(map.len(), 1);
@@ -786,7 +861,7 @@ mod tests {
         }
 
         let mut map = cache.write();
-        let removed = remove_key_from_cache(&mut map, &mut order, "key2");
+        let removed = remove_key_from_global_cache(&mut map, &mut order, "key2");
 
         assert!(removed);
         assert!(!map.contains_key("key2"));
@@ -809,7 +884,7 @@ mod tests {
         }
 
         let mut map = cache.write();
-        let removed = remove_key_from_cache(&mut map, &mut order, "key1");
+        let removed = remove_key_from_global_cache(&mut map, &mut order, "key1");
 
         assert!(removed);
         assert!(!map.contains_key("key1"));
@@ -826,7 +901,7 @@ mod tests {
         order.push_back("key1".to_string());
 
         let mut map = cache.write();
-        let removed = remove_key_from_cache(&mut map, &mut order, "key1");
+        let removed = remove_key_from_global_cache(&mut map, &mut order, "key1");
 
         assert!(removed);
         assert!(map.is_empty());
@@ -841,10 +916,167 @@ mod tests {
         let mut order = VecDeque::new();
 
         let mut map = cache.write();
-        let removed = remove_key_from_cache(&mut map, &mut order, "key1");
+        let removed = remove_key_from_global_cache(&mut map, &mut order, "key1");
 
         assert!(!removed);
         assert!(map.is_empty());
         assert!(order.is_empty());
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_empty_order() {
+        let map: HashMap<String, CacheEntry<i32>> = HashMap::new();
+        let order: Vec<String> = vec![];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_single_entry() {
+        let mut map = HashMap::new();
+        map.insert("key1".to_string(), create_cache_entry(100, 5));
+
+        let order = vec!["key1".to_string()];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        assert_eq!(result, Some("key1".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_low_frequency_wins() {
+        let mut map = HashMap::new();
+        // Recent entry with high frequency (score = 10 * 2 = 20)
+        map.insert("recent_freq".to_string(), create_cache_entry(200, 10));
+        // Old entry with low frequency (score = 1 * 1 = 1)
+        map.insert("old_rare".to_string(), create_cache_entry(100, 1));
+
+        // Order: recent items first, old items last
+        let order = vec!["recent_freq".to_string(), "old_rare".to_string()];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // The old, rarely accessed entry should be evicted
+        assert_eq!(result, Some("old_rare".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_recency_matters() {
+        let mut map = HashMap::new();
+        // Recent entry with same frequency (score = 5 * 2 = 10)
+        map.insert("recent".to_string(), create_cache_entry(200, 5));
+        // Old entry with same frequency (score = 5 * 1 = 5)
+        map.insert("old".to_string(), create_cache_entry(100, 5));
+
+        // Order: recent items first (index 0), old items last
+        let order = vec!["recent".to_string(), "old".to_string()];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // The older entry should be evicted (lower score)
+        assert_eq!(result, Some("old".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_multiple_entries() {
+        let mut map = HashMap::new();
+        // Scores: freq * position_weight (position_weight = total_len - idx)
+        map.insert("key1".to_string(), create_cache_entry(100, 10)); // 10 * 3 = 30
+        map.insert("key2".to_string(), create_cache_entry(200, 5)); // 5 * 2 = 10
+        map.insert("key3".to_string(), create_cache_entry(300, 3)); // 3 * 1 = 3
+
+        // Order: most recent first (index 0)
+        let order = vec![
+            "key1".to_string(), // position 0, weight = 3
+            "key2".to_string(), // position 1, weight = 2
+            "key3".to_string(), // position 2, weight = 1
+        ];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // key3 has the lowest score (3 * 1 = 3)
+        assert_eq!(result, Some("key3".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_missing_entries() {
+        let mut map = HashMap::new();
+        map.insert("key1".to_string(), create_cache_entry(100, 5));
+        map.insert("key3".to_string(), create_cache_entry(300, 10));
+
+        // key2 is in order but not in map
+        // Order: most recent first
+        let order = vec!["key3".to_string(), "key2".to_string(), "key1".to_string()];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // Should only consider entries that exist in the map
+        // key3: 10 * 3 = 30, key1: 5 * 1 = 5
+        assert_eq!(result, Some("key1".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_all_missing() {
+        let map: HashMap<String, CacheEntry<i32>> = HashMap::new();
+        let order = vec!["key1".to_string(), "key2".to_string()];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // No valid entries
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_zero_frequency() {
+        let mut map = HashMap::new();
+        map.insert("high_freq".to_string(), create_cache_entry(200, 100));
+        map.insert("zero_freq".to_string(), create_cache_entry(100, 0));
+
+        // Order: most recent first
+        let order = vec!["high_freq".to_string(), "zero_freq".to_string()];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // Zero frequency entry should have the lowest score (0 * 1 = 0)
+        assert_eq!(result, Some("zero_freq".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_complex_scenario() {
+        let mut map = HashMap::new();
+        // Simulate a realistic cache scenario
+        map.insert("user:1".to_string(), create_cache_entry(1, 50)); // Very frequent, old
+        map.insert("user:2".to_string(), create_cache_entry(2, 2)); // Rare, middle
+        map.insert("user:3".to_string(), create_cache_entry(3, 100)); // Very frequent, recent
+
+        let order = vec![
+            "user:1".to_string(), // position 0, weight = 3, score = 50 * 3 = 150
+            "user:2".to_string(), // position 1, weight = 2, score = 2 * 2 = 4
+            "user:3".to_string(), // position 2, weight = 1, score = 100 * 1 = 100
+        ];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // user:2 has the lowest score (rare and not most recent)
+        assert_eq!(result, Some("user:2".to_string()));
+    }
+
+    #[test]
+    fn test_find_arc_eviction_key_with_integer_keys() {
+        let mut map = HashMap::new();
+        map.insert(1, create_cache_entry("a", 10));
+        map.insert(2, create_cache_entry("b", 5));
+        map.insert(3, create_cache_entry("c", 20));
+
+        let order = vec![1, 2, 3];
+
+        let result = find_arc_eviction_key(&map, order.iter().enumerate());
+
+        // Key 3: 20 * 1 = 20
+        // Key 2: 5 * 2 = 10
+        // Key 1: 10 * 3 = 30
+        assert_eq!(result, Some(2));
     }
 }

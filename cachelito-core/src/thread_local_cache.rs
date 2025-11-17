@@ -8,7 +8,9 @@ use crate::{CacheEntry, EvictionPolicy};
 #[cfg(feature = "stats")]
 use crate::CacheStats;
 
-use crate::utils::{find_min_frequency_key, move_key_to_end, remove_key_from_cache_local};
+use crate::utils::{
+    find_arc_eviction_key, find_min_frequency_key, move_key_to_end, remove_key_from_cache_local,
+};
 
 /// Core cache abstraction that stores values in a thread-local HashMap with configurable limits.
 ///
@@ -314,28 +316,12 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                             }
                         }
                         EvictionPolicy::ARC => {
-                            // Adaptive Replacement Cache: Use hybrid score
-                            let mut best_evict_key: Option<String> = None;
-                            let mut best_score = f64::MAX;
-
-                            self.cache.with(|c| {
-                                let cache = c.borrow();
-                                for (idx, evict_key) in order.iter().enumerate() {
-                                    if let Some(entry) = cache.get(evict_key) {
-                                        let frequency = entry.frequency as f64;
-                                        let position_weight = (order.len() - idx) as f64;
-                                        let score = frequency * position_weight;
-
-                                        if score < best_score {
-                                            best_score = score;
-                                            best_evict_key = Some(evict_key.clone());
-                                        }
-                                    }
-                                }
+                            let evict_key = self.cache.with(|c| {
+                                find_arc_eviction_key(&c.borrow(), order.iter().enumerate())
                             });
 
-                            if let Some(evict_key) = best_evict_key {
-                                self.remove_key(&evict_key);
+                            if let Some(key) = evict_key {
+                                self.remove_key(&key);
                             }
                         }
                         EvictionPolicy::FIFO | EvictionPolicy::LRU => {
