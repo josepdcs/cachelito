@@ -104,10 +104,10 @@ impl EvictionPolicy {
     /// Returns true if the given string is a valid eviction policy.
     ///
     /// # Examples
-    ////
+    ///
     /// ```
     /// use cachelito_core::EvictionPolicy;
-    ////
+    ///
     /// assert!(EvictionPolicy::is_valid("fifo"));
     /// assert!(EvictionPolicy::is_valid("LRU"));
     /// assert!(!EvictionPolicy::is_valid("random"));
