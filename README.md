@@ -1081,7 +1081,7 @@ Version 0.9.0 introduces a self-tuning cache policy that automatically adapts to
 - 🎯 **ARC Eviction Policy** - Adaptive Replacement Cache that combines LRU and LFU
 - 🧠 **Self-Tuning** - Automatically balances between recency and frequency
 - 🛡️ **Scan-Resistant** - Protects frequently accessed items from sequential scans
-- ⚡ **O(1) Operations** - All cache operations (get, insert, evict) are O(1)
+- ⚡ **Operation Complexity** - Insert is O(1); get and evict are O(n)
 - 🔄 **Mixed Workloads** - Ideal for workloads with varying access patterns
 - 📊 **Both Sync & Async** - ARC available in `cachelito` and `cachelito-async`
 
