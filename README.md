@@ -20,7 +20,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 📊 **Eviction policies**: Choose between FIFO, LRU (default), LFU, and ARC *(v0.9.0)*
 - 🎯 **ARC (Adaptive Replacement Cache)** *(v0.9.0)*: Self-tuning policy that adapts between recency and frequency
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
-- 📏 **Memory estimation**: `MemoryEstimator` trait for tracking value memory footprint (foundation for future memory limits)
+- 📏 **Memory estimation**: `MemoryEstimator` trait for tracking value memory footprint (foundation for incoming memory limits feature)
 - 📈 **Statistics**: Track cache hit/miss rates and performance metrics (with `stats` feature)
 - 🔮 **Async/await support** *(v0.7.0)*: Dedicated `cachelito-async` crate for async functions with lock-free DashMap
 - ✅ **Type-safe**: Full compile-time type checking
