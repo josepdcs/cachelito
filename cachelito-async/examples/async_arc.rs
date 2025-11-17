@@ -215,7 +215,7 @@ async fn main() {
     println!("✅ Automatically adapts to workload patterns");
     println!("✅ Protects frequently accessed items from eviction");
     println!("✅ Scan-resistant: sequential access won't pollute cache");
-    println!("✅ O(1) cache access in async context (using DashMap)");
+    println!("✅ O(1) underlying map access in async context (using DashMap), but ARC eviction policy adds O(n) overhead for eviction and reordering");
     println!("✅ Self-tuning: no manual configuration needed");
     println!("✅ Perfect for mixed workloads (frequency + recency)");
     println!("\n🚀 Use ARC when:");
