@@ -28,13 +28,13 @@ use std::cmp::PartialEq;
 ///   - Better for workloads where popular items should stay cached
 ///   - O(n) overhead on eviction to find minimum frequency
 ///
-/// * `ARC` - **Adaptive Replacement Cache** eviction policy
-///   - Dynamically balances between recency (LRU) and frequency (LFU)
-///   - Uses two lists: T1 (recent one-time hits) and T2 (frequent items)
-///   - Maintains ghost lists B1 and B2 for adaptive learning
-///   - Self-tuning parameter `p` adjusts based on workload
-///   - Best for mixed workloads with varying access patterns
-///   - O(1) operations for all cache operations
+/// * `ARC` - **Adaptive Replacement Cache (Hybrid LRU/LFU)** eviction policy
+///   - Hybrid policy that combines recency (LRU) and frequency (LFU) using a scoring function
+///   - Uses a single order queue with a score: `frequency × position_weight`
+///   - Not a full implementation of the classic ARC algorithm (no T1/T2/B1/B2 lists or self-tuning parameter)
+///   - Provides a balance between LRU and LFU for mixed workloads
+///   - O(n) operations for some cache operations due to scoring and reordering
+///
 ///
 /// # Examples
 ///
