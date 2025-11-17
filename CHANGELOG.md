@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] - TBD
+## [0.9.0] - 2025-11-17
 
 ### Added
 
@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Eviction score: `frequency × recency_weight` (lower score = evicted first)
     - Ideal for mixed workloads with varying access patterns
     - Scan-resistant: protects frequently accessed items from sequential scans
-    - O(1) operations for all cache access (get, insert)
+    - Eviction: O(n) complexity (see find_arc_eviction_key which iterates through all entries)
+    - Cache hit: O(n) complexity (moves key to end of queue)
     - Available for both sync and async versions
 - **Examples**:
     - `examples/arc_policy.rs` - Comprehensive ARC policy demonstration
@@ -39,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `AsyncGlobalCache`: ARC support with DashMap
 - **Performance table**: Added ARC characteristics (O(1) for all operations)
 
-## [0.8.0] - 2025-01-14
+## [0.8.0] - 2025-11-14
 
 ### Added
 
@@ -156,7 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Concurrency**: Lock-free reads and writes via DashMap sharding
 - **LRU**: Order updated on both cache hits and misses
 
-## [0.6.0] - 2025-01-09
+## [0.6.0] - 2025-11-09
 
 ### Added
 
