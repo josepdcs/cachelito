@@ -63,7 +63,7 @@ use std::cmp::PartialEq;
 /// | FIFO   | O(1)     | O(1)      | O(1)       | Simple, predictable caching |
 /// | LRU    | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
 /// | LFU    | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
-/// | ARC    | O(1)     | O(1)      | O(1)       | Mixed workloads, self-tuning |
+/// | ARC    | O(n)     | O(n)      | O(1)       | Mixed workloads, self-tuning |
 ///
 /// # Derives
 ///
