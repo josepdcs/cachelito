@@ -240,10 +240,9 @@ impl<R: Clone + 'static> GlobalCache<R> {
                 }
                 EvictionPolicy::ARC => {
                     // Adaptive Replacement: Update both recency (LRU) and frequency (LFU)
-                    // Move key to end (recency)
+                    // Move key to end (recency) - lock is automatically released after this call
                     move_key_to_end(&mut self.order.lock(), key);
                     // Increment frequency counter
-                    drop(self.order.lock()); // Release order lock before acquiring map lock
                     self.increment_frequency(key);
                 }
                 EvictionPolicy::FIFO => {
