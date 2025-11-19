@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2025-11-19
+
+### Added
+
+- **💾 Memory-Based Cache Limits**: New `max_memory` attribute for `#[cache]` and `#[cache_async]`
+  - Example: `#[cache(max_memory = "100MB")]` or `#[cache(max_memory = 1048576)]`
+  - Supports units: `KB`, `MB`, `GB` and raw bytes (integer literal)
+  - Can be combined with `limit` (entry count); memory limit is enforced first
+  - Implemented for: `ThreadLocalCache`, `GlobalCache`, and `AsyncGlobalCache`
+  - Works with all eviction policies (FIFO, LRU, LFU, ARC)
+  - Eviction loop continues until memory usage <= `max_memory`
+- **MemoryEstimator Trait Integration**:
+  - Trait now actively used for memory-based eviction decisions
+  - Built-in implementations for primitives, `String`, `&str`, `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`, tuples (2 & 3), `Option<T>`, `Result<T,E>`, `Arc<T>`, `Rc<T>`, `Box<T>`, slices `&[T]`, and `CacheEntry<R>`
+  - Users can implement `MemoryEstimator` for custom types with heap allocations
+- **Benchmarks Updated**:
+  - Extended `cache_benchmark.rs` to include LFU and ARC policies
+  - Added `memory_eviction` benchmark group to test `max_memory` behavior
+- **New Tests**:
+  - Sync memory limit tests: `tests/memory_limit_tests.rs` (strings, vectors, parsing units, combined limits, LFU, ARC, thread-local, global)
+  - Async memory limit tests: `cachelito-async/tests/memory_limit_async_tests.rs` (basic, combined, LFU, ARC, parsing)
+- **Example**:
+  - `examples/memory_limit.rs` demonstrating `max_memory` with large string and vector values
+- **Documentation**:
+  - README updated with new Memory-Based Limits section
+  - Added guidance on custom memory estimators and combined limits usage
+
+### Changed
+
+- **Constructor Signatures** (breaking for direct usage, transparent for macro users):
+  - `ThreadLocalCache::new(&cache, &order, limit, max_memory, policy, ttl)`
+  - `GlobalCache::new(&map, &order, limit, max_memory, policy, ttl [, stats])`
+  - `AsyncGlobalCache::new(&dashmap, &order, limit, max_memory, policy, ttl [, stats])`
+- **Macro Code Generation**:
+  - Sync and async macros now pass `max_memory` to underlying cache constructors
+  - Attribute parser extended to parse `max_memory` values
+- **Eviction Logic**:
+  - Augmented to perform repeated eviction passes until memory usage <= limit when `max_memory` specified
+  - Falls back to entry count limiting when `max_memory` is `None`
+
+### Migration
+
+If you directly construct cache instances (not using the macros):
+```rust
+// Before (v0.9.0)
+let cache = GlobalCache::new(&MAP, &ORDER, Some(100), EvictionPolicy::LRU, None);
+
+// After (v0.10.0)
+let cache = GlobalCache::new(&MAP, &ORDER, Some(100), None, EvictionPolicy::LRU, None);
+// Or with memory limit
+let cache = GlobalCache::new(&MAP, &ORDER, Some(100), Some(64 * 1024 * 1024), EvictionPolicy::LRU, None);
+```
+For macro users, no changes required; simply add `max_memory = "64MB"` where desired.
+
+### Notes
+
+- Memory estimation is approximate and does not include allocator overhead or fragmentation.
+- For collections containing heap-allocated items (e.g., `Vec<String>`), implement a custom `MemoryEstimator` to include nested capacities.
+- Combining `limit` and `max_memory` allows dual control: memory pressure eviction first, then entry count fallback.
+- Using `Arc<T>` as return type remains recommended for very large values to avoid cloning overhead.
+
+### Performance Considerations
+
+- Memory check on insert is O(n) (sums all entry sizes); acceptable for moderate cache sizes.
+- LFU & ARC memory eviction maintain their O(n) scan characteristics.
+- Consider smaller `limit` when using very large objects to reduce eviction scan cost.
+
+### Internal
+
+- Added `MEMORY_LIMITS_IMPLEMENTATION.md` summarizing design & usage.
+- Updated doctests referencing old constructor signatures.
+
 ## [0.9.0] - 2025-11-17
 
 ### Added
@@ -342,4 +414,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.0]: https://github.com/josepdcs/cachelito/compare/v0.1.0...v0.2.0
 
 [0.1.0]: https://github.com/josepdcs/cachelito/releases/tag/v0.1.0
-

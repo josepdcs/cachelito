@@ -1,5 +1,5 @@
 use cachelito_core::{CacheEntry, EvictionPolicy, GlobalCache};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, VecDeque};
@@ -17,20 +17,40 @@ static LRU_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static LRU_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
+static LFU_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static LFU_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+static ARC_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static ARC_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+// Memory-intensive cache (String values) to benchmark max_memory eviction
+static MEM_MAP: Lazy<RwLock<HashMap<String, CacheEntry<String>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static MEM_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
 #[cfg(feature = "stats")]
 static FIFO_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static LRU_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+#[cfg(feature = "stats")]
+static LFU_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+#[cfg(feature = "stats")]
+static ARC_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+#[cfg(feature = "stats")]
+static MEM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
-// Helper macro to create GlobalCache with or without stats
+// Helper macro to create GlobalCache with or without stats (updated signature: + max_memory)
 macro_rules! new_fifo_cache {
     ($limit:expr) => {
         GlobalCache::new(
             &FIFO_MAP,
             &FIFO_ORDER,
             $limit,
+            None, // max_memory
             EvictionPolicy::FIFO,
-            None,
+            None, // ttl
             #[cfg(feature = "stats")]
             &FIFO_STATS,
         )
@@ -43,37 +63,127 @@ macro_rules! new_lru_cache {
             &LRU_MAP,
             &LRU_ORDER,
             $limit,
+            None, // max_memory
             EvictionPolicy::LRU,
-            None,
+            None, // ttl
             #[cfg(feature = "stats")]
             &LRU_STATS,
         )
     };
 }
 
+macro_rules! new_lfu_cache {
+    ($limit:expr) => {
+        GlobalCache::new(
+            &LFU_MAP,
+            &LFU_ORDER,
+            $limit,
+            None,
+            EvictionPolicy::LFU,
+            None,
+            #[cfg(feature = "stats")]
+            &LFU_STATS,
+        )
+    };
+}
+
+macro_rules! new_arc_cache {
+    ($limit:expr) => {
+        GlobalCache::new(
+            &ARC_MAP,
+            &ARC_ORDER,
+            $limit,
+            None,
+            EvictionPolicy::ARC,
+            None,
+            #[cfg(feature = "stats")]
+            &ARC_STATS,
+        )
+    };
+}
+
+macro_rules! new_mem_cache {
+    ($limit:expr, $max_mem:expr) => {
+        GlobalCache::new(
+            &MEM_MAP,
+            &MEM_ORDER,
+            $limit,
+            $max_mem, // max_memory in bytes
+            EvictionPolicy::LRU,
+            None,
+            #[cfg(feature = "stats")]
+            &MEM_STATS,
+        )
+    };
+}
+
+// Utility to clear underlying static structures to avoid cross-iteration interference
+fn reset_fifo() {
+    FIFO_MAP.write().clear();
+    FIFO_ORDER.lock().clear();
+}
+fn reset_lru() {
+    LRU_MAP.write().clear();
+    LRU_ORDER.lock().clear();
+}
+fn reset_lfu() {
+    LFU_MAP.write().clear();
+    LFU_ORDER.lock().clear();
+}
+fn reset_arc() {
+    ARC_MAP.write().clear();
+    ARC_ORDER.lock().clear();
+}
+fn reset_mem() {
+    MEM_MAP.write().clear();
+    MEM_ORDER.lock().clear();
+}
+
 fn bench_insert_sequential(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_sequential");
 
     for size in [10, 100, 1000].iter() {
+        // FIFO
         group.bench_with_input(BenchmarkId::new("FIFO", size), size, |b, &size| {
             b.iter(|| {
+                reset_fifo();
                 let cache = new_fifo_cache!(Some(size));
                 for i in 0..size {
-                    cache.insert(&format!("key{}", i), black_box(i as i32));
+                    cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
                 }
             });
         });
-
+        // LRU
         group.bench_with_input(BenchmarkId::new("LRU", size), size, |b, &size| {
             b.iter(|| {
+                reset_lru();
                 let cache = new_lru_cache!(Some(size));
                 for i in 0..size {
-                    cache.insert(&format!("key{}", i), black_box(i as i32));
+                    cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+                }
+            });
+        });
+        // LFU
+        group.bench_with_input(BenchmarkId::new("LFU", size), size, |b, &size| {
+            b.iter(|| {
+                reset_lfu();
+                let cache = new_lfu_cache!(Some(size));
+                for i in 0..size {
+                    cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+                }
+            });
+        });
+        // ARC
+        group.bench_with_input(BenchmarkId::new("ARC", size), size, |b, &size| {
+            b.iter(|| {
+                reset_arc();
+                let cache = new_arc_cache!(Some(size));
+                for i in 0..size {
+                    cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
                 }
             });
         });
     }
-
     group.finish();
 }
 
@@ -81,35 +191,53 @@ fn bench_get_sequential(c: &mut Criterion) {
     let mut group = c.benchmark_group("get_sequential");
 
     for size in [10, 100, 1000].iter() {
-        // Pre-populate cache
-        let cache = new_fifo_cache!(Some(*size));
+        // Pre-populate caches
+        let fifo_cache = new_fifo_cache!(Some(*size));
         for i in 0..*size {
-            cache.insert(&format!("key{}", i), i as i32);
+            fifo_cache.insert(&format!("key{}", i), i as i32);
+        }
+        let lru_cache = new_lru_cache!(Some(*size));
+        for i in 0..*size {
+            lru_cache.insert(&format!("key{}", i), i as i32);
+        }
+        let lfu_cache = new_lfu_cache!(Some(*size));
+        for i in 0..*size {
+            lfu_cache.insert(&format!("key{}", i), i as i32);
+        }
+        let arc_cache = new_arc_cache!(Some(*size));
+        for i in 0..*size {
+            arc_cache.insert(&format!("key{}", i), i as i32);
         }
 
         group.bench_with_input(BenchmarkId::new("FIFO", size), size, |b, &size| {
             b.iter(|| {
                 for i in 0..size {
-                    black_box(cache.get(&format!("key{}", i)));
+                    std::hint::black_box(fifo_cache.get(&format!("key{}", i)));
                 }
             });
         });
-
-        // LRU cache
-        let lru_cache = new_lru_cache!(Some(*size));
-        for i in 0..*size {
-            lru_cache.insert(&format!("key{}", i), i as i32);
-        }
-
         group.bench_with_input(BenchmarkId::new("LRU", size), size, |b, &size| {
             b.iter(|| {
                 for i in 0..size {
-                    black_box(lru_cache.get(&format!("key{}", i)));
+                    std::hint::black_box(lru_cache.get(&format!("key{}", i)));
+                }
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("LFU", size), size, |b, &size| {
+            b.iter(|| {
+                for i in 0..size {
+                    std::hint::black_box(lfu_cache.get(&format!("key{}", i)));
+                }
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("ARC", size), size, |b, &size| {
+            b.iter(|| {
+                for i in 0..size {
+                    std::hint::black_box(arc_cache.get(&format!("key{}", i)));
                 }
             });
         });
     }
-
     group.finish();
 }
 
@@ -133,7 +261,7 @@ fn bench_concurrent_reads(c: &mut Criterion) {
                             thread::spawn(|| {
                                 let cache = new_fifo_cache!(Some(100));
                                 for i in 0..100 {
-                                    black_box(cache.get(&format!("key{}", i % 100)));
+                                    std::hint::black_box(cache.get(&format!("key{}", i % 100)));
                                 }
                             })
                         })
@@ -167,10 +295,12 @@ fn bench_concurrent_mixed(c: &mut Criterion) {
                                     if i % 2 == 0 {
                                         cache.insert(
                                             &format!("key{}", thread_id * 50 + i),
-                                            black_box(i as i32),
+                                            std::hint::black_box(i as i32),
                                         );
                                     } else {
-                                        black_box(cache.get(&format!("key{}", thread_id * 50 + i)));
+                                        std::hint::black_box(
+                                            cache.get(&format!("key{}", thread_id * 50 + i)),
+                                        );
                                     }
                                 }
                             })
@@ -194,23 +324,52 @@ fn bench_eviction(c: &mut Criterion) {
     group.bench_function("FIFO_eviction", |b| {
         b.iter(|| {
             let cache = new_fifo_cache!(Some(50));
-            // Insert 100 items in a cache with limit 50
             for i in 0..100 {
-                cache.insert(&format!("key{}", i), black_box(i as i32));
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
             }
         });
     });
-
     group.bench_function("LRU_eviction", |b| {
         b.iter(|| {
             let cache = new_lru_cache!(Some(50));
-            // Insert 100 items in a cache with limit 50
             for i in 0..100 {
-                cache.insert(&format!("key{}", i), black_box(i as i32));
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
             }
         });
     });
+    group.bench_function("LFU_eviction", |b| {
+        b.iter(|| {
+            let cache = new_lfu_cache!(Some(50));
+            for i in 0..100 {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+    group.bench_function("ARC_eviction", |b| {
+        b.iter(|| {
+            let cache = new_arc_cache!(Some(50));
+            for i in 0..100 {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+    group.finish();
+}
 
+fn bench_memory_eviction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("memory_eviction");
+    // Limit entries high, rely on max_memory (approx 1MB) with ~100KB strings
+    group.bench_function("LRU_memory_eviction", |b| {
+        b.iter(|| {
+            reset_mem();
+            let cache = new_mem_cache!(None, Some(1 * 1024 * 1024)); // 1MB
+            for i in 0..15 {
+                // ~ exceed memory
+                let val = "X".repeat(100_000); // ~100KB
+                cache.insert(&format!("k{}", i), val);
+            }
+        });
+    });
     group.finish();
 }
 
@@ -235,7 +394,7 @@ fn bench_rwlock_concurrent_reads(c: &mut Criterion) {
                                 let cache = new_fifo_cache!(Some(1000));
                                 // Pure reads - RwLock allows concurrent access
                                 for i in 0..100 {
-                                    black_box(cache.get(&format!("key{}", i)));
+                                    std::hint::black_box(cache.get(&format!("key{}", i)));
                                 }
                             })
                         })
@@ -271,11 +430,11 @@ fn bench_read_heavy_workload(c: &mut Criterion) {
                                         // 10% writes
                                         cache.insert(
                                             &format!("key{}", thread_id * 100 + i),
-                                            black_box(i as i32),
+                                            std::hint::black_box(i as i32),
                                         );
                                     } else {
                                         // 90% reads
-                                        black_box(cache.get(&format!("key{}", i % 50)));
+                                        std::hint::black_box(cache.get(&format!("key{}", i % 50)));
                                     }
                                 }
                             })
@@ -301,6 +460,7 @@ criterion_group!(
     bench_concurrent_mixed,
     bench_eviction,
     bench_rwlock_concurrent_reads,
-    bench_read_heavy_workload
+    bench_read_heavy_workload,
+    bench_memory_eviction
 );
 criterion_main!(benches);

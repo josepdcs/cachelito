@@ -63,6 +63,9 @@ pub struct AsyncGlobalCache<'a, R: Clone> {
     /// Maximum number of entries (None = unlimited)
     limit: Option<usize>,
 
+    /// Maximum memory size in bytes (None = unlimited)
+    max_memory: Option<usize>,
+
     /// Eviction policy to use
     policy: EvictionPolicy,
 
@@ -82,6 +85,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     /// * `cache` - Reference to the DashMap storing cache entries
     /// * `order` - Reference to the Mutex-protected eviction order queue
     /// * `limit` - Optional maximum number of entries
+    /// * `max_memory` - Optional maximum memory size in bytes
     /// * `policy` - Eviction policy (FIFO, LRU, or LFU)
     /// * `ttl` - Optional time-to-live in seconds
     ///
@@ -94,6 +98,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     ///     &cache,
     ///     &order,
     ///     Some(1000),
+    ///     Some(100 * 1024 * 1024), // 100MB
     ///     EvictionPolicy::LRU,
     ///     Some(300),
     /// );
@@ -103,6 +108,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         cache: &'a DashMap<String, (R, u64, u64)>,
         order: &'a Mutex<VecDeque<String>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
     ) -> Self {
@@ -110,6 +116,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             cache,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
         }
@@ -123,6 +130,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         cache: &'a DashMap<String, (R, u64, u64)>,
         order: &'a Mutex<VecDeque<String>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
         stats: &'a CacheStats,
@@ -131,6 +139,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             cache,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
             stats,
@@ -274,35 +283,46 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     /// // Update existing value
     /// async_cache.insert("user:123", updated_user_data);
     /// ```
-    pub fn insert(&self, key: &str, value: R) {
+    pub fn insert(&self, key: &str, value: R)
+    where
+        R: crate::MemoryEstimator,
+    {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        // Handle limit and update order - acquire lock first to ensure atomicity
-        if let Some(limit) = self.limit {
-            let mut order = self.order.lock();
+        let mut order = self.order.lock();
 
-            // Check if another task already inserted this key while we were computing
-            if self.cache.contains_key(key) {
-                // Key already exists, just update the order if LRU or ARC
-                if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
-                    order.retain(|k| k != key);
-                    order.push_back(key.to_string());
-                }
-                // Don't insert again
-                return;
+        // Check if another task already inserted this key while we were computing
+        if self.cache.contains_key(key) {
+            // Key already exists, just update the order if LRU or ARC
+            if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
+                order.retain(|k| k != key);
+                order.push_back(key.to_string());
             }
+            // Don't insert again
+            return;
+        }
 
-            // Check limit after acquiring lock to prevent race condition
-            if self.cache.len() >= limit {
-                match self.policy {
+        // Check memory limit first (if specified)
+        if let Some(max_mem) = self.max_memory {
+            loop {
+                let current_mem: usize = self
+                    .cache
+                    .iter()
+                    .map(|entry| entry.value().0.estimate_memory())
+                    .sum();
+
+                if current_mem + value.estimate_memory() <= max_mem {
+                    break;
+                }
+
+                // Need to evict based on policy
+                let evicted = match self.policy {
                     EvictionPolicy::LFU => {
-                        // Find and evict the entry with minimum frequency
                         let mut min_freq_key: Option<String> = None;
                         let mut min_freq = u64::MAX;
-
                         for evict_key in order.iter() {
                             if let Some(entry) = self.cache.get(evict_key) {
                                 if entry.2 < min_freq {
@@ -311,58 +331,121 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                                 }
                             }
                         }
-
                         if let Some(evict_key) = min_freq_key {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
+                            true
+                        } else {
+                            false
                         }
                     }
                     EvictionPolicy::ARC => {
-                        // Adaptive Replacement Cache: Use hybrid score
-                        // Score = frequency * recency_weight
                         let mut best_evict_key: Option<String> = None;
                         let mut best_score = f64::MAX;
-
                         for (idx, evict_key) in order.iter().enumerate() {
                             if let Some(entry) = self.cache.get(evict_key) {
                                 let frequency = entry.2 as f64;
                                 let position_weight = (order.len() - idx) as f64;
                                 let score = frequency * position_weight;
-
                                 if score < best_score {
                                     best_score = score;
                                     best_evict_key = Some(evict_key.clone());
                                 }
                             }
                         }
-
                         if let Some(evict_key) = best_evict_key {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
+                            true
+                        } else {
+                            false
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
-                        // FIFO and LRU: evict from front of queue
-                        while let Some(evict_key) = order.pop_front() {
-                            if self.cache.contains_key(&evict_key) {
-                                self.cache.remove(&evict_key);
-                                break;
+                        if let Some(evict_key) = order.pop_front() {
+                            self.cache.remove(&evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+
+                if !evicted {
+                    break; // Nothing left to evict
+                }
+            }
+        }
+
+        // Check entry count limit (if specified and no memory limit)
+        if self.max_memory.is_none() {
+            if let Some(limit) = self.limit {
+                // Check limit after acquiring lock to prevent race condition
+                if self.cache.len() >= limit {
+                    match self.policy {
+                        EvictionPolicy::LFU => {
+                            // Find and evict the entry with minimum frequency
+                            let mut min_freq_key: Option<String> = None;
+                            let mut min_freq = u64::MAX;
+
+                            for evict_key in order.iter() {
+                                if let Some(entry) = self.cache.get(evict_key) {
+                                    if entry.2 < min_freq {
+                                        min_freq = entry.2;
+                                        min_freq_key = Some(evict_key.clone());
+                                    }
+                                }
                             }
-                            // Key doesn't exist in cache (already removed), try next one
+
+                            if let Some(evict_key) = min_freq_key {
+                                self.cache.remove(&evict_key);
+                                order.retain(|k| k != &evict_key);
+                            }
+                        }
+                        EvictionPolicy::ARC => {
+                            // Adaptive Replacement Cache: Use hybrid score
+                            // Score = frequency * recency_weight
+                            let mut best_evict_key: Option<String> = None;
+                            let mut best_score = f64::MAX;
+
+                            for (idx, evict_key) in order.iter().enumerate() {
+                                if let Some(entry) = self.cache.get(evict_key) {
+                                    let frequency = entry.2 as f64;
+                                    let position_weight = (order.len() - idx) as f64;
+                                    let score = frequency * position_weight;
+
+                                    if score < best_score {
+                                        best_score = score;
+                                        best_evict_key = Some(evict_key.clone());
+                                    }
+                                }
+                            }
+
+                            if let Some(evict_key) = best_evict_key {
+                                self.cache.remove(&evict_key);
+                                order.retain(|k| k != &evict_key);
+                            }
+                        }
+                        EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                            // FIFO and LRU: evict from front of queue
+                            while let Some(evict_key) = order.pop_front() {
+                                if self.cache.contains_key(&evict_key) {
+                                    self.cache.remove(&evict_key);
+                                    break;
+                                }
+                                // Key doesn't exist in cache (already removed), try next one
+                            }
                         }
                     }
                 }
             }
-
-            // Add the new entry to the order queue
-            order.push_back(key.to_string());
-
-            // Insert into cache with frequency initialized to 0
-            self.cache.insert(key.to_string(), (value, timestamp, 0));
-        } else {
-            // No limit - just insert with frequency 0
-            self.cache.insert(key.to_string(), (value, timestamp, 0));
         }
+
+        // Add the new entry to the order queue
+        order.push_back(key.to_string());
+
+        // Insert into cache with frequency initialized to 0
+        self.cache.insert(key.to_string(), (value, timestamp, 0));
     }
 
     /// Returns a reference to the cache statistics.
@@ -391,13 +474,21 @@ mod tests {
         let order = Mutex::new(VecDeque::new());
 
         #[cfg(not(feature = "stats"))]
-        let async_cache = AsyncGlobalCache::new(&cache, &order, None, EvictionPolicy::FIFO, None);
+        let async_cache =
+            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, None);
 
         #[cfg(feature = "stats")]
         let stats = CacheStats::new();
         #[cfg(feature = "stats")]
-        let async_cache =
-            AsyncGlobalCache::new(&cache, &order, None, EvictionPolicy::FIFO, None, &stats);
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            None,
+            &stats,
+        );
 
         // Test insert and get
         async_cache.insert("key1", "value1");
@@ -411,13 +502,21 @@ mod tests {
         let order = Mutex::new(VecDeque::new());
 
         #[cfg(not(feature = "stats"))]
-        let async_cache = AsyncGlobalCache::new(&cache, &order, Some(2), EvictionPolicy::LFU, None);
+        let async_cache =
+            AsyncGlobalCache::new(&cache, &order, Some(2), None, EvictionPolicy::LFU, None);
 
         #[cfg(feature = "stats")]
         let stats = CacheStats::new();
         #[cfg(feature = "stats")]
-        let async_cache =
-            AsyncGlobalCache::new(&cache, &order, Some(2), EvictionPolicy::LFU, None, &stats);
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(2),
+            None,
+            EvictionPolicy::LFU,
+            None,
+            &stats,
+        );
 
         // Insert two entries
         async_cache.insert("key1", "value1");

@@ -187,8 +187,14 @@ pub fn reset(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    // Use serial_test to prevent concurrent execution since all tests share STATS_REGISTRY
+    use serial_test::serial;
+
     #[test]
+    #[serial]
     fn test_register_and_get() {
+        clear(); // Clean state before test
+
         static TEST_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
         register("test_fn", &TEST_STATS);
@@ -202,7 +208,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_ref() {
+        clear(); // Clean state before test
+
         static TEST_STATS2: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
         register("test_fn2", &TEST_STATS2);
@@ -218,8 +227,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_list() {
-        clear(); // Clear any previous registrations
+        clear(); // Clean state before test
 
         static TEST_STATS3: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
         static TEST_STATS4: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
@@ -233,7 +243,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_reset() {
+        clear(); // Clean state before test
+
         static TEST_STATS5: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
         register("test_fn5", &TEST_STATS5);
@@ -249,7 +262,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_clear() {
+        clear(); // Clean state before test
+
         static TEST_STATS6: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
         register("test_fn6", &TEST_STATS6);

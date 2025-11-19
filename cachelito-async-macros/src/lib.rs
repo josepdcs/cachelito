@@ -137,6 +137,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit_expr = &attrs.limit;
     let policy_str = &attrs.policy;
     let ttl_expr = &attrs.ttl;
+    let max_memory_expr = &attrs.max_memory;
 
     // Convert policy string to EvictionPolicy
     let policy_expr = quote! {
@@ -154,6 +155,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 &*#cache_ident,
                 &*#order_ident,
                 #limit_expr,
+                #max_memory_expr,
                 #policy_expr,
                 #ttl_expr,
                 &*#stats_ident,
@@ -184,6 +186,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
                 &*#cache_ident,
                 &*#order_ident,
                 #limit_expr,
+                #max_memory_expr,
                 #policy_expr,
                 #ttl_expr,
                 &*#stats_ident,

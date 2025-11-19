@@ -74,7 +74,7 @@ pub trait MemoryEstimator {
     /// The default implementation only accounts for stack size.
     /// Override this method for types with heap allocations.
     fn estimate_memory(&self) -> usize {
-        std::mem::size_of_val(self)
+        size_of_val(self)
     }
 }
 
@@ -99,6 +99,39 @@ impl MemoryEstimator for f64 {}
 
 impl MemoryEstimator for bool {}
 impl MemoryEstimator for char {}
+
+// String slices - just the reference size since we don't own the data
+impl MemoryEstimator for &str {
+    fn estimate_memory(&self) -> usize {
+        // Reference size + string data length
+        std::mem::size_of::<&str>() + self.len()
+    }
+}
+
+// Slices - reference size + element data
+impl<T: MemoryEstimator> MemoryEstimator for &[T] {
+    fn estimate_memory(&self) -> usize {
+        let ref_size = std::mem::size_of::<&[T]>();
+        let elements_size: usize = self.iter().map(|e| e.estimate_memory()).sum();
+        ref_size + elements_size
+    }
+}
+
+// Arc - size of Arc wrapper + size of inner value
+impl<T: MemoryEstimator> MemoryEstimator for std::sync::Arc<T> {
+    fn estimate_memory(&self) -> usize {
+        // Arc overhead (pointer + ref counts) + inner value size
+        std::mem::size_of::<std::sync::Arc<T>>() + (**self).estimate_memory()
+    }
+}
+
+// Rc - size of Rc wrapper + size of inner value
+impl<T: MemoryEstimator> MemoryEstimator for std::rc::Rc<T> {
+    fn estimate_memory(&self) -> usize {
+        // Rc overhead (pointer + ref count) + inner value size
+        std::mem::size_of::<std::rc::Rc<T>>() + (**self).estimate_memory()
+    }
+}
 
 impl MemoryEstimator for () {}
 

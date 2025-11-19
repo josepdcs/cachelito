@@ -118,6 +118,23 @@ impl<R> CacheEntry<R> {
     }
 }
 
+// Implement MemoryEstimator for CacheEntry
+use crate::MemoryEstimator;
+
+impl<R: MemoryEstimator> MemoryEstimator for CacheEntry<R> {
+    fn estimate_memory(&self) -> usize {
+        // Base struct size (stack-allocated data: Instant + u64)
+        let base = std::mem::size_of::<Self>();
+
+        // Size of the value (including heap allocations)
+        let value_size = self.value.estimate_memory();
+
+        // Note: We subtract size_of_val(&self.value) to avoid double-counting
+        // the stack-allocated part which is already included in `base`
+        base + value_size.saturating_sub(std::mem::size_of_val(&self.value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +161,38 @@ mod tests {
         let entry = CacheEntry::new(100);
         thread::sleep(Duration::from_millis(100));
         assert!(!entry.is_expired(None));
+    }
+
+    #[test]
+    fn test_memory_estimation_primitive() {
+        let entry = CacheEntry::new(42i32);
+        let estimated = entry.estimate_memory();
+
+        // Should be approximately: size_of::<CacheEntry<i32>>()
+        // (Instant + u64 + i32)
+        assert!(estimated >= std::mem::size_of::<CacheEntry<i32>>());
+    }
+
+    #[test]
+    fn test_memory_estimation_string() {
+        let s = String::from("Hello, World!");
+        let entry = CacheEntry::new(s.clone());
+        let estimated = entry.estimate_memory();
+
+        // Should include struct overhead + string capacity
+        let expected_min = std::mem::size_of::<CacheEntry<String>>() + s.capacity();
+        assert!(estimated >= expected_min);
+    }
+
+    #[test]
+    fn test_memory_estimation_vec() {
+        let v = vec![1, 2, 3, 4, 5];
+        let entry = CacheEntry::new(v.clone());
+        let estimated = entry.estimate_memory();
+
+        // Should include struct overhead + vec capacity
+        let expected_min =
+            std::mem::size_of::<CacheEntry<Vec<i32>>>() + v.capacity() * std::mem::size_of::<i32>();
+        assert!(estimated >= expected_min);
     }
 }

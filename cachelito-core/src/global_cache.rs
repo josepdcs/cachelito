@@ -78,6 +78,7 @@ pub struct GlobalCache<R: 'static> {
     pub map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
     pub order: &'static Lazy<Mutex<VecDeque<String>>>,
     pub limit: Option<usize>,
+    pub max_memory: Option<usize>,
     pub policy: EvictionPolicy,
     pub ttl: Option<u64>,
     #[cfg(feature = "stats")]
@@ -92,6 +93,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// * `map` - Static reference to a RwLock-protected HashMap for storing cache entries
     /// * `order` - Static reference to a Mutex-protected VecDeque for tracking entry order
     /// * `limit` - Optional maximum number of entries (None for unlimited)
+    /// * `max_memory` - Optional maximum memory size in bytes (None for unlimited)
     /// * `policy` - Eviction policy to use when limit is reached
     /// * `ttl` - Optional time-to-live in seconds for cache entries
     /// * `stats` - Static reference to CacheStats for tracking hit/miss statistics (stats feature only)
@@ -107,6 +109,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///     &CACHE_MAP,
     ///     &CACHE_ORDER,
     ///     Some(50),
+    ///     Some(100 * 1024 * 1024), // 100MB
     ///     EvictionPolicy::FIFO,
     ///     Some(300), // 5 minutes TTL
     ///     #[cfg(feature = "stats")]
@@ -118,6 +121,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
         order: &'static Lazy<Mutex<VecDeque<String>>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
         stats: &'static Lazy<CacheStats>,
@@ -126,6 +130,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
             map,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
             stats,
@@ -137,6 +142,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
         order: &'static Lazy<Mutex<VecDeque<String>>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
     ) -> Self {
@@ -144,6 +150,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
             map,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
         }
@@ -307,7 +314,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// cache.insert("user:456", another_user);
     /// cache.insert("user:789", yet_another_user); // Evicts first entry
     /// ```
-    pub fn insert(&self, key: &str, value: R) {
+    pub fn insert(&self, key: &str, value: R)
+    where
+        R: crate::MemoryEstimator,
+    {
         let key_s = key.to_string();
         let entry = CacheEntry::new(value);
 
@@ -320,16 +330,31 @@ impl<R: Clone + 'static> GlobalCache<R> {
         }
         o.push_back(key_s.clone());
 
-        if let Some(limit) = self.limit {
-            if o.len() > limit {
-                match self.policy {
+        // Check memory limit first (if specified)
+        if let Some(max_mem) = self.max_memory {
+            loop {
+                let current_mem = {
+                    let map_read = self.map.read();
+                    map_read
+                        .values()
+                        .map(|e| e.value.estimate_memory())
+                        .sum::<usize>()
+                };
+
+                if current_mem <= max_mem {
+                    break;
+                }
+
+                // Need to evict based on policy
+                let evicted = match self.policy {
                     EvictionPolicy::LFU => {
-                        // Find and evict the entry with the minimum frequency
                         let mut map_write = self.map.write();
                         let min_freq_key = find_min_frequency_key(&map_write, &o);
-
                         if let Some(evict_key) = min_freq_key {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
                         }
                     }
                     EvictionPolicy::ARC => {
@@ -338,16 +363,59 @@ impl<R: Clone + 'static> GlobalCache<R> {
                             find_arc_eviction_key(&map_write, o.iter().enumerate())
                         {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
-                        // Keep trying to evict until we find a valid entry or queue is empty
-                        let mut map_write = self.map.write();
-                        while let Some(evict_key) = o.pop_front() {
-                            // Check if the key still exists in the cache before removing
-                            if map_write.contains_key(&evict_key) {
-                                map_write.remove(&evict_key);
-                                break;
+                        if let Some(evict_key) = o.pop_front() {
+                            let mut map_write = self.map.write();
+                            map_write.remove(&evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+
+                if !evicted {
+                    break; // Nothing left to evict
+                }
+            }
+        }
+
+        // Check entry count limit (if specified and no memory limit)
+        if self.max_memory.is_none() {
+            if let Some(limit) = self.limit {
+                if o.len() > limit {
+                    match self.policy {
+                        EvictionPolicy::LFU => {
+                            // Find and evict the entry with the minimum frequency
+                            let mut map_write = self.map.write();
+                            let min_freq_key = find_min_frequency_key(&map_write, &o);
+
+                            if let Some(evict_key) = min_freq_key {
+                                remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            }
+                        }
+                        EvictionPolicy::ARC => {
+                            let mut map_write = self.map.write();
+                            if let Some(evict_key) =
+                                find_arc_eviction_key(&map_write, o.iter().enumerate())
+                            {
+                                remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            }
+                        }
+                        EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                            // Keep trying to evict until we find a valid entry or queue is empty
+                            let mut map_write = self.map.write();
+                            while let Some(evict_key) = o.pop_front() {
+                                // Check if the key still exists in the cache before removing
+                                if map_write.contains_key(&evict_key) {
+                                    map_write.remove(&evict_key);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -426,7 +494,11 @@ impl<R: Clone + 'static> GlobalCache<R> {
 /// // If result was Err, nothing is cached
 /// // If result was Ok, the value is cached
 /// ```
-impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<T, E>> {
+impl<
+        T: Clone + Debug + 'static + crate::MemoryEstimator,
+        E: Clone + Debug + 'static + crate::MemoryEstimator,
+    > GlobalCache<Result<T, E>>
+{
     /// Inserts a Result into the cache, but only if it's an `Ok` variant.
     ///
     /// This method intelligently caches only successful results, preventing
@@ -487,6 +559,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -509,6 +582,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -529,6 +603,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,
@@ -553,6 +628,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(2),
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -580,6 +656,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(2),
+            None,
             EvictionPolicy::LRU,
             None,
             #[cfg(feature = "stats")]
@@ -608,6 +685,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(3),
+            None,
             EvictionPolicy::LRU,
             None,
             #[cfg(feature = "stats")]
@@ -646,7 +724,8 @@ mod tests {
                         &MAP,
                         &ORDER,
                         None,
-                        EvictionPolicy::FIFO,
+                        None,
+            EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -677,6 +756,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             Some(1),
             #[cfg(feature = "stats")]
@@ -705,6 +785,7 @@ mod tests {
             &RES_MAP,
             &RES_ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -726,6 +807,7 @@ mod tests {
         let cache = GlobalCache::new(
             &RES_MAP,
             &RES_ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,
@@ -750,6 +832,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(5),
+            None,
             EvictionPolicy::LRU,
             None,
             #[cfg(feature = "stats")]
@@ -768,7 +851,8 @@ mod tests {
                         &MAP,
                         &ORDER,
                         Some(5),
-                        EvictionPolicy::LRU,
+                        None,
+            EvictionPolicy::LRU,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -801,6 +885,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -831,6 +916,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -850,7 +936,8 @@ mod tests {
                         &MAP,
                         &ORDER,
                         None,
-                        EvictionPolicy::FIFO,
+                        None,
+            EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -887,6 +974,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -901,7 +989,8 @@ mod tests {
                 &MAP,
                 &ORDER,
                 None,
-                EvictionPolicy::FIFO,
+                None,
+            EvictionPolicy::FIFO,
                 None,
                 #[cfg(feature = "stats")]
                 &STATS,
@@ -919,7 +1008,8 @@ mod tests {
                         &MAP,
                         &ORDER,
                         None,
-                        EvictionPolicy::FIFO,
+                        None,
+            EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -951,6 +1041,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,
@@ -984,6 +1075,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             Some(1),
@@ -1020,6 +1112,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -1052,6 +1145,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -1067,7 +1161,8 @@ mod tests {
                         &MAP,
                         &ORDER,
                         None,
-                        EvictionPolicy::FIFO,
+                        None,
+            EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -1107,6 +1202,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -1140,6 +1236,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,

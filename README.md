@@ -16,13 +16,14 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🔒 **Thread-local option**: Optional thread-local storage with `scope = "thread"` for maximum performance
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
-- 🗑️ **Cache limits**: Control memory usage with configurable cache size limits
-- 📊 **Eviction policies**: Choose between FIFO, LRU (default), LFU, and ARC *(v0.9.0)*
-- 🎯 **ARC (Adaptive Replacement Cache)**: Self-tuning policy that adapts between recency and frequency
+- 🗑️ **Cache entry limits**: Control growth with numeric `limit`
+- 💾 **Memory-based limits (v0.10.0)**: New `max_memory = "100MB"` attribute for memory-aware eviction
+- 📊 **Eviction policies**: FIFO, LRU (default), LFU *(v0.8.0)*, ARC *(v0.9.0)*
+- 🎯 **ARC (Adaptive Replacement Cache)**: Self-tuning policy combining recency & frequency
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
-- 📏 **Memory estimation**: `MemoryEstimator` trait for tracking value memory footprint (foundation for incoming memory limits feature)
-- 📈 **Statistics**: Track cache hit/miss rates and performance metrics (with `stats` feature)
-- 🔮 **Async/await support** *(v0.7.0)*: Dedicated `cachelito-async` crate for async functions with lock-free DashMap
+- 📏 **MemoryEstimator trait**: Used internally for memory-based limits (customizable for user types)
+- 📈 **Statistics (v0.6.0+)**: Track hit/miss rates via `stats` feature & `stats_registry`
+- 🔮 **Async/await support (v0.7.0)**: Dedicated `cachelito-async` crate (lock-free DashMap)
 - ✅ **Type-safe**: Full compile-time type checking
 - 📦 **Minimal dependencies**: Uses `parking_lot` for optimal performance
 
@@ -34,15 +35,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.9.0"
-
-# Optional: Enable statistics tracking
-cachelito = { version = "0.9.0", features = ["stats"] }
+cachelito = "0.10.0"
+# Or with statistics:
+# cachelito = { version = "0.10.0", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` uses independent versioning from `cachelito`. The version numbers do not correspond; use the latest compatible version as indicated below.
+> **Note:** `cachelito-async` uses independent versioning from `cachelito`.
 ```toml
 [dependencies]
 cachelito-async = "0.2.0"
@@ -51,21 +51,20 @@ tokio = { version = "1", features = ["full"] }
 
 ## Which Version Should I Use?
 
-Choose the right crate based on your use case:
-
 | Use Case                | Crate                            | Macro                           | Best For                                       |
 |-------------------------|----------------------------------|---------------------------------|------------------------------------------------|
-| **Sync functions**      | `cachelito`                      | `#[cache]`                      | CPU-bound computations, mathematical functions |
-| **Async functions**     | `cachelito-async`                | `#[cache_async]`                | I/O operations, database queries, API calls    |
-| **Thread-local cache**  | `cachelito`                      | `#[cache(scope = "thread")]`    | Per-thread isolated cache                      |
-| **Global shared cache** | `cachelito` or `cachelito-async` | `#[cache]` or `#[cache_async]`  | Cross-thread/task cache sharing                |
-| **High concurrency**    | `cachelito-async`                | `#[cache_async]`                | Many concurrent async tasks                    |
-| **Statistics tracking** | `cachelito` (v0.6.0+)            | `#[cache]` with `stats` feature | Performance monitoring                         |
+| **Sync functions**      | `cachelito`                      | `#[cache]`                      | CPU-bound computations                        |
+| **Async functions**     | `cachelito-async`                | `#[cache_async]`                | I/O-bound / network operations                |
+| **Thread-local cache**  | `cachelito`                      | `#[cache(scope = "thread")]`    | Per-thread isolated cache                     |
+| **Global shared cache** | `cachelito` / `cachelito-async`  | `#[cache]` / `#[cache_async]`   | Cross-thread/task sharing                     |
+| **High concurrency**    | `cachelito-async`                | `#[cache_async]`                | Many concurrent async tasks                   |
+| **Statistics tracking** | `cachelito` (v0.6.0+)            | `#[cache]` + feature `stats`    | Performance monitoring                        |
+| **Memory limits**       | `cachelito` (v0.10.0)            | `#[cache(max_memory = "64MB")]` | Large objects / controlled memory usage       |
 
 **Quick Decision:**
-
 - 🔄 Synchronous code? → Use `cachelito`
 - ⚡ Async/await code? → Use `cachelito-async`
+- 💾 Need memory-based eviction? → Use `cachelito` v0.10.0+
 
 ## Usage
 
@@ -675,7 +674,6 @@ async fn main() {
 | **Blocking**       | May block on lock                       | **No blocking**                |
 | **Policies**       | FIFO, LRU                               | FIFO, LRU                      |
 | **TTL**            | ✅ Supported                             | ✅ Supported                    |
-| **Result caching** | Only `Ok` values                        | Only `Ok` values               |
 
 ### Why DashMap for Async?
 
@@ -1032,22 +1030,6 @@ fn main() {
 
 **Default behavior:** If `name` is not provided, the function name is used as the identifier.
 
-### Important Notes
-
-- **Global scope by default**: Statistics are automatically available via `stats_registry` (default behavior)
-- **Thread-local statistics**: Thread-local caches (`scope = "thread"`) **DO track statistics** internally via
-  the `ThreadLocalCache::stats` field, but these are **NOT accessible via `stats_registry::get()`**
-  due to architectural limitations. See [THREAD_LOCAL_STATS.md](THREAD_LOCAL_STATS.md) for a detailed explanation.
-- **Performance**: Statistics use atomic operations (minimal overhead)
-- **Feature flag**: Statistics are only compiled when the `stats` feature is enabled
-
-**Why thread-local stats aren't in `stats_registry`:**
-
-- Each thread has its own independent cache and statistics
-- Thread-local statics (`thread_local!`) cannot be registered in a global registry
-- Global scope (default) provides full statistics access via `stats_registry`
-- Thread-local stats are still useful for testing and internal debugging
-
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
@@ -1070,7 +1052,44 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.9.0
+### Latest Release: Version 0.10.0
+
+**💾 Memory-Based Limits!**
+
+Version 0.10.0 introduces memory-aware caching controls:
+
+**New Features:**
+
+- 💾 **Memory-Based Limits** - Control cache size by memory footprint
+- 📏 **`max_memory` Attribute** - Specify memory limit (e.g. `max_memory = "100MB"`)
+- 🔄 **Combined Limits** - Use both entry count and memory limits together
+- ⚙️ **Custom Memory Estimation** - Implement `MemoryEstimator` for precise control
+- 📊 **Improved Statistics** - Monitor memory usage and hit/miss rates together
+
+**Breaking Changes:**
+
+- **Default policy remains LRU** - No change, but now with memory limits!
+- **MemoryEstimator usage** - Custom types with heap allocations must implement `MemoryEstimator`
+
+**Quick Start:**
+
+```rust
+// Memory limit - eviction when total size exceeds 100MB
+#[cache(max_memory = "100MB")]
+fn large_object(id: u32) -> Vec<u8> {
+    vec![0u8; 512 * 1024] // 512KB object
+}
+
+// Combined limits - max 500 entries OR 128MB
+#[cache(limit = 500, max_memory = "128MB")]
+fn compute(x: u64) -> u64 { x * x }
+```
+
+See the Memory-Based Limits section above for complete details.
+
+---
+
+### Previous Release: Version 0.9.0
 
 **🎯 ARC - Adaptive Replacement Cache!**
 
@@ -1080,45 +1099,17 @@ Version 0.9.0 introduces a self-tuning cache policy that automatically adapts to
 
 - 🎯 **ARC Eviction Policy** - Adaptive Replacement Cache that combines LRU and LFU
 - 🧠 **Self-Tuning** - Automatically balances between recency and frequency
-- 🛡️ **Scan-Resistant** - Protects frequently accessed items from sequential scans
+- **Scan-Resistant** - Protects frequently accessed items from sequential scans
 - ⚡ **Operation Complexity** - Insert is O(1); get and evict are O(n)
 - 🔄 **Mixed Workloads** - Ideal for workloads with varying access patterns
 - 📊 **Both Sync & Async** - ARC available in `cachelito` and `cachelito-async`
 
-**Quick Start:**
+**Breaking Changes:**
 
-```rust
-// ARC policy - self-tuning, adapts to your workload
-#[cache(limit = 100, policy = "arc")]
-fn smart_computation(x: i32) -> i32 {
-    x * x
-}
-```
+- **Default policy changed from FIFO to LRU** - LRU is more effective for most use cases. To keep FIFO behavior, explicitly use `policy = "fifo"`
 
-**How ARC Works:**
 
-ARC dynamically combines:
-- **Recency** (LRU-like): Recently accessed items stay cached
-- **Frequency** (LFU-like): Frequently accessed items stay cached
-- **Adaptive scoring**: Eviction score = `frequency × recency_weight`
-
-**When to Use ARC:**
-
-- ✅ Mixed access patterns (some frequent, some recent)
-- ✅ Workloads with sequential scans that shouldn't pollute cache
-- ✅ When you want automatic tuning without manual configuration
-- ✅ Applications where both hot items and recent items matter
-
-**Policy Comparison:**
-
-| Policy | Eviction | Cache Hit | Best For |
-|--------|----------|-----------|----------|
-| FIFO | O(1) | O(1) | Simple, predictable |
-| LRU (default) | O(1) | O(n) | Temporal locality |
-| LFU | O(n) | O(1) | Frequency patterns |
-| ARC (new) | O(n) | O(n) | Mixed workloads, self-tuning |
-
-See the [examples/arc_policy.rs](examples/arc_policy.rs) for a comprehensive demonstration.
+See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
 
 ---
 
@@ -1183,4 +1174,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [Thread-Local Statistics](THREAD_LOCAL_STATS.md) - Why thread-local cache stats aren't in `stats_registry` and how
   they work
 - [API Documentation](https://docs.rs/cachelito) - Full API reference
-

@@ -53,7 +53,7 @@ use crate::utils::{
 ///     static MY_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
-/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, EvictionPolicy::FIFO, None);
+/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, None, EvictionPolicy::FIFO, None);
 /// cache.insert("answer", 42);
 /// assert_eq!(cache.get("answer"), Some(42));
 /// ```
@@ -71,7 +71,7 @@ use crate::utils::{
 /// }
 ///
 /// // Cache with limit of 100 entries using LRU eviction
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, None);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::LRU, None);
 /// cache.insert("key1", "value1".to_string());
 /// cache.insert("key2", "value2".to_string());
 ///
@@ -92,7 +92,7 @@ use crate::utils::{
 /// }
 ///
 /// // Cache with 60 second TTL
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, Some(60));
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, Some(60));
 /// cache.insert("key", "value".to_string());
 ///
 /// // Entry will expire after 60 seconds
@@ -105,6 +105,8 @@ pub struct ThreadLocalCache<R: 'static> {
     pub order: &'static LocalKey<RefCell<VecDeque<String>>>,
     /// Maximum number of items to store in the cache
     pub limit: Option<usize>,
+    /// Maximum memory size in bytes
+    pub max_memory: Option<usize>,
     /// Eviction policy to use for the cache
     pub policy: EvictionPolicy,
     /// Optional TTL (in seconds) for cache entries
@@ -122,6 +124,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// * `cache` - A static reference to a `LocalKey` that stores the cache HashMap
     /// * `order` - A static reference to a `LocalKey` that stores the eviction order queue
     /// * `limit` - Optional maximum number of entries (None for unlimited)
+    /// * `max_memory` - Optional maximum memory size in bytes (None for unlimited)
     /// * `policy` - Eviction policy to use when limit is reached
     /// * `ttl` - Optional time-to-live in seconds (None for no expiration)
     ///
@@ -137,12 +140,13 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// }
     ///
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), EvictionPolicy::LRU, Some(60));
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::LRU, Some(60));
     /// ```
     pub fn new(
         cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
         order: &'static LocalKey<RefCell<VecDeque<String>>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
     ) -> Self {
@@ -150,6 +154,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
             cache,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
             #[cfg(feature = "stats")]
@@ -178,7 +183,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None);
     /// cache.insert("key", 100);
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
@@ -281,12 +286,15 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None);
     /// cache.insert("first", 1);
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
     /// ```
-    pub fn insert(&self, key: &str, value: R) {
+    pub fn insert(&self, key: &str, value: R)
+    where
+        R: crate::MemoryEstimator,
+    {
         let key = key.to_string();
         let entry = CacheEntry::new(value);
 
@@ -301,43 +309,103 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
             }
             order.push_back(key.clone());
 
-            if let Some(limit) = self.limit {
-                if order.len() > limit {
-                    match self.policy {
-                        EvictionPolicy::LFU => {
-                            // Find and evict the entry with the minimum frequency
-                            let min_freq_key = self.cache.with(|c| {
-                                find_min_frequency_key(&c.borrow(), &order)
-                            });
+            // Check memory limit first (if specified)
+            if let Some(max_mem) = self.max_memory {
+                loop {
+                    let current_mem = self.cache.with(|c| {
+                        let cache = c.borrow();
+                        cache
+                            .values()
+                            .map(|e| e.value.estimate_memory())
+                            .sum::<usize>()
+                    });
 
+                    if current_mem <= max_mem {
+                        break;
+                    }
+
+                    // Need to evict based on policy
+                    let evicted = match self.policy {
+                        EvictionPolicy::LFU => {
+                            let min_freq_key = self
+                                .cache
+                                .with(|c| find_min_frequency_key(&c.borrow(), &order));
                             if let Some(evict_key) = min_freq_key {
                                 self.remove_key(&evict_key);
+                                true
+                            } else {
+                                false
                             }
                         }
                         EvictionPolicy::ARC => {
                             let evict_key = self.cache.with(|c| {
                                 find_arc_eviction_key(&c.borrow(), order.iter().enumerate())
                             });
-
                             if let Some(key) = evict_key {
                                 self.remove_key(&key);
+                                true
+                            } else {
+                                false
                             }
                         }
                         EvictionPolicy::FIFO | EvictionPolicy::LRU => {
-                            // Keep trying to evict until we find a valid entry or queue is empty
-                            while let Some(evict_key) = order.pop_front() {
-                                let mut removed = false;
+                            if let Some(evict_key) = order.pop_front() {
                                 self.cache.with(|c| {
-                                    let mut cache = c.borrow_mut();
-                                    if cache.contains_key(&evict_key) {
-                                        cache.remove(&evict_key);
-                                        removed = true;
-                                    }
+                                    c.borrow_mut().remove(&evict_key);
                                 });
-                                if removed {
-                                    break;
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    };
+
+                    if !evicted {
+                        break; // Nothing left to evict
+                    }
+                }
+            }
+
+            // Check entry count limit (if specified and no memory limit)
+            if self.max_memory.is_none() {
+                if let Some(limit) = self.limit {
+                    if order.len() > limit {
+                        match self.policy {
+                            EvictionPolicy::LFU => {
+                                // Find and evict the entry with the minimum frequency
+                                let min_freq_key = self
+                                    .cache
+                                    .with(|c| find_min_frequency_key(&c.borrow(), &order));
+
+                                if let Some(evict_key) = min_freq_key {
+                                    self.remove_key(&evict_key);
                                 }
-                                // Key doesn't exist in cache (already removed), try next one
+                            }
+                            EvictionPolicy::ARC => {
+                                let evict_key = self.cache.with(|c| {
+                                    find_arc_eviction_key(&c.borrow(), order.iter().enumerate())
+                                });
+
+                                if let Some(key) = evict_key {
+                                    self.remove_key(&key);
+                                }
+                            }
+                            EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                                // Keep trying to evict until we find a valid entry or queue is empty
+                                while let Some(evict_key) = order.pop_front() {
+                                    let mut removed = false;
+                                    self.cache.with(|c| {
+                                        let mut cache = c.borrow_mut();
+                                        if cache.contains_key(&evict_key) {
+                                            cache.remove(&evict_key);
+                                            removed = true;
+                                        }
+                                    });
+                                    if removed {
+                                        break;
+                                    }
+                                    // Key doesn't exist in cache (already removed), try next one
+                                }
                             }
                         }
                     }
@@ -362,7 +430,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None);
     /// cache.insert("key1", 100);
     /// let _ = cache.get("key1");
     /// let _ = cache.get("key2");
@@ -408,9 +476,9 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 /// #     static CACHE: RefCell<HashMap<String, CacheEntry<Result<i32, String>>>> = RefCell::new(HashMap::new());
 /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// # }
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, EvictionPolicy::FIFO, None);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None);
 ///
-/// // Only Ok values are cached
+/// // Ok values are cached
 /// cache.insert_result("success", &Ok(42));
 /// assert_eq!(cache.get("success"), Some(Ok(42)));
 ///
@@ -418,7 +486,11 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 /// cache.insert_result("failure", &Err("error".to_string()));
 /// assert_eq!(cache.get("failure"), None);
 /// ```
-impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> ThreadLocalCache<Result<T, E>> {
+impl<
+        T: Clone + Debug + 'static + crate::MemoryEstimator,
+        E: Clone + Debug + 'static + crate::MemoryEstimator,
+    > ThreadLocalCache<Result<T, E>>
+{
     /// Inserts a `Result` into the cache, but only if it's an `Ok` value.
     ///
     /// This method is specifically designed for caching functions that return
@@ -457,7 +529,7 @@ mod tests {
     ) -> ThreadLocalCache<i32> {
         TEST_CACHE.with(|c| c.borrow_mut().clear());
         TEST_ORDER.with(|o| o.borrow_mut().clear());
-        ThreadLocalCache::new(&TEST_CACHE, &TEST_ORDER, limit, policy, ttl)
+        ThreadLocalCache::new(&TEST_CACHE, &TEST_ORDER, limit, None, policy, ttl)
     }
 
     #[test]
@@ -533,7 +605,14 @@ mod tests {
             static RES_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
         }
 
-        let cache = ThreadLocalCache::new(&RES_CACHE, &RES_ORDER, None, EvictionPolicy::FIFO, None);
+        let cache = ThreadLocalCache::new(
+            &RES_CACHE,
+            &RES_ORDER,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            None,
+        );
         let ok_result = Ok(100);
         cache.insert_result("success", &ok_result);
         assert_eq!(cache.get("success"), Some(Ok(100)));
@@ -546,7 +625,14 @@ mod tests {
             static RES_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
         }
 
-        let cache = ThreadLocalCache::new(&RES_CACHE, &RES_ORDER, None, EvictionPolicy::FIFO, None);
+        let cache = ThreadLocalCache::new(
+            &RES_CACHE,
+            &RES_ORDER,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            None,
+        );
         let err_result: Result<i32, String> = Err("error".to_string());
         cache.insert_result("failure", &err_result);
         assert_eq!(cache.get("failure"), None); // Errors not cached
