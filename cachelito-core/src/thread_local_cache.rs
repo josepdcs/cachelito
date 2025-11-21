@@ -468,6 +468,25 @@ impl<R: Clone + 'static + crate::MemoryEstimator> ThreadLocalCache<R> {
 
             // Check memory limit first (if specified)
             if let Some(max_mem) = self.max_memory {
+                // First, check if the new value by itself exceeds max_mem
+                // This is a safety check to prevent infinite eviction loop
+                let new_value_size = self.cache.with(|c| {
+                    c.borrow()
+                        .get(&key)
+                        .map(|e| e.value.estimate_memory())
+                        .unwrap_or(0)
+                });
+
+                if new_value_size > max_mem {
+                    // The value itself is too large for the cache
+                    // Remove it and return early to respect memory limit
+                    self.cache.with(|c| {
+                        c.borrow_mut().remove(&key);
+                    });
+                    order.pop_back(); // Remove from order queue as well
+                    return;
+                }
+
                 loop {
                     let current_mem = self.cache.with(|c| {
                         let cache = c.borrow();

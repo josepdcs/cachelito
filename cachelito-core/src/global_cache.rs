@@ -430,6 +430,24 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
 
         // Check memory limit first (if specified)
         if let Some(max_mem) = self.max_memory {
+            // First, check if the new value by itself exceeds max_mem
+            // This is a safety check to prevent infinite eviction loop
+            let new_value_size = {
+                let map_read = self.map.read();
+                map_read
+                    .get(&key_s)
+                    .map(|e| e.value.estimate_memory())
+                    .unwrap_or(0)
+            };
+
+            if new_value_size > max_mem {
+                // The value itself is too large for the cache
+                // Remove it and return early to respect memory limit
+                self.map.write().remove(&key_s);
+                o.pop_back(); // Remove from order queue as well
+                return;
+            }
+
             loop {
                 let current_mem = {
                     let map_read = self.map.read();

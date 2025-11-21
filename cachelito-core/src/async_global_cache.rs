@@ -512,6 +512,19 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
 
         // Check memory limit first (if specified)
         if let Some(max_mem) = self.max_memory {
+            let value_size = value.estimate_memory();
+
+            // Safety check: if the value itself is larger than max_mem,
+            // we need to handle it to avoid infinite loop
+            if value_size > max_mem {
+                // Value is too large to fit in cache even when empty
+                // We have two options:
+                // 1. Don't cache it at all (skip insertion)
+                // 2. Clear all entries and cache it anyway
+                // We choose option 1 to respect the memory limit
+                return;
+            }
+
             loop {
                 let current_mem: usize = self
                     .cache
@@ -519,7 +532,7 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                     .map(|entry| entry.value().0.estimate_memory())
                     .sum();
 
-                if current_mem + value.estimate_memory() <= max_mem {
+                if current_mem + value_size <= max_mem {
                     break;
                 }
 
