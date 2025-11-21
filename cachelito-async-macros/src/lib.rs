@@ -146,6 +146,16 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate cache logic based on Result or regular return
     let cache_logic = if is_result {
+        // Check if we need memory-aware insertion
+        // max_memory is a TokenStream2, check if it represents None
+        let max_memory_str = max_memory_expr.to_string();
+
+        let insert_call = if !max_memory_str.contains("None") {
+            quote! { __cache.insert_with_memory(&__key, __ok_value.clone()); }
+        } else {
+            quote! { __cache.insert(&__key, __ok_value.clone()); }
+        };
+
         quote! {
             // Generate cache key
             let __key = #key_expr;
@@ -171,12 +181,22 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             // Only cache Ok values
             if let Ok(ref __ok_value) = __result {
-                __cache.insert(&__key, __ok_value.clone());
+                #insert_call
             }
 
             __result
         }
     } else {
+        // Check if we need memory-aware insertion
+        // max_memory is a TokenStream2, check if it represents None
+        let max_memory_str = max_memory_expr.to_string();
+
+        let insert_call = if !max_memory_str.contains("None") {
+            quote! { __cache.insert_with_memory(&__key, __result.clone()); }
+        } else {
+            quote! { __cache.insert(&__key, __result.clone()); }
+        };
+
         quote! {
             // Generate cache key
             let __key = #key_expr;
@@ -201,7 +221,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             let __result = (async #block).await;
 
             // Cache the result
-            __cache.insert(&__key, __result.clone());
+            #insert_call
 
             __result
         }

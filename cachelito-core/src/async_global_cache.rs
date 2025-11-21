@@ -267,12 +267,19 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     /// - **FIFO**: Evicts the oldest inserted entry (front of queue)
     /// - **LRU**: Evicts the least recently used entry (front of queue)
     /// - **LFU**: Evicts the entry with the lowest frequency counter
+    /// - **ARC**: Evicts based on a hybrid score of frequency and recency
     ///
     /// # Thread Safety
     ///
     /// This method uses locks to ensure consistency between the cache and
     /// the order queue. The order lock is held during eviction and insertion
     /// to prevent race conditions.
+    ///
+    /// # Note
+    ///
+    /// This method does NOT require `MemoryEstimator` trait. It only handles entry-count limits.
+    /// If `max_memory` is configured, use `insert_with_memory()` instead, which requires
+    /// the type to implement `MemoryEstimator`.
     ///
     /// # Examples
     ///
@@ -283,10 +290,176 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     /// // Update existing value
     /// async_cache.insert("user:123", updated_user_data);
     /// ```
-    pub fn insert(&self, key: &str, value: R)
-    where
-        R: crate::MemoryEstimator,
-    {
+    pub fn insert(&self, key: &str, value: R) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut order = self.order.lock();
+
+        // Check if another task already inserted this key while we were computing
+        if self.cache.contains_key(key) {
+            // Key already exists, just update the order if LRU or ARC
+            if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
+                order.retain(|k| k != key);
+                order.push_back(key.to_string());
+            }
+            // Don't insert again
+            return;
+        }
+
+        // Handle entry-count limits
+        self.handle_entry_limit_eviction(&mut order);
+
+        // Add the new entry to the order queue
+        order.push_back(key.to_string());
+
+        // Insert into cache with frequency initialized to 0
+        self.cache.insert(key.to_string(), (value, timestamp, 0));
+    }
+
+    /// Finds the key with minimum frequency for LFU eviction.
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - The order queue to search
+    ///
+    /// # Returns
+    ///
+    /// * `Option<String>` - The key with minimum frequency, or None if not found
+    fn find_min_frequency_key(&self, order: &VecDeque<String>) -> Option<String> {
+        let mut min_freq_key: Option<String> = None;
+        let mut min_freq = u64::MAX;
+
+        for evict_key in order.iter() {
+            if let Some(entry) = self.cache.get(evict_key) {
+                if entry.2 < min_freq {
+                    min_freq = entry.2;
+                    min_freq_key = Some(evict_key.clone());
+                }
+            }
+        }
+
+        min_freq_key
+    }
+
+    /// Finds the key to evict using ARC (Adaptive Replacement Cache) policy.
+    ///
+    /// ARC uses a hybrid score combining frequency and recency.
+    /// Score = frequency * position_weight (higher position = more recent)
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - The order queue to search
+    ///
+    /// # Returns
+    ///
+    /// * `Option<String>` - The key with lowest score, or None if not found
+    fn find_arc_eviction_key(&self, order: &VecDeque<String>) -> Option<String> {
+        let mut best_evict_key: Option<String> = None;
+        let mut best_score = f64::MAX;
+
+        for (idx, evict_key) in order.iter().enumerate() {
+            if let Some(entry) = self.cache.get(evict_key) {
+                let frequency = entry.2 as f64;
+                let position_weight = (order.len() - idx) as f64;
+                let score = frequency * position_weight;
+
+                if score < best_score {
+                    best_score = score;
+                    best_evict_key = Some(evict_key.clone());
+                }
+            }
+        }
+
+        best_evict_key
+    }
+
+    /// Handles the eviction of entries from the cache to enforce the entry limit based on the eviction policy.
+    ///
+    /// This method ensures that the number of entries in the cache does not exceed the configured limit by removing
+    /// entries based on the specified eviction policy.
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - A mutable reference to the order queue
+    ///
+    /// # Behavior
+    ///
+    /// If the cache's entry limit is exceeded:
+    /// - **LFU**: Evicts the entry with the lowest frequency counter
+    /// - **ARC**: Evicts based on a hybrid score of frequency and recency
+    /// - **FIFO/LRU**: Evicts from the front of the queue
+    fn handle_entry_limit_eviction(&self, order: &mut VecDeque<String>) {
+        if let Some(limit) = self.limit {
+            if self.cache.len() >= limit {
+                match self.policy {
+                    EvictionPolicy::LFU => {
+                        if let Some(evict_key) = self.find_min_frequency_key(order) {
+                            self.cache.remove(&evict_key);
+                            order.retain(|k| k != &evict_key);
+                        }
+                    }
+                    EvictionPolicy::ARC => {
+                        if let Some(evict_key) = self.find_arc_eviction_key(order) {
+                            self.cache.remove(&evict_key);
+                            order.retain(|k| k != &evict_key);
+                        }
+                    }
+                    EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                        // FIFO and LRU: evict from front of queue
+                        while let Some(evict_key) = order.pop_front() {
+                            if self.cache.contains_key(&evict_key) {
+                                self.cache.remove(&evict_key);
+                                break;
+                            }
+                            // Key doesn't exist in cache (already removed), try next one
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns a reference to the cache statistics.
+    ///
+    /// This method is only available when the `stats` feature is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let stats = async_cache.stats();
+    /// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    /// ```
+    #[cfg(feature = "stats")]
+    pub fn stats(&self) -> &CacheStats {
+        self.stats
+    }
+}
+
+// Separate implementation for types that implement MemoryEstimator
+// This allows memory-based eviction
+impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
+    /// Insert with memory limit support.
+    ///
+    /// This method requires `R` to implement `MemoryEstimator` and handles both
+    /// memory-based and entry-count-based eviction.
+    ///
+    /// Use this method when `max_memory` is configured in the cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The cache key
+    /// * `value` - The value to cache
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // For types that implement MemoryEstimator
+    /// async_cache.insert_with_memory("large_data", expensive_value);
+    /// ```
+    pub fn insert_with_memory(&self, key: &str, value: R) {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -321,17 +494,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                 // Need to evict based on policy
                 let evicted = match self.policy {
                     EvictionPolicy::LFU => {
-                        let mut min_freq_key: Option<String> = None;
-                        let mut min_freq = u64::MAX;
-                        for evict_key in order.iter() {
-                            if let Some(entry) = self.cache.get(evict_key) {
-                                if entry.2 < min_freq {
-                                    min_freq = entry.2;
-                                    min_freq_key = Some(evict_key.clone());
-                                }
-                            }
-                        }
-                        if let Some(evict_key) = min_freq_key {
+                        if let Some(evict_key) = self.find_min_frequency_key(&*order) {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                             true
@@ -340,20 +503,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::ARC => {
-                        let mut best_evict_key: Option<String> = None;
-                        let mut best_score = f64::MAX;
-                        for (idx, evict_key) in order.iter().enumerate() {
-                            if let Some(entry) = self.cache.get(evict_key) {
-                                let frequency = entry.2 as f64;
-                                let position_weight = (order.len() - idx) as f64;
-                                let score = frequency * position_weight;
-                                if score < best_score {
-                                    best_score = score;
-                                    best_evict_key = Some(evict_key.clone());
-                                }
-                            }
-                        }
-                        if let Some(evict_key) = best_evict_key {
+                        if let Some(evict_key) = self.find_arc_eviction_key(&*order) {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                             true
@@ -377,90 +527,14 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             }
         }
 
-        // Check entry count limit (if specified and no memory limit)
-        if self.max_memory.is_none() {
-            if let Some(limit) = self.limit {
-                // Check limit after acquiring lock to prevent race condition
-                if self.cache.len() >= limit {
-                    match self.policy {
-                        EvictionPolicy::LFU => {
-                            // Find and evict the entry with minimum frequency
-                            let mut min_freq_key: Option<String> = None;
-                            let mut min_freq = u64::MAX;
-
-                            for evict_key in order.iter() {
-                                if let Some(entry) = self.cache.get(evict_key) {
-                                    if entry.2 < min_freq {
-                                        min_freq = entry.2;
-                                        min_freq_key = Some(evict_key.clone());
-                                    }
-                                }
-                            }
-
-                            if let Some(evict_key) = min_freq_key {
-                                self.cache.remove(&evict_key);
-                                order.retain(|k| k != &evict_key);
-                            }
-                        }
-                        EvictionPolicy::ARC => {
-                            // Adaptive Replacement Cache: Use hybrid score
-                            // Score = frequency * recency_weight
-                            let mut best_evict_key: Option<String> = None;
-                            let mut best_score = f64::MAX;
-
-                            for (idx, evict_key) in order.iter().enumerate() {
-                                if let Some(entry) = self.cache.get(evict_key) {
-                                    let frequency = entry.2 as f64;
-                                    let position_weight = (order.len() - idx) as f64;
-                                    let score = frequency * position_weight;
-
-                                    if score < best_score {
-                                        best_score = score;
-                                        best_evict_key = Some(evict_key.clone());
-                                    }
-                                }
-                            }
-
-                            if let Some(evict_key) = best_evict_key {
-                                self.cache.remove(&evict_key);
-                                order.retain(|k| k != &evict_key);
-                            }
-                        }
-                        EvictionPolicy::FIFO | EvictionPolicy::LRU => {
-                            // FIFO and LRU: evict from front of queue
-                            while let Some(evict_key) = order.pop_front() {
-                                if self.cache.contains_key(&evict_key) {
-                                    self.cache.remove(&evict_key);
-                                    break;
-                                }
-                                // Key doesn't exist in cache (already removed), try next one
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Handle entry-count limits (reuse the same method)
+        self.handle_entry_limit_eviction(&mut order);
 
         // Add the new entry to the order queue
         order.push_back(key.to_string());
 
         // Insert into cache with frequency initialized to 0
         self.cache.insert(key.to_string(), (value, timestamp, 0));
-    }
-
-    /// Returns a reference to the cache statistics.
-    ///
-    /// This method is only available when the `stats` feature is enabled.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let stats = async_cache.stats();
-    /// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
-    /// ```
-    #[cfg(feature = "stats")]
-    pub fn stats(&self) -> &CacheStats {
-        self.stats
     }
 }
 

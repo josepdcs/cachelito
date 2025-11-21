@@ -54,8 +54,7 @@ fn generate_thread_local_branch(
     is_result: bool,
 ) -> TokenStream2 {
     // Check if max_memory is None by comparing the token stream
-    let max_memory_str = max_memory_expr.to_string();
-    let has_max_memory = !max_memory_str.contains("None");
+    let has_max_memory = has_max_memory(max_memory_expr);
 
     let insert_call = generate_insert_call(has_max_memory, is_result);
 
@@ -85,6 +84,12 @@ fn generate_thread_local_branch(
         __result
     }
 }
+/// Check if max_memory is None by comparing the token stream
+fn has_max_memory(max_memory_expr: &TokenStream2) -> bool {
+    let max_memory_str = max_memory_expr.to_string();
+    let has_max_memory = !max_memory_str.contains("None");
+    has_max_memory
+}
 
 /// Generate the global cache branch
 fn generate_global_branch(
@@ -102,8 +107,7 @@ fn generate_global_branch(
     is_result: bool,
 ) -> TokenStream2 {
     // Check if max_memory is None by comparing the token stream
-    let max_memory_str = max_memory_expr.to_string();
-    let has_max_memory = !max_memory_str.contains("None");
+    let has_max_memory = has_max_memory(max_memory_expr);
 
     let insert_call = generate_insert_call(has_max_memory, is_result);
 
