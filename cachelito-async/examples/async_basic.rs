@@ -1,78 +1,86 @@
-//! # Basic Async Cache Example
-//!
-//! This example demonstrates basic async function caching.
-//! The first call executes the function, subsequent calls return cached results.
-
+/// Example demonstrating async cache without MemoryEstimator
+///
+/// This example shows how the async cache can be used without implementing
+/// the MemoryEstimator trait when max_memory is not specified.
+///
+/// Run with: cargo run --example async_basic --features async
 use cachelito_async::cache_async;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use tokio::time::Duration;
 
-static EXEC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Simple async addition with caching
-#[cache_async]
-async fn slow_add(a: u32, b: u32) -> u32 {
-    EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
-    println!("Computing {} + {} (async)", a, b);
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct User {
+    id: u64,
+    name: String,
+    email: String,
+}
+
+/// Simple async function with cache (no MemoryEstimator required)
+#[cache_async(limit = 100, policy = "lru")]
+async fn fetch_user(id: u64) -> User {
+    // Simulate database query
+    println!("Fetching user {} from database...", id);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    a + b
+
+    User {
+        id,
+        name: format!("User {}", id),
+        email: format!("user{}@example.com", id),
+    }
+}
+
+/// Async function returning Arc (no MemoryEstimator required)
+#[cache_async(limit = 50, policy = "fifo")]
+async fn fetch_user_arc(id: u64) -> Arc<User> {
+    println!("Fetching Arc user {} from database...", id);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    Arc::new(User {
+        id,
+        name: format!("Arc User {}", id),
+        email: format!("arc.user{}@example.com", id),
+    })
 }
 
 #[tokio::main]
 async fn main() {
-    println!("=== Basic Async Cache Example ===\n");
+    println!("=== Async Cache Without MemoryEstimator ===\n");
 
-    // Call 1: cache miss
-    let start1 = Instant::now();
-    let result1 = slow_add(1, 1).await;
-    let elapsed1 = start1.elapsed();
-    println!(
-        "Call 1: slow_add(1, 1) -> {} (took {:?})",
-        result1, elapsed1
-    );
+    // First call - cache miss (will fetch from "database")
+    println!("1. First call for user 1:");
+    let user1 = fetch_user(1).await;
+    println!("   Result: {:?}\n", user1);
 
-    // Call 2: cache hit (same args)
-    let start2 = Instant::now();
-    let result2 = slow_add(1, 1).await;
-    let elapsed2 = start2.elapsed();
-    println!(
-        "Call 2: slow_add(1, 1) -> {} (took {:?}) [should be instant]",
-        result2, elapsed2
-    );
+    // Second call - cache hit (instant)
+    println!("2. Second call for user 1 (should be cached):");
+    let start = std::time::Instant::now();
+    let user1_cached = fetch_user(1).await;
+    let elapsed = start.elapsed();
+    println!("   Result: {:?}", user1_cached);
+    println!("   Elapsed: {:?} (should be < 1ms)\n", elapsed);
 
-    // Call 3: cache miss (different args)
-    let start3 = Instant::now();
-    let result3 = slow_add(2, 3).await;
-    let elapsed3 = start3.elapsed();
-    println!(
-        "Call 3: slow_add(2, 3) -> {} (took {:?})",
-        result3, elapsed3
-    );
+    // Different user - cache miss
+    println!("3. First call for user 2:");
+    let user2 = fetch_user(2).await;
+    println!("   Result: {:?}\n", user2);
 
-    // Call 4: cache hit (same args as call 3)
-    let start4 = Instant::now();
-    let result4 = slow_add(2, 3).await;
-    let elapsed4 = start4.elapsed();
-    println!(
-        "Call 4: slow_add(2, 3) -> {} (took {:?}) [should be instant]",
-        result4, elapsed4
-    );
+    // Test Arc version
+    println!("4. Fetching Arc user 10:");
+    let arc_user = fetch_user_arc(10).await;
+    println!("   Result: {:?}\n", arc_user);
 
-    let exec_count = EXEC_COUNT.load(Ordering::SeqCst);
-    println!("\n--- Results ---");
-    println!("Total executions: {}", exec_count);
-    println!("Expected: 2 executions (cached calls returned instantly)");
+    println!("5. Fetching Arc user 10 again (cached):");
+    let start = std::time::Instant::now();
+    let arc_user_cached = fetch_user_arc(10).await;
+    let elapsed = start.elapsed();
+    println!("   Result: {:?}", arc_user_cached);
+    println!("   Elapsed: {:?} (should be < 1ms)\n", elapsed);
 
-    assert_eq!(
-        exec_count, 2,
-        "Expected 2 function executions but got {}",
-        exec_count
-    );
+    // Verify Arc points to same data
+    println!("6. Arc reference counting:");
+    println!("   Strong count: {}", Arc::strong_count(&arc_user_cached));
 
-    println!("\n✅ Basic Async Cache Test PASSED");
-    println!("   Function executed {} times instead of 4", exec_count);
-    println!(
-        "   Cache successfully prevented {} redundant executions",
-        4 - exec_count
-    );
+    println!("\n=== Done ===");
 }

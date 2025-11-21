@@ -2,6 +2,7 @@
 // Multiple threads can read from the cache simultaneously
 
 use cachelito::cache;
+use cachelito_core::MemoryEstimator;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,6 +12,12 @@ struct DataRecord {
     id: u64,
     value: String,
     timestamp: u64,
+}
+
+impl MemoryEstimator for DataRecord {
+    fn estimate_memory(&self) -> usize {
+        std::mem::size_of::<Self>() + self.value.capacity()
+    }
 }
 
 // Global cache with RwLock - allows concurrent reads

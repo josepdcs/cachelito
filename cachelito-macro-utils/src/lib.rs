@@ -24,6 +24,7 @@ pub struct AsyncCacheAttributes {
     pub policy: TokenStream2,
     pub ttl: TokenStream2,
     pub custom_name: Option<String>,
+    pub max_memory: TokenStream2,
 }
 
 impl Default for AsyncCacheAttributes {
@@ -33,6 +34,7 @@ impl Default for AsyncCacheAttributes {
             policy: quote! { "fifo" },
             ttl: quote! { Option::<u64>::None },
             custom_name: None,
+            max_memory: quote! { Option::<usize>::None },
         }
     }
 }
@@ -44,6 +46,7 @@ pub struct SyncCacheAttributes {
     pub ttl: TokenStream2,
     pub scope: TokenStream2,
     pub custom_name: Option<String>,
+    pub max_memory: TokenStream2,
 }
 
 impl Default for SyncCacheAttributes {
@@ -54,6 +57,7 @@ impl Default for SyncCacheAttributes {
             ttl: quote! { None },
             scope: quote! { cachelito_core::CacheScope::Global },
             custom_name: None,
+            max_memory: quote! { None },
         }
     }
 }
@@ -128,6 +132,68 @@ pub fn parse_name_attribute(nv: &MetaNameValue) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Parse the `max_memory` attribute
+/// Supports formats like: "100MB", "1GB", "500KB", or raw numbers
+pub fn parse_max_memory_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Str(s) => {
+                let val_str = s.value();
+                let val_str = val_str.to_uppercase();
+
+                // Parse memory size with units
+                let bytes = if val_str.ends_with("GB") {
+                    let num_str = val_str.trim_end_matches("GB");
+                    match num_str.parse::<usize>() {
+                        Ok(n) => n * 1024 * 1024 * 1024,
+                        Err(_) => {
+                            return quote! { compile_error!("Invalid number format for max_memory") }
+                        }
+                    }
+                } else if val_str.ends_with("MB") {
+                    let num_str = val_str.trim_end_matches("MB");
+                    match num_str.parse::<usize>() {
+                        Ok(n) => n * 1024 * 1024,
+                        Err(_) => {
+                            return quote! { compile_error!("Invalid number format for max_memory") }
+                        }
+                    }
+                } else if val_str.ends_with("KB") {
+                    let num_str = val_str.trim_end_matches("KB");
+                    match num_str.parse::<usize>() {
+                        Ok(n) => n * 1024,
+                        Err(_) => {
+                            return quote! { compile_error!("Invalid number format for max_memory") }
+                        }
+                    }
+                } else {
+                    // Try to parse as raw number (bytes)
+                    match val_str.parse::<usize>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            return quote! { compile_error!("Invalid format for max_memory: expected \"100MB\", \"1GB\", \"500KB\", or number") }
+                        }
+                    }
+                };
+
+                quote! { Some(#bytes) }
+            }
+            syn::Lit::Int(lit_int) => {
+                let val = lit_int
+                    .base10_parse::<usize>()
+                    .expect("max_memory must be a positive integer (bytes)");
+                quote! { Some(#val) }
+            }
+            _ => {
+                quote! { compile_error!("Invalid literal for `max_memory`: expected string (\"100MB\") or integer") }
+            }
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `max_memory`: expected `max_memory = \"100MB\"`") }
+        }
     }
 }
 
@@ -244,6 +310,8 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
             attrs.ttl = parse_ttl_attribute(&nv);
         } else if nv.path.is_ident("name") {
             attrs.custom_name = parse_name_attribute(&nv);
+        } else if nv.path.is_ident("max_memory") {
+            attrs.max_memory = parse_max_memory_attribute(&nv);
         }
     }
 
@@ -303,6 +371,8 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
             }
         } else if nv.path.is_ident("name") {
             attrs.custom_name = parse_name_attribute(&nv);
+        } else if nv.path.is_ident("max_memory") {
+            attrs.max_memory = parse_max_memory_attribute(&nv);
         }
     }
 
@@ -342,6 +412,37 @@ mod tests {
         let result = parse_policy_attribute(&nv);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "lru");
+    }
+
+    #[test]
+    fn test_parse_max_memory_attribute() {
+        // Test MB format
+        let nv: MetaNameValue = parse_quote! { max_memory = "100MB" };
+        let result = parse_max_memory_attribute(&nv);
+        let expected = 100 * 1024 * 1024;
+        assert_eq!(result.to_string(), format!("Some ({}usize)", expected));
+
+        // Test GB format
+        let nv: MetaNameValue = parse_quote! { max_memory = "1GB" };
+        let result = parse_max_memory_attribute(&nv);
+        let expected = 1024 * 1024 * 1024;
+        assert_eq!(result.to_string(), format!("Some ({}usize)", expected));
+
+        // Test KB format
+        let nv: MetaNameValue = parse_quote! { max_memory = "500KB" };
+        let result = parse_max_memory_attribute(&nv);
+        let expected = 500 * 1024;
+        assert_eq!(result.to_string(), format!("Some ({}usize)", expected));
+
+        // Test raw number
+        let nv: MetaNameValue = parse_quote! { max_memory = 1024 };
+        let result = parse_max_memory_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (1024usize)");
+
+        // Test raw number as string
+        let nv: MetaNameValue = parse_quote! { max_memory = "2048" };
+        let result = parse_max_memory_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (2048usize)");
     }
 
     #[test]

@@ -1,9 +1,9 @@
+use crate::{CacheEntry, EvictionPolicy};
 use once_cell::sync::Lazy;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::lock_api::MutexGuard;
+use parking_lot::{Mutex, RawMutex, RwLock};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
-
-use crate::{CacheEntry, EvictionPolicy};
 
 use crate::utils::{
     find_arc_eviction_key, find_min_frequency_key, move_key_to_end, remove_key_from_global_cache,
@@ -78,6 +78,7 @@ pub struct GlobalCache<R: 'static> {
     pub map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
     pub order: &'static Lazy<Mutex<VecDeque<String>>>,
     pub limit: Option<usize>,
+    pub max_memory: Option<usize>,
     pub policy: EvictionPolicy,
     pub ttl: Option<u64>,
     #[cfg(feature = "stats")]
@@ -92,6 +93,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// * `map` - Static reference to a RwLock-protected HashMap for storing cache entries
     /// * `order` - Static reference to a Mutex-protected VecDeque for tracking entry order
     /// * `limit` - Optional maximum number of entries (None for unlimited)
+    /// * `max_memory` - Optional maximum memory size in bytes (None for unlimited)
     /// * `policy` - Eviction policy to use when limit is reached
     /// * `ttl` - Optional time-to-live in seconds for cache entries
     /// * `stats` - Static reference to CacheStats for tracking hit/miss statistics (stats feature only)
@@ -107,6 +109,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///     &CACHE_MAP,
     ///     &CACHE_ORDER,
     ///     Some(50),
+    ///     Some(100 * 1024 * 1024), // 100MB
     ///     EvictionPolicy::FIFO,
     ///     Some(300), // 5 minutes TTL
     ///     #[cfg(feature = "stats")]
@@ -118,6 +121,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
         order: &'static Lazy<Mutex<VecDeque<String>>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
         stats: &'static Lazy<CacheStats>,
@@ -126,6 +130,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
             map,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
             stats,
@@ -137,6 +142,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
         order: &'static Lazy<Mutex<VecDeque<String>>>,
         limit: Option<usize>,
+        max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
     ) -> Self {
@@ -144,6 +150,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
             map,
             order,
             limit,
+            max_memory,
             policy,
             ttl,
         }
@@ -307,6 +314,12 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// cache.insert("user:456", another_user);
     /// cache.insert("user:789", yet_another_user); // Evicts first entry
     /// ```
+    ///
+    /// # Note
+    ///
+    /// This method does NOT require `MemoryEstimator` trait. It only handles entry-count limits.
+    /// If `max_memory` is configured, use `insert_with_memory()` instead, which requires
+    /// the type to implement `MemoryEstimator`.
     pub fn insert(&self, key: &str, value: R) {
         let key_s = key.to_string();
         let entry = CacheEntry::new(value);
@@ -320,6 +333,42 @@ impl<R: Clone + 'static> GlobalCache<R> {
         }
         o.push_back(key_s.clone());
 
+        // Always handle entry-count limits, regardless of memory limits
+        self.handle_entry_limit_eviction(&mut o);
+    }
+
+    /// Handles the eviction of entries from a global cache when the number of entries exceeds the limit.
+    ///
+    /// The eviction behavior depends on the specified eviction policy. The function ensures that the cache
+    /// adheres to the defined entry limit by evicting entries based on the configured policy:
+    ///
+    /// - **LFU (Least Frequently Used):** Finds and evicts the entry with the minimum frequency of usage.
+    /// - **ARC (Adaptive Replacement Cache):** Leverages the ARC eviction strategy to find and evict a specific entry.
+    /// - **FIFO (First In First Out):** Evicts the oldest entry in the queue to ensure the limit is maintained.
+    /// - **LRU (Least Recently Used):** Evicts the least recently accessed entry from the queue.
+    ///
+    /// # Parameters
+    ///
+    /// - `o`: A mutable reference to a `MutexGuard` that holds a `VecDeque<String>`.
+    ///   This represents the global cache where entries are stored.
+    ///
+    /// # Behavior
+    ///
+    /// 1. **Check Limit:** The function first checks if the `limit` is defined and if the length of the
+    ///    cache (`o`) exceeds the defined `limit`.
+    ///
+    /// 2. **Eviction By Policy:** Based on the configured `EvictionPolicy`, different eviction strategies
+    ///    are employed:
+    ///
+    ///   - **LFU:** The method identifies the key with the minimum frequency count by inspecting the
+    ///     associated frequency map and removes it from the cache.
+    ///   - **ARC:** Uses an ARC strategy to determine which key should be evicted and removes it from the cache.
+    ///   - **FIFO or LRU:** Dequeues entries in sequence (from the front of the queue) and checks if the
+    ///     entry still exists in the global cache. If found, the entry is removed from both the queue and cache.
+    ///
+    /// 3. **Thread-Safe Access:** The function ensures thread-safe read/write access to the cache and
+    ///    associated data structures using mutexes.
+    fn handle_entry_limit_eviction(&self, mut o: &mut MutexGuard<RawMutex, VecDeque<String>>) {
         if let Some(limit) = self.limit {
             if o.len() > limit {
                 match self.policy {
@@ -354,6 +403,106 @@ impl<R: Clone + 'static> GlobalCache<R> {
                 }
             }
         }
+    }
+}
+
+// Separate implementation for types that implement MemoryEstimator
+// This allows memory-based eviction
+impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
+    /// Insert with memory limit support.
+    ///
+    /// This method requires `R` to implement `MemoryEstimator` and handles both
+    /// memory-based and entry-count-based eviction.
+    ///
+    /// Use this method when `max_memory` is configured in the cache.
+    pub fn insert_with_memory(&self, key: &str, value: R) {
+        let key_s = key.to_string();
+        let entry = CacheEntry::new(value);
+
+        // Acquire write lock for modification
+        self.map.write().insert(key_s.clone(), entry);
+
+        let mut o = self.order.lock();
+        if let Some(pos) = o.iter().position(|k| *k == key_s) {
+            o.remove(pos);
+        }
+        o.push_back(key_s.clone());
+
+        // Check memory limit first (if specified)
+        if let Some(max_mem) = self.max_memory {
+            // First, check if the new value by itself exceeds max_mem
+            // This is a safety check to prevent infinite eviction loop
+            let new_value_size = {
+                let map_read = self.map.read();
+                map_read
+                    .get(&key_s)
+                    .map(|e| e.value.estimate_memory())
+                    .unwrap_or(0)
+            };
+
+            if new_value_size > max_mem {
+                // The value itself is too large for the cache
+                // Remove it and return early to respect memory limit
+                self.map.write().remove(&key_s);
+                o.pop_back(); // Remove from order queue as well
+                return;
+            }
+
+            loop {
+                let current_mem = {
+                    let map_read = self.map.read();
+                    map_read
+                        .values()
+                        .map(|e| e.value.estimate_memory())
+                        .sum::<usize>()
+                };
+
+                if current_mem <= max_mem {
+                    break;
+                }
+
+                // Need to evict based on policy
+                let evicted = match self.policy {
+                    EvictionPolicy::LFU => {
+                        let mut map_write = self.map.write();
+                        let min_freq_key = find_min_frequency_key(&map_write, &o);
+                        if let Some(evict_key) = min_freq_key {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::ARC => {
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) =
+                            find_arc_eviction_key(&map_write, o.iter().enumerate())
+                        {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                        if let Some(evict_key) = o.pop_front() {
+                            let mut map_write = self.map.write();
+                            map_write.remove(&evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+
+                if !evicted {
+                    break; // Nothing left to evict
+                }
+            }
+        }
+
+        // Handle entry-count limits
+        self.handle_entry_limit_eviction(&mut o);
     }
 
     /// Returns a reference to the cache statistics.
@@ -432,6 +581,9 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<
     /// This method intelligently caches only successful results, preventing
     /// error values from polluting the cache.
     ///
+    /// This version does NOT require MemoryEstimator. Use `insert_result_with_memory()`
+    /// when max_memory is configured.
+    ///
     /// # Parameters
     ///
     /// * `key` - The cache key
@@ -469,6 +621,40 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<
     }
 }
 
+/// Implementation of `GlobalCache` for `Result` types WITH MemoryEstimator support.
+///
+/// This specialized implementation provides memory-aware caching for Result types.
+///
+/// # Type Parameters
+///
+/// * `T` - The success type, must be `Clone`, `Debug`, and implement `MemoryEstimator`
+/// * `E` - The error type, must be `Clone`, `Debug`, and implement `MemoryEstimator`
+impl<
+        T: Clone + Debug + 'static + crate::MemoryEstimator,
+        E: Clone + Debug + 'static + crate::MemoryEstimator,
+    > GlobalCache<Result<T, E>>
+{
+    /// Inserts a Result into the cache with memory limit support.
+    ///
+    /// This method requires both T and E to implement MemoryEstimator.
+    /// Use this when max_memory is configured.
+    ///
+    /// # Parameters
+    ///
+    /// * `key` - The cache key
+    /// * `value` - The Result to potentially cache
+    ///
+    /// # Behavior
+    ///
+    /// - If `value` is `Ok(v)`: Caches `Ok(v.clone())` under the given key
+    /// - If `value` is `Err(_)`: Does nothing, no cache entry is created
+    pub fn insert_result_with_memory(&self, key: &str, value: &Result<T, E>) {
+        if let Ok(v) = value {
+            self.insert_with_memory(key, Ok(v.clone()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +672,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,
@@ -509,6 +696,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -529,6 +717,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,
@@ -553,6 +742,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(2),
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -580,6 +770,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(2),
+            None,
             EvictionPolicy::LRU,
             None,
             #[cfg(feature = "stats")]
@@ -608,6 +799,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(3),
+            None,
             EvictionPolicy::LRU,
             None,
             #[cfg(feature = "stats")]
@@ -646,6 +838,7 @@ mod tests {
                         &MAP,
                         &ORDER,
                         None,
+                        None,
                         EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
@@ -677,6 +870,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             Some(1),
             #[cfg(feature = "stats")]
@@ -705,6 +899,7 @@ mod tests {
             &RES_MAP,
             &RES_ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -726,6 +921,7 @@ mod tests {
         let cache = GlobalCache::new(
             &RES_MAP,
             &RES_ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,
@@ -750,6 +946,7 @@ mod tests {
             &MAP,
             &ORDER,
             Some(5),
+            None,
             EvictionPolicy::LRU,
             None,
             #[cfg(feature = "stats")]
@@ -768,6 +965,7 @@ mod tests {
                         &MAP,
                         &ORDER,
                         Some(5),
+                        None,
                         EvictionPolicy::LRU,
                         None,
                         #[cfg(feature = "stats")]
@@ -801,6 +999,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -831,6 +1030,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -849,6 +1049,7 @@ mod tests {
                     let cache = GlobalCache::new(
                         &MAP,
                         &ORDER,
+                        None,
                         None,
                         EvictionPolicy::FIFO,
                         None,
@@ -887,6 +1088,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -900,6 +1102,7 @@ mod tests {
             let cache = GlobalCache::new(
                 &MAP,
                 &ORDER,
+                None,
                 None,
                 EvictionPolicy::FIFO,
                 None,
@@ -918,6 +1121,7 @@ mod tests {
                     let cache = GlobalCache::new(
                         &MAP,
                         &ORDER,
+                        None,
                         None,
                         EvictionPolicy::FIFO,
                         None,
@@ -952,6 +1156,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -984,6 +1189,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             Some(1),
@@ -1020,6 +1226,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -1052,6 +1259,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -1066,6 +1274,7 @@ mod tests {
                     let cache = GlobalCache::new(
                         &MAP,
                         &ORDER,
+                        None,
                         None,
                         EvictionPolicy::FIFO,
                         None,
@@ -1107,6 +1316,7 @@ mod tests {
             &MAP,
             &ORDER,
             None,
+            None,
             EvictionPolicy::FIFO,
             None,
             #[cfg(feature = "stats")]
@@ -1140,6 +1350,7 @@ mod tests {
         let cache = GlobalCache::new(
             &MAP,
             &ORDER,
+            None,
             None,
             EvictionPolicy::FIFO,
             None,

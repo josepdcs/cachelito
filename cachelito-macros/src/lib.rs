@@ -21,23 +21,42 @@ fn parse_attributes(attr: TokenStream) -> SyncCacheAttributes {
     }
 }
 
+/// Generate the appropriate insert call based on memory configuration and result type
+fn generate_insert_call(has_max_memory: bool, is_result: bool) -> TokenStream2 {
+    if has_max_memory {
+        // Use memory-aware insert methods when max_memory is configured
+        if is_result {
+            quote! { __cache.insert_result_with_memory(&__key, &__result); }
+        } else {
+            quote! { __cache.insert_with_memory(&__key, __result.clone()); }
+        }
+    } else {
+        // Use regular insert methods when max_memory is None
+        if is_result {
+            quote! { __cache.insert_result(&__key, &__result); }
+        } else {
+            quote! { __cache.insert(&__key, __result.clone()); }
+        }
+    }
+}
+
 /// Generate the thread-local cache branch
 fn generate_thread_local_branch(
     cache_ident: &syn::Ident,
     order_ident: &syn::Ident,
     ret_type: &TokenStream2,
     limit_expr: &TokenStream2,
+    max_memory_expr: &TokenStream2,
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
     key_expr: &TokenStream2,
     block: &syn::Block,
     is_result: bool,
 ) -> TokenStream2 {
-    let insert_call = if is_result {
-        quote! { __cache.insert_result(&__key, &__result); }
-    } else {
-        quote! { __cache.insert(&__key, __result.clone()); }
-    };
+    // Check if max_memory is None by comparing the token stream
+    let has_max_memory = has_max_memory(max_memory_expr);
+
+    let insert_call = generate_insert_call(has_max_memory, is_result);
 
     quote! {
         thread_local! {
@@ -49,6 +68,7 @@ fn generate_thread_local_branch(
             &#cache_ident,
             &#order_ident,
             #limit_expr,
+            #max_memory_expr,
             #policy_expr,
             #ttl_expr
         );
@@ -64,6 +84,12 @@ fn generate_thread_local_branch(
         __result
     }
 }
+/// Check if max_memory is None by comparing the token stream
+fn has_max_memory(max_memory_expr: &TokenStream2) -> bool {
+    let max_memory_str = max_memory_expr.to_string();
+    let has_max_memory = !max_memory_str.contains("None");
+    has_max_memory
+}
 
 /// Generate the global cache branch
 fn generate_global_branch(
@@ -72,6 +98,7 @@ fn generate_global_branch(
     stats_ident: &syn::Ident,
     ret_type: &TokenStream2,
     limit_expr: &TokenStream2,
+    max_memory_expr: &TokenStream2,
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
     key_expr: &TokenStream2,
@@ -79,11 +106,10 @@ fn generate_global_branch(
     fn_name_str: &str,
     is_result: bool,
 ) -> TokenStream2 {
-    let insert_call = if is_result {
-        quote! { __cache.insert_result(&__key, &__result); }
-    } else {
-        quote! { __cache.insert(&__key, __result.clone()); }
-    };
+    // Check if max_memory is None by comparing the token stream
+    let has_max_memory = has_max_memory(max_memory_expr);
+
+    let insert_call = generate_insert_call(has_max_memory, is_result);
 
     quote! {
         static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> =
@@ -109,6 +135,7 @@ fn generate_global_branch(
             &#cache_ident,
             &#order_ident,
             #limit_expr,
+            #max_memory_expr,
             #policy_expr,
             #ttl_expr,
             &#stats_ident,
@@ -118,6 +145,7 @@ fn generate_global_branch(
             &#cache_ident,
             &#order_ident,
             #limit_expr,
+            #max_memory_expr,
             #policy_expr,
             #ttl_expr,
         );
@@ -403,6 +431,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &order_ident,
         &ret_type,
         &attrs.limit,
+        &attrs.max_memory,
         &attrs.policy,
         &attrs.ttl,
         &key_expr,
@@ -416,6 +445,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &stats_ident,
         &ret_type,
         &attrs.limit,
+        &attrs.max_memory,
         &attrs.policy,
         &attrs.ttl,
         &key_expr,
