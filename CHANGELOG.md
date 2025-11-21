@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2025-11-21
+
+### Changed
+
+- **📦 Version Unification**: All crates now use version 0.10.1 for consistency
+  - `cachelito`: 0.10.0 → 0.10.1
+  - `cachelito-core`: 0.10.0 → 0.10.1
+  - `cachelito-macros`: 0.10.0 → 0.10.1
+  - `cachelito-macro-utils`: 0.10.0 → 0.10.1
+  - `cachelito-async`: 0.2.0 → 0.10.1
+  - `cachelito-async-macros`: 0.2.0 → 0.10.1
+
+### Fixed
+
+- **🔧 Async Cache Integration**: Updated `cachelito-async` and `cachelito-async-macros`
+  - Async caches now properly support `max_memory` attribute
+  - `insert_with_memory()` method no longer requires `MemoryEstimator` when `max_memory` is not specified
+  - Added protection against infinite eviction loops when value size exceeds `max_memory`
+
+### Added
+
+- **🛡️ Infinite Loop Protection**: All caches (sync and async) now prevent infinite eviction loops
+  - When a value's memory size exceeds `max_memory`, it's not cached (returns early)
+  - Applies to: `ThreadLocalCache`, `GlobalCache`, and `AsyncGlobalCache`
+  - New test suite: `memory_limit_edge_cases_tests.rs` (7 tests for sync caches)
+  - New test suite: `memory_limit_edge_cases_async_tests.rs` (7 tests for async cache)
+- **📝 Code Quality Improvements**:
+  - Eliminated code duplication in `AsyncGlobalCache` by extracting helper methods:
+    - `find_min_frequency_key()` for LFU eviction
+    - `find_arc_eviction_key()` for ARC eviction
+  - Consistent with sync cache implementations
+
+
 ## [0.10.0] - 2025-11-10
 
 ### Added

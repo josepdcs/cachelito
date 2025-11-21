@@ -35,17 +35,17 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.10.0"
+cachelito = "0.10.1"
 # Or with statistics:
-# cachelito = { version = "0.10.0", features = ["stats"] }
+# cachelito = { version = "0.10.1", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` uses independent versioning from `cachelito`.
+> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.10.x).
 ```toml
 [dependencies]
-cachelito-async = "0.2.0"
+cachelito-async = "0.10.1"
 tokio = { version = "1", features = ["full"] }
 ```
 

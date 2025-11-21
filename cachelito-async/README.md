@@ -9,9 +9,10 @@ A flexible and efficient async caching library for Rust async/await functions.
 ## Features
 
 - 🚀 **Lock-free caching** - Uses DashMap for concurrent access without blocking
-- 🎯 **Multiple eviction policies** - FIFO and LRU
+- 🎯 **Multiple eviction policies** - FIFO, LRU, LFU, and ARC (Adaptive Replacement Cache)
+- 💾 **Memory-based limits** - Control cache size by memory usage (v0.10.1)
 - ⏰ **TTL support** - Automatic expiration of cached entries
-- 📊 **Limit control** - Set maximum cache size
+- 📊 **Limit control** - Set maximum cache size by entry count or memory
 - 🔍 **Result caching** - Only caches `Ok` values from `Result` types
 - 🌐 **Global cache** - Shared across all tasks and threads
 - ⚡ **Zero async overhead** - No `.await` needed for cache operations
@@ -23,7 +24,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito-async = "0.1.0"
+cachelito-async = "0.10.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
