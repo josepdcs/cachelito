@@ -21,6 +21,25 @@ fn parse_attributes(attr: TokenStream) -> SyncCacheAttributes {
     }
 }
 
+/// Generate the appropriate insert call based on memory configuration and result type
+fn generate_insert_call(has_max_memory: bool, is_result: bool) -> TokenStream2 {
+    if has_max_memory {
+        // Use memory-aware insert methods when max_memory is configured
+        if is_result {
+            quote! { __cache.insert_result_with_memory(&__key, &__result); }
+        } else {
+            quote! { __cache.insert_with_memory(&__key, __result.clone()); }
+        }
+    } else {
+        // Use regular insert methods when max_memory is None
+        if is_result {
+            quote! { __cache.insert_result(&__key, &__result); }
+        } else {
+            quote! { __cache.insert(&__key, __result.clone()); }
+        }
+    }
+}
+
 /// Generate the thread-local cache branch
 fn generate_thread_local_branch(
     cache_ident: &syn::Ident,
@@ -34,11 +53,11 @@ fn generate_thread_local_branch(
     block: &syn::Block,
     is_result: bool,
 ) -> TokenStream2 {
-    let insert_call = if is_result {
-        quote! { __cache.insert_result(&__key, &__result); }
-    } else {
-        quote! { __cache.insert(&__key, __result.clone()); }
-    };
+    // Check if max_memory is None by comparing the token stream
+    let max_memory_str = max_memory_expr.to_string();
+    let has_max_memory = !max_memory_str.contains("None");
+
+    let insert_call = generate_insert_call(has_max_memory, is_result);
 
     quote! {
         thread_local! {
@@ -82,11 +101,11 @@ fn generate_global_branch(
     fn_name_str: &str,
     is_result: bool,
 ) -> TokenStream2 {
-    let insert_call = if is_result {
-        quote! { __cache.insert_result(&__key, &__result); }
-    } else {
-        quote! { __cache.insert(&__key, __result.clone()); }
-    };
+    // Check if max_memory is None by comparing the token stream
+    let max_memory_str = max_memory_expr.to_string();
+    let has_max_memory = !max_memory_str.contains("None");
+
+    let insert_call = generate_insert_call(has_max_memory, is_result);
 
     quote! {
         static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> =

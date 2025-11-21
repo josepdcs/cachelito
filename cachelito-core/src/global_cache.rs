@@ -1,9 +1,9 @@
+use crate::{CacheEntry, EvictionPolicy};
 use once_cell::sync::Lazy;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::lock_api::MutexGuard;
+use parking_lot::{Mutex, RawMutex, RwLock};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
-
-use crate::{CacheEntry, EvictionPolicy};
 
 use crate::utils::{
     find_arc_eviction_key, find_min_frequency_key, move_key_to_end, remove_key_from_global_cache,
@@ -314,10 +314,110 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// cache.insert("user:456", another_user);
     /// cache.insert("user:789", yet_another_user); // Evicts first entry
     /// ```
-    pub fn insert(&self, key: &str, value: R)
-    where
-        R: crate::MemoryEstimator,
-    {
+    ///
+    /// # Note
+    ///
+    /// This method does NOT require `MemoryEstimator` trait. It only handles entry-count limits.
+    /// If `max_memory` is configured, use `insert_with_memory()` instead, which requires
+    /// the type to implement `MemoryEstimator`.
+    pub fn insert(&self, key: &str, value: R) {
+        let key_s = key.to_string();
+        let entry = CacheEntry::new(value);
+
+        // Acquire write lock for modification
+        self.map.write().insert(key_s.clone(), entry);
+
+        let mut o = self.order.lock();
+        if let Some(pos) = o.iter().position(|k| *k == key_s) {
+            o.remove(pos);
+        }
+        o.push_back(key_s.clone());
+
+        // Only handle entry-count limits (not memory limits)
+        if self.max_memory.is_none() {
+            self.handle_entry_limit_eviction(&mut o);
+        }
+    }
+
+    /// Handles the eviction of entries from a global cache when the number of entries exceeds the limit.
+    ///
+    /// The eviction behavior depends on the specified eviction policy. The function ensures that the cache
+    /// adheres to the defined entry limit by evicting entries based on the configured policy:
+    ///
+    /// - **LFU (Least Frequently Used):** Finds and evicts the entry with the minimum frequency of usage.
+    /// - **ARC (Adaptive Replacement Cache):** Leverages the ARC eviction strategy to find and evict a specific entry.
+    /// - **FIFO (First In First Out):** Evicts the oldest entry in the queue to ensure the limit is maintained.
+    /// - **LRU (Least Recently Used):** Evicts the least recently accessed entry from the queue.
+    ///
+    /// # Parameters
+    ///
+    /// - `o`: A mutable reference to a `MutexGuard` that holds a `VecDeque<String>`.
+    ///   This represents the global cache where entries are stored.
+    ///
+    /// # Behavior
+    ///
+    /// 1. **Check Limit:** The function first checks if the `limit` is defined and if the length of the
+    ///    cache (`o`) exceeds the defined `limit`.
+    ///
+    /// 2. **Eviction By Policy:** Based on the configured `EvictionPolicy`, different eviction strategies
+    ///    are employed:
+    ///
+    ///   - **LFU:** The method identifies the key with the minimum frequency count by inspecting the
+    ///     associated frequency map and removes it from the cache.
+    ///   - **ARC:** Uses an ARC strategy to determine which key should be evicted and removes it from the cache.
+    ///   - **FIFO or LRU:** Dequeues entries in sequence (from the front of the queue) and checks if the
+    ///     entry still exists in the global cache. If found, the entry is removed from both the queue and cache.
+    ///
+    /// 3. **Thread-Safe Access:** The function ensures thread-safe read/write access to the cache and
+    ///    associated data structures using mutexes.
+    fn handle_entry_limit_eviction(&self, mut o: &mut MutexGuard<RawMutex, VecDeque<String>>) {
+        if let Some(limit) = self.limit {
+            if o.len() > limit {
+                match self.policy {
+                    EvictionPolicy::LFU => {
+                        // Find and evict the entry with the minimum frequency
+                        let mut map_write = self.map.write();
+                        let min_freq_key = find_min_frequency_key(&map_write, &o);
+
+                        if let Some(evict_key) = min_freq_key {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                        }
+                    }
+                    EvictionPolicy::ARC => {
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) =
+                            find_arc_eviction_key(&map_write, o.iter().enumerate())
+                        {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                        }
+                    }
+                    EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                        // Keep trying to evict until we find a valid entry or queue is empty
+                        let mut map_write = self.map.write();
+                        while let Some(evict_key) = o.pop_front() {
+                            // Check if the key still exists in the cache before removing
+                            if map_write.contains_key(&evict_key) {
+                                map_write.remove(&evict_key);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Separate implementation for types that implement MemoryEstimator
+// This allows memory-based eviction
+impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
+    /// Insert with memory limit support.
+    ///
+    /// This method requires `R` to implement `MemoryEstimator` and handles both
+    /// memory-based and entry-count-based eviction.
+    ///
+    /// Use this method when `max_memory` is configured in the cache.
+    pub fn insert_with_memory(&self, key: &str, value: R) {
         let key_s = key.to_string();
         let entry = CacheEntry::new(value);
 
@@ -385,43 +485,8 @@ impl<R: Clone + 'static> GlobalCache<R> {
             }
         }
 
-        // Check entry count limit (if specified and no memory limit)
-        if self.max_memory.is_none() {
-            if let Some(limit) = self.limit {
-                if o.len() > limit {
-                    match self.policy {
-                        EvictionPolicy::LFU => {
-                            // Find and evict the entry with the minimum frequency
-                            let mut map_write = self.map.write();
-                            let min_freq_key = find_min_frequency_key(&map_write, &o);
-
-                            if let Some(evict_key) = min_freq_key {
-                                remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
-                            }
-                        }
-                        EvictionPolicy::ARC => {
-                            let mut map_write = self.map.write();
-                            if let Some(evict_key) =
-                                find_arc_eviction_key(&map_write, o.iter().enumerate())
-                            {
-                                remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
-                            }
-                        }
-                        EvictionPolicy::FIFO | EvictionPolicy::LRU => {
-                            // Keep trying to evict until we find a valid entry or queue is empty
-                            let mut map_write = self.map.write();
-                            while let Some(evict_key) = o.pop_front() {
-                                // Check if the key still exists in the cache before removing
-                                if map_write.contains_key(&evict_key) {
-                                    map_write.remove(&evict_key);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Handle entry-count limits
+        self.handle_entry_limit_eviction(&mut o);
     }
 
     /// Returns a reference to the cache statistics.
@@ -494,15 +559,14 @@ impl<R: Clone + 'static> GlobalCache<R> {
 /// // If result was Err, nothing is cached
 /// // If result was Ok, the value is cached
 /// ```
-impl<
-        T: Clone + Debug + 'static + crate::MemoryEstimator,
-        E: Clone + Debug + 'static + crate::MemoryEstimator,
-    > GlobalCache<Result<T, E>>
-{
+impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<T, E>> {
     /// Inserts a Result into the cache, but only if it's an `Ok` variant.
     ///
     /// This method intelligently caches only successful results, preventing
     /// error values from polluting the cache.
+    ///
+    /// This version does NOT require MemoryEstimator. Use `insert_result_with_memory()`
+    /// when max_memory is configured.
     ///
     /// # Parameters
     ///
@@ -535,6 +599,62 @@ impl<
     /// // Err(db_error) -> cache remains empty for this key
     /// ```
     pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
+        if let Ok(v) = value {
+            self.insert(key, Ok(v.clone()));
+        }
+    }
+}
+
+/// Implementation of `GlobalCache` for `Result` types WITH MemoryEstimator support.
+///
+/// This specialized implementation provides memory-aware caching for Result types.
+///
+/// # Type Parameters
+///
+/// * `T` - The success type, must be `Clone`, `Debug`, and implement `MemoryEstimator`
+/// * `E` - The error type, must be `Clone`, `Debug`, and implement `MemoryEstimator`
+impl<
+        T: Clone + Debug + 'static + crate::MemoryEstimator,
+        E: Clone + Debug + 'static + crate::MemoryEstimator,
+    > GlobalCache<Result<T, E>>
+{
+    /// Inserts a Result into the cache with memory limit support.
+    ///
+    /// This method requires both T and E to implement MemoryEstimator.
+    /// Use this when max_memory is configured.
+    ///
+    /// # Parameters
+    ///
+    /// * `key` - The cache key
+    /// * `value` - The Result to potentially cache
+    ///
+    /// # Behavior
+    ///
+    /// - If `value` is `Ok(v)`: Caches `Ok(v.clone())` under the given key
+    /// - If `value` is `Err(_)`: Does nothing, no cache entry is created
+    pub fn insert_result_with_memory(&self, key: &str, value: &Result<T, E>) {
+        if let Ok(v) = value {
+            self.insert_with_memory(key, Ok(v.clone()));
+        }
+    }
+}
+
+// Keep the old insert_result for backward compatibility (deprecated)
+impl<
+        T: Clone + Debug + 'static + crate::MemoryEstimator,
+        E: Clone + Debug + 'static + crate::MemoryEstimator,
+    > GlobalCache<Result<T, E>>
+{
+    /// Inserts a Result into the cache, but only if it's an `Ok` variant.
+    ///
+    /// **DEPRECATED**: This method requires MemoryEstimator even when not using max_memory.
+    /// Use the version without MemoryEstimator bound instead, or use insert_result_with_memory()
+    /// when max_memory is configured.
+    #[deprecated(
+        since = "0.10.0",
+        note = "Use insert_result() (without MemoryEstimator) or insert_result_with_memory() instead"
+    )]
+    pub fn insert_result_deprecated(&self, key: &str, value: &Result<T, E>) {
         if let Ok(v) = value {
             self.insert(key, Ok(v.clone()));
         }
@@ -725,7 +845,7 @@ mod tests {
                         &ORDER,
                         None,
                         None,
-            EvictionPolicy::FIFO,
+                        EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -852,7 +972,7 @@ mod tests {
                         &ORDER,
                         Some(5),
                         None,
-            EvictionPolicy::LRU,
+                        EvictionPolicy::LRU,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -937,7 +1057,7 @@ mod tests {
                         &ORDER,
                         None,
                         None,
-            EvictionPolicy::FIFO,
+                        EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -990,7 +1110,7 @@ mod tests {
                 &ORDER,
                 None,
                 None,
-            EvictionPolicy::FIFO,
+                EvictionPolicy::FIFO,
                 None,
                 #[cfg(feature = "stats")]
                 &STATS,
@@ -1009,7 +1129,7 @@ mod tests {
                         &ORDER,
                         None,
                         None,
-            EvictionPolicy::FIFO,
+                        EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -1162,7 +1282,7 @@ mod tests {
                         &ORDER,
                         None,
                         None,
-            EvictionPolicy::FIFO,
+                        EvictionPolicy::FIFO,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,

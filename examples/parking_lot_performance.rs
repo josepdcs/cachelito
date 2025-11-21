@@ -2,7 +2,6 @@
 // in a multi-threaded global cache scenario
 
 use cachelito::cache;
-use cachelito_core::MemoryEstimator;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,12 +10,6 @@ use std::time::{Duration, Instant};
 struct ExpensiveData {
     id: u64,
     payload: Vec<u8>,
-}
-
-impl MemoryEstimator for ExpensiveData {
-    fn estimate_memory(&self) -> usize {
-        size_of::<Self>() + self.payload.capacity()
-    }
 }
 
 // Global scope cache using parking_lot::Mutex internally
@@ -44,6 +37,7 @@ fn main() {
                 // All threads request the same data
                 let data = fetch_data(42);
                 println!("  Thread {} got data with id: {}", thread_id, data.id);
+                println!("  The size of the data is {} bytes", data.payload.len());
             })
         })
         .collect();
