@@ -333,10 +333,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
         }
         o.push_back(key_s.clone());
 
-        // Only handle entry-count limits (not memory limits)
-        if self.max_memory.is_none() {
-            self.handle_entry_limit_eviction(&mut o);
-        }
+        // Always handle entry-count limits, regardless of memory limits
+        self.handle_entry_limit_eviction(&mut o);
+        
+        
     }
 
     /// Handles the eviction of entries from a global cache when the number of entries exceeds the limit.
