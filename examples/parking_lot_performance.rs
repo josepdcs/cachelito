@@ -37,7 +37,6 @@ fn main() {
                 // All threads request the same data
                 let data = fetch_data(42);
                 println!("  Thread {} got data with id: {}", thread_id, data.id);
-                println!("  The size of the data is {} bytes", data.payload.len());
             })
         })
         .collect();
