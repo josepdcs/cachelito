@@ -335,8 +335,6 @@ impl<R: Clone + 'static> GlobalCache<R> {
 
         // Always handle entry-count limits, regardless of memory limits
         self.handle_entry_limit_eviction(&mut o);
-        
-        
     }
 
     /// Handles the eviction of entries from a global cache when the number of entries exceeds the limit.
@@ -635,28 +633,6 @@ impl<
     pub fn insert_result_with_memory(&self, key: &str, value: &Result<T, E>) {
         if let Ok(v) = value {
             self.insert_with_memory(key, Ok(v.clone()));
-        }
-    }
-}
-
-// Keep the old insert_result for backward compatibility (deprecated)
-impl<
-        T: Clone + Debug + 'static + crate::MemoryEstimator,
-        E: Clone + Debug + 'static + crate::MemoryEstimator,
-    > GlobalCache<Result<T, E>>
-{
-    /// Inserts a Result into the cache, but only if it's an `Ok` variant.
-    ///
-    /// **DEPRECATED**: This method requires MemoryEstimator even when not using max_memory.
-    /// Use the version without MemoryEstimator bound instead, or use insert_result_with_memory()
-    /// when max_memory is configured.
-    #[deprecated(
-        since = "0.10.0",
-        note = "Use insert_result() (without MemoryEstimator) or insert_result_with_memory() instead"
-    )]
-    pub fn insert_result_deprecated(&self, key: &str, value: &Result<T, E>) {
-        if let Ok(v) = value {
-            self.insert(key, Ok(v.clone()));
         }
     }
 }

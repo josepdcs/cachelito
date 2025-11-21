@@ -2,7 +2,8 @@
 use crate::CacheStats;
 use crate::EvictionPolicy;
 use dashmap::DashMap;
-use parking_lot::Mutex;
+use parking_lot::lock_api::MutexGuard;
+use parking_lot::{Mutex, RawMutex};
 use std::collections::VecDeque;
 
 /// A thread-safe async global cache with configurable eviction policies and TTL support.
@@ -299,13 +300,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         let mut order = self.order.lock();
 
         // Check if another task already inserted this key while we were computing
-        if self.cache.contains_key(key) {
-            // Key already exists, just update the order if LRU or ARC
-            if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
-                order.retain(|k| k != key);
-                order.push_back(key.to_string());
-            }
-            // Don't insert again
+        if self.is_already_key_inserted(key, &mut order) {
             return;
         }
 
@@ -317,6 +312,49 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
 
         // Insert into cache with frequency initialized to 0
         self.cache.insert(key.to_string(), (value, timestamp, 0));
+    }
+
+    /// Checks if a key is already present in the cache and updates its position in the eviction order
+    /// if the eviction policy is Least Recently Used (LRU) or Adaptive Replacement Cache (ARC).
+    ///
+    /// # Parameters
+    /// - `key`: A reference to the key being checked as a `&str`.
+    /// - `order`: A mutable reference to a locked `VecDeque<String>` wrapped in a `MutexGuard`.
+    ///    This represents the ordered list of keys, used to determine eviction order.
+    ///
+    /// # Returns
+    /// - `true` if the key is already present in the cache and was processed for eviction policy.
+    /// - `false` if the key was not found in the cache.
+    ///
+    /// # Behavior
+    /// 1. If the key exists in the cache:
+    ///    - If the eviction policy is `LRU` or `ARC`, the key's position in the eviction list (`order`)
+    ///      is updated to reflect that it was recently accessed by removing the old position and appending
+    ///      the key to the back of the `VecDeque`.
+    ///    - The function returns `true`, indicating the key is already in the cache.
+    /// 2. If the key does not exist in the cache:
+    ///    - The function returns `false`, allowing the caller to handle the key insertion.
+    ///
+    /// # Eviction Policies
+    /// - `LRU` (Least Recently Used): Keys recently accessed should stay in the cache,
+    ///   and their access order is updated.
+    /// - `ARC` (Adaptive Replacement Cache): Performs similarly to LRU but may enhance
+    ///   replacement policies in specific cases.
+    fn is_already_key_inserted(
+        &self,
+        key: &str,
+        order: &mut MutexGuard<RawMutex, VecDeque<String>>,
+    ) -> bool {
+        if self.cache.contains_key(key) {
+            // Key already exists, just update the order if LRU or ARC
+            if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
+                order.retain(|k| k != key);
+                order.push_back(key.to_string());
+            }
+            // Don't insert again
+            return true;
+        }
+        false
     }
 
     /// Finds the key with minimum frequency for LFU eviction.
@@ -468,13 +506,7 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
         let mut order = self.order.lock();
 
         // Check if another task already inserted this key while we were computing
-        if self.cache.contains_key(key) {
-            // Key already exists, just update the order if LRU or ARC
-            if self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC {
-                order.retain(|k| k != key);
-                order.push_back(key.to_string());
-            }
-            // Don't insert again
+        if self.is_already_key_inserted(key, &mut order) {
             return;
         }
 
