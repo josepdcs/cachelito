@@ -393,20 +393,15 @@ where
 ///
 /// This utility function is used by the Random eviction policy to select a cache entry
 /// for eviction when the cache is full. The selection is uniformly random, providing
-/// O(1) eviction performance with minimal overhead.
-///
-/// # Type Parameters
-///
-/// * `K` - The key type (must implement `Clone` and `ToString` for internal use)
-/// * `I` - Iterator type that yields references to keys
+/// **true O(1) eviction performance** with minimal overhead.
 ///
 /// # Arguments
 ///
-/// * `order_iter` - An iterator over the order queue containing cache keys
+/// * `order` - A reference to the order queue (VecDeque) containing cache keys
 ///
 /// # Returns
 ///
-/// * `Some(K)` - A randomly selected key from the order queue
+/// * `Some(String)` - A randomly selected key from the order queue
 /// * `None` - If the order queue is empty
 ///
 /// # Behavior
@@ -415,22 +410,27 @@ where
 /// - Uniformly distributes selection across all keys
 /// - Does not modify the order queue
 /// - Thread-safe without additional synchronization
+/// - Direct access by index for O(1) performance
 ///
 /// # Performance
 ///
-/// - Time complexity: O(n) where n is the size of the order queue (to collect keys)
-/// - Space complexity: O(n) to collect keys into a vector
+/// - Time complexity: **O(1)** - direct index access on VecDeque
+/// - Space complexity: O(1) - no intermediate allocations
 /// - Random number generation: O(1)
 ///
 /// # Examples
 ///
 /// ```
+/// use std::collections::VecDeque;
 /// use cachelito_core::utils::select_random_eviction_key;
 ///
-/// let order = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+/// let mut order = VecDeque::new();
+/// order.push_back("key1".to_string());
+/// order.push_back("key2".to_string());
+/// order.push_back("key3".to_string());
 ///
 /// // Select a random key
-/// let random_key = select_random_eviction_key(order.iter());
+/// let random_key = select_random_eviction_key(&order);
 /// assert!(random_key.is_some());
 ///
 /// // The selected key should be one from the order
@@ -439,27 +439,23 @@ where
 /// ```
 ///
 /// ```
+/// use std::collections::VecDeque;
 /// use cachelito_core::utils::select_random_eviction_key;
 ///
 /// // Empty order returns None
-/// let empty_order: Vec<String> = vec![];
-/// let result = select_random_eviction_key(empty_order.iter());
+/// let empty_order: VecDeque<String> = VecDeque::new();
+/// let result = select_random_eviction_key(&empty_order);
 /// assert_eq!(result, None);
 /// ```
-pub fn select_random_eviction_key<'a, K, I>(order_iter: I) -> Option<K>
-where
-    K: Clone + 'a,
-    I: Iterator<Item = &'a K>,
-{
-    let keys: Vec<&K> = order_iter.collect();
-
-    if keys.is_empty() {
+pub fn select_random_eviction_key(order: &VecDeque<String>) -> Option<String> {
+    if order.is_empty() {
         return None;
     }
 
     // Use fastrand for fast, thread-safe random selection
-    let random_index = fastrand::usize(..keys.len());
-    Some(keys[random_index].clone())
+    // VecDeque::len() is O(1), VecDeque::get() is O(1) for indices near front/back
+    let random_index = fastrand::usize(..order.len());
+    order.get(random_index).cloned()
 }
 
 #[cfg(test)]
@@ -1155,22 +1151,26 @@ mod tests {
 
     #[test]
     fn test_select_random_eviction_key() {
-        let order = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+        let mut order = VecDeque::new();
+        order.push_back("key1".to_string());
+        order.push_back("key2".to_string());
+        order.push_back("key3".to_string());
 
         // Test that it returns a key from the order
-        let result = select_random_eviction_key(order.iter());
+        let result = select_random_eviction_key(&order);
         assert!(result.is_some());
         let key = result.unwrap();
         assert!(order.contains(&key));
 
         // Test with empty order
-        let empty_order: Vec<String> = vec![];
-        let result = select_random_eviction_key(empty_order.iter());
+        let empty_order: VecDeque<String> = VecDeque::new();
+        let result = select_random_eviction_key(&empty_order);
         assert_eq!(result, None);
 
         // Test with single element
-        let single_order = vec!["only_key".to_string()];
-        let result = select_random_eviction_key(single_order.iter());
+        let mut single_order = VecDeque::new();
+        single_order.push_back("only_key".to_string());
+        let result = select_random_eviction_key(&single_order);
         assert_eq!(result, Some("only_key".to_string()));
     }
 
@@ -1178,12 +1178,16 @@ mod tests {
     fn test_select_random_eviction_key_distribution() {
         use std::collections::HashMap;
 
-        let order = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+        let mut order = VecDeque::new();
+        order.push_back("key1".to_string());
+        order.push_back("key2".to_string());
+        order.push_back("key3".to_string());
+
         let mut counts: HashMap<String, usize> = HashMap::new();
 
         // Run many iterations to verify randomness
         for _ in 0..1000 {
-            if let Some(key) = select_random_eviction_key(order.iter()) {
+            if let Some(key) = select_random_eviction_key(&order) {
                 *counts.entry(key).or_insert(0) += 1;
             }
         }

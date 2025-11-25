@@ -5,15 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] - 2025-11-25
+## [0.11.0] - 2025-11-26
 
 ### Added
 
 - **🎲 Random Replacement Policy**: New eviction policy that randomly selects entries for eviction
   - Example: `#[cache(policy = "random", limit = 100)]`
-  - **O(1) eviction** - constant-time random selection using `fastrand`
+  - **True O(1) eviction** - constant-time random selection using direct VecDeque indexing
+  - **O(1) cache hits/misses** - no access tracking or order updates
   - **Minimal overhead** - no access tracking or order updates on cache hits
-  - **Thread-safe** - lock-free random number generation
+  - **Thread-safe** - lock-free random number generation using `fastrand`
   - **Use cases**:
     - Baseline for performance benchmarks
     - Workloads with truly random access patterns
@@ -32,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Random: O(1) eviction, O(1) cache hit, O(1) cache miss
 - **🎯 Policy Validation**: Updated policy validation to include "random"
   - Valid policies: "fifo", "lru", "lfu", "arc", "random"
+- **⚡ True O(1) Implementation**: `select_random_eviction_key()` uses direct VecDeque indexing
+  - No iterator collection overhead
+  - Direct `VecDeque::get(random_index)` for constant-time access
+  - `VecDeque::len()` is O(1), `VecDeque::get()` is O(1)
 
 ### Documentation
 

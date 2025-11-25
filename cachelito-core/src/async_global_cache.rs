@@ -446,9 +446,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        if let Some(evict_key) =
-                            crate::utils::select_random_eviction_key(order.iter())
-                        {
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(order) {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                         }
@@ -565,9 +563,7 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        if let Some(evict_key) =
-                            crate::utils::select_random_eviction_key(order.iter())
-                        {
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(&*order) {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                             true

@@ -423,9 +423,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        if let Some(evict_key) =
-                            crate::utils::select_random_eviction_key(order.iter())
-                        {
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(order) {
                             // Remove from cache
                             self.cache.with(|c| {
                                 c.borrow_mut().remove(&evict_key);
@@ -539,7 +537,7 @@ impl<R: Clone + 'static + crate::MemoryEstimator> ThreadLocalCache<R> {
                         }
                         EvictionPolicy::Random => {
                             if let Some(evict_key) =
-                                crate::utils::select_random_eviction_key(order.iter())
+                                crate::utils::select_random_eviction_key(&order)
                             {
                                 // Remove from cache
                                 self.cache.with(|c| {

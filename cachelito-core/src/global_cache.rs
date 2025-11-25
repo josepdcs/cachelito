@@ -391,8 +391,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
                     }
                     EvictionPolicy::Random => {
                         let mut map_write = self.map.write();
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(o.iter())
-                        {
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(&o) {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                         }
                     }
@@ -493,8 +492,7 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                     }
                     EvictionPolicy::Random => {
                         let mut map_write = self.map.write();
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(o.iter())
-                        {
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(&o) {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                             true
                         } else {
