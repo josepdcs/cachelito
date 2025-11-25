@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{punctuated::Punctuated, Expr, MetaNameValue, Token};
 
 /// List of supported eviction policies
-static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc"];
+static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc", "random"];
 
 pub fn policies_str_with_separator(separator: &str) -> String {
     POLICIES
@@ -344,10 +344,12 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                         quote! { cachelito_core::EvictionPolicy::LFU }
                     } else if policy_str == "arc" {
                         quote! { cachelito_core::EvictionPolicy::ARC }
+                    } else if policy_str == "random" {
+                        quote! { cachelito_core::EvictionPolicy::Random }
                     } else {
-                        return Err(
-                            quote! { compile_error!("Invalid policy: expected \"fifo\", \"lru\", \"lfu\", or \"arc\"") },
-                        );
+                        let policies = policies_str_with_separator(", ");
+                        let err_msg = format!("Invalid policy: expected one of {}", policies);
+                        return Err(quote! { compile_error!(#err_msg) });
                     };
                 }
                 Err(err) => return Err(err),
@@ -388,10 +390,10 @@ mod tests {
     #[test]
     fn test_policies_str_with_separator() {
         let result = policies_str_with_separator(", ");
-        assert_eq!(result, "\"fifo\", \"lru\", \"lfu\", \"arc\"");
+        assert_eq!(result, "\"fifo\", \"lru\", \"lfu\", \"arc\", \"random\"");
 
         let result = policies_str_with_separator("|");
-        assert_eq!(result, "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"");
+        assert_eq!(result, "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"|\"random\"");
     }
 
     #[test]

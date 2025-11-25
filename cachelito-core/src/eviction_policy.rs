@@ -35,6 +35,13 @@ use std::cmp::PartialEq;
 ///   - Provides a balance between LRU and LFU for mixed workloads
 ///   - O(n) operations for some cache operations due to scoring and reordering
 ///
+/// * `Random` - **Random Replacement** eviction policy
+///   - Elements are evicted randomly when the cache is full
+///   - No access tracking or ordering required
+///   - O(1) eviction performance
+///   - Minimal memory overhead
+///   - Useful as a baseline for benchmarks
+///   - Simple and predictable performance characteristics
 ///
 /// # Examples
 ///
@@ -46,6 +53,7 @@ use std::cmp::PartialEq;
 /// let lru = EvictionPolicy::LRU;
 /// let lfu = EvictionPolicy::LFU;
 /// let arc = EvictionPolicy::ARC;
+/// let random = EvictionPolicy::Random;
 ///
 /// // Using default (LRU)
 /// let default_policy = EvictionPolicy::default();
@@ -64,6 +72,7 @@ use std::cmp::PartialEq;
 /// | LRU    | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
 /// | LFU    | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
 /// | ARC    | O(n)     | O(n)      | O(1)       | Mixed workloads, self-tuning |
+/// | Random | O(1)     | O(1)      | O(1)       | Baseline, unpredictable patterns |
 ///
 /// # Derives
 ///
@@ -79,6 +88,7 @@ pub enum EvictionPolicy {
     LRU,
     LFU,
     ARC,
+    Random,
 }
 
 impl EvictionPolicy {
@@ -110,12 +120,15 @@ impl EvictionPolicy {
     ///
     /// assert!(EvictionPolicy::is_valid("fifo"));
     /// assert!(EvictionPolicy::is_valid("LRU"));
-    /// assert!(!EvictionPolicy::is_valid("random"));
+    /// assert!(EvictionPolicy::is_valid("random"));
     /// assert!(EvictionPolicy::is_valid("lfu"));
     /// assert!(EvictionPolicy::is_valid("arc"));
     /// ```
     pub fn is_valid(p: &str) -> bool {
-        matches!(p.to_lowercase().as_str(), "fifo" | "lru" | "lfu" | "arc")
+        matches!(
+            p.to_lowercase().as_str(),
+            "fifo" | "lru" | "lfu" | "arc" | "random"
+        )
     }
 }
 
@@ -129,6 +142,7 @@ impl EvictionPolicy {
 /// - `"lru"` or `"LRU"` → `EvictionPolicy::LRU`
 /// - `"lfu"` or `"LFU"` → `EvictionPolicy::LFU`
 /// - `"arc"` or `"ARC"` → `EvictionPolicy::ARC`
+/// - `"random"` or `"RANDOM"` → `EvictionPolicy::Random`
 /// - Any other value → `EvictionPolicy::LRU` (default)
 ///
 /// # Examples
@@ -148,7 +162,10 @@ impl EvictionPolicy {
 /// let arc: EvictionPolicy = "arc".into();
 /// assert_eq!(arc, EvictionPolicy::ARC);
 ///
-/// let unknown: EvictionPolicy = "random".into();
+/// let random: EvictionPolicy = "random".into();
+/// assert_eq!(random, EvictionPolicy::Random);
+///
+/// let unknown: EvictionPolicy = "unknown".into();
 /// assert_eq!(unknown, EvictionPolicy::LRU); // defaults to LRU
 /// ```
 impl From<&str> for EvictionPolicy {
@@ -157,6 +174,7 @@ impl From<&str> for EvictionPolicy {
             "fifo" => EvictionPolicy::FIFO,
             "lfu" => EvictionPolicy::LFU,
             "arc" => EvictionPolicy::ARC,
+            "random" => EvictionPolicy::Random,
             _ => EvictionPolicy::LRU,
         }
     }
@@ -169,6 +187,7 @@ impl PartialEq for EvictionPolicy {
             (EvictionPolicy::LRU, EvictionPolicy::LRU) => true,
             (EvictionPolicy::LFU, EvictionPolicy::LFU) => true,
             (EvictionPolicy::ARC, EvictionPolicy::ARC) => true,
+            (EvictionPolicy::Random, EvictionPolicy::Random) => true,
             _ => false,
         }
     }

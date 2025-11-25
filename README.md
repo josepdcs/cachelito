@@ -18,8 +18,9 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache entry limits**: Control growth with numeric `limit`
 - 💾 **Memory-based limits (v0.10.0)**: New `max_memory = "100MB"` attribute for memory-aware eviction
-- 📊 **Eviction policies**: FIFO, LRU (default), LFU *(v0.8.0)*, ARC *(v0.9.0)*
+- 📊 **Eviction policies**: FIFO, LRU (default), LFU *(v0.8.0)*, ARC *(v0.9.0)*, Random *(v0.11.0)*
 - 🎯 **ARC (Adaptive Replacement Cache)**: Self-tuning policy combining recency & frequency
+- 🎲 **Random Replacement**: O(1) eviction for baseline benchmarks and random access patterns
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - 📏 **MemoryEstimator trait**: Used internally for memory-based limits (customizable for user types)
 - 📈 **Statistics (v0.6.0+)**: Track hit/miss rates via `stats` feature & `stats_registry`
@@ -35,17 +36,17 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.10.1"
+cachelito = "0.11.0"
 # Or with statistics:
-# cachelito = { version = "0.10.1", features = ["stats"] }
+# cachelito = { version = "0.11.0", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.10.x).
+> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.11.x).
 ```toml
 [dependencies]
-cachelito-async = "0.10.1"
+cachelito-async = "0.11.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -247,6 +248,20 @@ fn expensive_computation(x: i32) -> i32 {
 }
 ```
 
+#### Random Replacement
+
+```rust
+use cachelito::cache;
+
+// Cache with a limit of 100 entries using Random eviction
+#[cache(limit = 100, policy = "random")]
+fn expensive_computation(x: i32) -> i32 {
+    // When cache is full, a random entry is evicted
+    // Minimal overhead, useful for benchmarks and random access patterns
+    x * x
+}
+```
+
 **Policy Comparison:**
 
 | Policy | Evicts                            | Best For                                  | Performance     |
@@ -255,6 +270,15 @@ fn expensive_computation(x: i32) -> i32 {
 | **FIFO** | Oldest inserted                 | Simple, predictable behavior              | O(1)            |
 | **LFU** | Least frequently accessed        | Frequency patterns (popular items matter) | O(n) on evict   |
 | **ARC** | Adaptive (recency + frequency)   | Mixed workloads, self-tuning              | O(n) on evict/hit |
+| **Random** | Randomly selected              | Baseline benchmarks, random access        | O(1)            |
+
+**Choosing the Right Policy:**
+
+- **FIFO**: Simple, predictable, minimal overhead. Use when you just need basic caching.
+- **LRU**: Best for most use cases with temporal locality (recent items are likely to be accessed again).
+- **LFU**: Best when certain items are accessed much more frequently (like "hot" products in e-commerce).
+- **ARC**: Best for workloads with mixed patterns - automatically adapts between recency and frequency.
+- **Random**: Best for baseline benchmarks, truly random access patterns, or when minimizing overhead is critical.
 
 ### Time-To-Live (TTL) Expiration
 
@@ -1052,7 +1076,47 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.10.0
+### Latest Release: Version 0.11.0
+
+**🎲 Random Replacement Policy!**
+
+Version 0.11.0 introduces the Random eviction policy for baseline benchmarking and simple use cases:
+
+**New Features:**
+
+- 🎲 **Random Eviction Policy** - Randomly evicts entries when cache is full
+- ⚡ **O(1) Performance** - Constant-time eviction with no access tracking overhead
+- 🔒 **Thread-Safe RNG** - Uses `fastrand` for fast, lock-free random selection
+- 📊 **Minimal Overhead** - No order updates on cache hits (unlike LRU/ARC)
+- 🎯 **Benchmark Baseline** - Ideal for comparing policy effectiveness
+- 🔄 **All Cache Types** - Available in sync (thread-local & global) and async caches
+- 📚 **Full Support** - Works with `limit`, `ttl`, and `max_memory` attributes
+
+**Quick Start:**
+
+```rust
+// Simple random eviction - O(1) performance
+#[cache(policy = "random", limit = 1000)]
+fn baseline_cache(x: u64) -> u64 { x * x }
+
+// Random with memory limit
+#[cache(policy = "random", max_memory = "100MB")]
+fn random_with_memory(key: String) -> Vec<u8> {
+    vec![0u8; 1024]
+}
+```
+
+**When to Use Random:**
+- Baseline for performance benchmarks
+- Truly random access patterns
+- Simplicity preferred over optimization
+- Reducing lock contention vs LRU/LFU
+
+See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
+
+---
+
+### Previous Release: Version 0.10.0
 
 **💾 Memory-Based Limits!**
 

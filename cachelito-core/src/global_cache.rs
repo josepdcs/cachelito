@@ -252,8 +252,8 @@ impl<R: Clone + 'static> GlobalCache<R> {
                     // Increment frequency counter
                     self.increment_frequency(key);
                 }
-                EvictionPolicy::FIFO => {
-                    // No update needed for FIFO
+                EvictionPolicy::FIFO | EvictionPolicy::Random => {
+                    // No update needed for FIFO or Random
                 }
             }
         }
@@ -389,6 +389,13 @@ impl<R: Clone + 'static> GlobalCache<R> {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                         }
                     }
+                    EvictionPolicy::Random => {
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(o.iter())
+                        {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                        }
+                    }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
                         // Keep trying to evict until we find a valid entry or queue is empty
                         let mut map_write = self.map.write();
@@ -477,6 +484,16 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                         let mut map_write = self.map.write();
                         if let Some(evict_key) =
                             find_arc_eviction_key(&map_write, o.iter().enumerate())
+                        {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::Random => {
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) = crate::utils::select_random_eviction_key(o.iter())
                         {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                             true

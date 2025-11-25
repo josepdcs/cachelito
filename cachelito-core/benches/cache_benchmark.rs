@@ -25,6 +25,10 @@ static ARC_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static ARC_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
+static RANDOM_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static RANDOM_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
 // Memory-intensive cache (String values) to benchmark max_memory eviction
 static MEM_MAP: Lazy<RwLock<HashMap<String, CacheEntry<String>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
@@ -38,6 +42,8 @@ static LRU_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 static LFU_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static ARC_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+#[cfg(feature = "stats")]
+static RANDOM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static MEM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
@@ -102,6 +108,21 @@ macro_rules! new_arc_cache {
     };
 }
 
+macro_rules! new_random_cache {
+    ($limit:expr) => {
+        GlobalCache::new(
+            &RANDOM_MAP,
+            &RANDOM_ORDER,
+            $limit,
+            None,
+            EvictionPolicy::Random,
+            None,
+            #[cfg(feature = "stats")]
+            &RANDOM_STATS,
+        )
+    };
+}
+
 macro_rules! new_mem_cache {
     ($limit:expr, $max_mem:expr) => {
         GlobalCache::new(
@@ -133,6 +154,10 @@ fn reset_lfu() {
 fn reset_arc() {
     ARC_MAP.write().clear();
     ARC_ORDER.lock().clear();
+}
+fn reset_random() {
+    RANDOM_MAP.write().clear();
+    RANDOM_ORDER.lock().clear();
 }
 fn reset_mem() {
     MEM_MAP.write().clear();
@@ -183,6 +208,16 @@ fn bench_insert_sequential(c: &mut Criterion) {
                 }
             });
         });
+        // Random
+        group.bench_with_input(BenchmarkId::new("Random", size), size, |b, &size| {
+            b.iter(|| {
+                reset_random();
+                let cache = new_random_cache!(Some(size));
+                for i in 0..size {
+                    cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+                }
+            });
+        });
     }
     group.finish();
 }
@@ -207,6 +242,10 @@ fn bench_get_sequential(c: &mut Criterion) {
         let arc_cache = new_arc_cache!(Some(*size));
         for i in 0..*size {
             arc_cache.insert(&format!("key{}", i), i as i32);
+        }
+        let random_cache = new_random_cache!(Some(*size));
+        for i in 0..*size {
+            random_cache.insert(&format!("key{}", i), i as i32);
         }
 
         group.bench_with_input(BenchmarkId::new("FIFO", size), size, |b, &size| {
@@ -234,6 +273,13 @@ fn bench_get_sequential(c: &mut Criterion) {
             b.iter(|| {
                 for i in 0..size {
                     std::hint::black_box(arc_cache.get(&format!("key{}", i)));
+                }
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("Random", size), size, |b, &size| {
+            b.iter(|| {
+                for i in 0..size {
+                    std::hint::black_box(random_cache.get(&format!("key{}", i)));
                 }
             });
         });
@@ -452,6 +498,66 @@ fn bench_read_heavy_workload(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_random_eviction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("random_vs_other_policies");
+
+    // Benchmark eviction-heavy workload: small cache, many inserts
+    let cache_limit = 50;
+    let num_insertions = 500; // 10x the cache size
+
+    group.bench_function("Random_eviction_heavy", |b| {
+        b.iter(|| {
+            reset_random();
+            let cache = new_random_cache!(Some(cache_limit));
+            for i in 0..num_insertions {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+
+    group.bench_function("FIFO_eviction_heavy", |b| {
+        b.iter(|| {
+            reset_fifo();
+            let cache = new_fifo_cache!(Some(cache_limit));
+            for i in 0..num_insertions {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+
+    group.bench_function("LRU_eviction_heavy", |b| {
+        b.iter(|| {
+            reset_lru();
+            let cache = new_lru_cache!(Some(cache_limit));
+            for i in 0..num_insertions {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+
+    group.bench_function("LFU_eviction_heavy", |b| {
+        b.iter(|| {
+            reset_lfu();
+            let cache = new_lfu_cache!(Some(cache_limit));
+            for i in 0..num_insertions {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+
+    group.bench_function("ARC_eviction_heavy", |b| {
+        b.iter(|| {
+            reset_arc();
+            let cache = new_arc_cache!(Some(cache_limit));
+            for i in 0..num_insertions {
+                cache.insert(&format!("key{}", i), std::hint::black_box(i as i32));
+            }
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert_sequential,
@@ -461,6 +567,7 @@ criterion_group!(
     bench_eviction,
     bench_rwlock_concurrent_reads,
     bench_read_heavy_workload,
-    bench_memory_eviction
+    bench_memory_eviction,
+    bench_random_eviction
 );
 criterion_main!(benches);

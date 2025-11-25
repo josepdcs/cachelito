@@ -195,6 +195,22 @@ async fn complex_operation(x: i32, y: i32) -> Result<i32, Error> {
 - Best for workloads with "hot" data
 - Popular items remain cached longer
 
+### ARC (Adaptive Replacement Cache)
+
+- Hybrid policy combining LRU and LFU
+- Self-tuning based on access patterns
+- O(n) performance for eviction and cache hits
+- Best for mixed workloads
+- Scan-resistant
+
+### Random Replacement
+
+- Randomly evicts entries when cache is full
+- O(1) performance for all operations
+- Minimal overhead, no access tracking
+- Best for baseline benchmarks
+- Good for truly random access patterns
+
 **Policy Comparison:**
 
 | Policy | Eviction | Cache Hit | Use Case |
@@ -202,6 +218,8 @@ async fn complex_operation(x: i32, y: i32) -> Result<i32, Error> {
 | **LRU** | O(1) | O(n) | Recent access matters |
 | **FIFO** | O(1) | O(1) | Simple predictable caching |
 | **LFU** | O(n) | O(1) | Frequency patterns matter |
+| **ARC** | O(n) | O(n) | Mixed workloads, adaptive |
+| **Random** | O(1) | O(1) | Baseline, random access |
 
 ## Performance
 

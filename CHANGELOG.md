@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2025-11-25
+
+### Added
+
+- **🎲 Random Replacement Policy**: New eviction policy that randomly selects entries for eviction
+  - Example: `#[cache(policy = "random", limit = 100)]`
+  - **O(1) eviction** - constant-time random selection using `fastrand`
+  - **Minimal overhead** - no access tracking or order updates on cache hits
+  - **Thread-safe** - lock-free random number generation
+  - **Use cases**:
+    - Baseline for performance benchmarks
+    - Workloads with truly random access patterns
+    - Scenarios where simplicity is preferred over optimization
+    - Reducing lock contention compared to LRU/LFU
+  - Implemented for all cache types:
+    - `ThreadLocalCache` (sync, thread-local scope)
+    - `GlobalCache` (sync, global scope)
+    - `AsyncGlobalCache` (async, global scope)
+  - Works with all features: `limit`, `ttl`, `max_memory`
+  - **New dependency**: `fastrand = "2.2"` for fast random number generation
+
+### Changed
+
+- **📊 Performance Table Updated**: Added Random policy to comparison table
+  - Random: O(1) eviction, O(1) cache hit, O(1) cache miss
+- **🎯 Policy Validation**: Updated policy validation to include "random"
+  - Valid policies: "fifo", "lru", "lfu", "arc", "random"
+
+### Documentation
+
+- **📚 New Examples**:
+  - `examples/random_policy.rs` - Comprehensive demonstration of Random policy
+  - `cachelito-async/examples/async_random.rs` - Async Random policy example
+- **🧪 New Tests**:
+  - `tests/random_policy_tests.rs` - 9 integration tests for sync cache
+  - `cachelito-async/tests/random_policy_tests.rs` - 6 integration tests for async cache
+  - Unit tests in `cachelito-core/src/utils.rs` for `select_random_eviction_key()`
+- **📖 Updated Documentation**:
+  - `EvictionPolicy` enum with Random variant details
+  - Performance characteristics comparison table
+  - Usage examples in rustdoc
+
 ## [0.10.1] - 2025-11-21
 
 ### Changed
