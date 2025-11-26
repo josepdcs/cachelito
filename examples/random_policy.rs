@@ -1,5 +1,4 @@
 use cachelito::cache;
-use std::collections::HashSet;
 
 /// Demonstrates the Random eviction policy
 ///
@@ -53,13 +52,10 @@ fn main() {
     println!("=====================================");
     println!("Checking keys 1-10 to see which remain in cache:\n");
 
-    let mut cached_keys: HashSet<u32> = HashSet::new();
-
     for i in 1..=10 {
         // Access each key - values should always be correct
         let result = compute_value(i);
         println!("  Key {} -> {} (in cache)", i, result);
-        cached_keys.insert(i);
     }
 
     println!("\nPhase 5: Demonstrate randomness with multiple runs");
