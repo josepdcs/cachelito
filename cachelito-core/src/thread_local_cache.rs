@@ -240,8 +240,8 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                     // Increment frequency counter
                     self.increment_frequency(key);
                 }
-                EvictionPolicy::FIFO => {
-                    // No update needed for FIFO
+                EvictionPolicy::FIFO | EvictionPolicy::Random => {
+                    // No update needed for FIFO or Random
                 }
             }
         }
@@ -393,6 +393,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///   both recent and frequent usage patterns.
     /// - **FIFO** (First In, First Out): Evicts the oldest entry in the cache, as determined by the front of `order`.
     /// - **LRU** (Least Recently Used): Evicts the least recently used entry, which is also at the front of `order`.
+    /// - **Random**: Evicts a randomly selected entry from the cache.
     ///
     /// # Edge Cases
     /// - If the cache has no limit (`self.limit == None`), this method performs no action.
@@ -419,6 +420,18 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
 
                         if let Some(key) = evict_key {
                             self.remove_key(&key);
+                        }
+                    }
+                    EvictionPolicy::Random => {
+                        // O(1) random eviction: select random position and remove directly
+                        if !order.is_empty() {
+                            let pos = fastrand::usize(..order.len());
+                            if let Some(evict_key) = order.remove(pos) {
+                                // Remove from cache
+                                self.cache.with(|c| {
+                                    c.borrow_mut().remove(&evict_key);
+                                });
+                            }
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -520,6 +533,23 @@ impl<R: Clone + 'static + crate::MemoryEstimator> ThreadLocalCache<R> {
                             if let Some(key) = evict_key {
                                 self.remove_key(&key);
                                 true
+                            } else {
+                                false
+                            }
+                        }
+                        EvictionPolicy::Random => {
+                            // O(1) random eviction: select random position and remove directly
+                            if !order.is_empty() {
+                                let pos = fastrand::usize(..order.len());
+                                if let Some(evict_key) = order.remove(pos) {
+                                    // Remove from cache
+                                    self.cache.with(|c| {
+                                        c.borrow_mut().remove(&evict_key);
+                                    });
+                                    true
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             }

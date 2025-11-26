@@ -208,7 +208,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                     EvictionPolicy::LRU => {
                         // LRU update happens after releasing the entry lock
                     }
-                    EvictionPolicy::FIFO => {
+                    EvictionPolicy::FIFO | EvictionPolicy::Random => {
                         // No update needed
                     }
                 }
@@ -445,6 +445,15 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                             order.retain(|k| k != &evict_key);
                         }
                     }
+                    EvictionPolicy::Random => {
+                        // O(1) random eviction: select random position and remove directly
+                        if !order.is_empty() {
+                            let pos = fastrand::usize(..order.len());
+                            if let Some(evict_key) = order.remove(pos) {
+                                self.cache.remove(&evict_key);
+                            }
+                        }
+                    }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
                         // FIFO and LRU: evict from front of queue
                         while let Some(evict_key) = order.pop_front() {
@@ -552,6 +561,20 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                             true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::Random => {
+                        // O(1) random eviction: select random position and remove directly
+                        if !order.is_empty() {
+                            let pos = fastrand::usize(..order.len());
+                            if let Some(evict_key) = order.remove(pos) {
+                                self.cache.remove(&evict_key);
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }
