@@ -185,8 +185,11 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                 .as_secs();
 
             // Check if expired
+            // Use saturating_sub to avoid underflow when system clock moves backwards
+            // Align comparison with sync variant: expire when age >= ttl
             let is_expired = if let Some(ttl) = self.ttl {
-                now - entry_ref.1 > ttl
+                let age = now.saturating_sub(entry_ref.1);
+                age >= ttl
             } else {
                 false
             };
@@ -609,6 +612,7 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_async_cache_basic() {
@@ -678,5 +682,75 @@ mod tests {
         assert_eq!(async_cache.get("key2"), None);
         // key3 should be cached
         assert_eq!(async_cache.get("key3"), Some("value3"));
+    }
+
+    #[test]
+    fn test_async_cache_ttl_boundary_expires() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache =
+            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, Some(1));
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            Some(1),
+            &stats,
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Insert with timestamp exactly 1 second in the past (age == ttl)
+        cache.insert("k".to_string(), ("v", now.saturating_sub(1), 0));
+
+        // With >= comparison, this must be considered expired
+        assert_eq!(async_cache.get("k"), None);
+    }
+
+    #[test]
+    fn test_async_cache_clock_moves_backwards_not_expired() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache =
+            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, Some(10));
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            Some(10),
+            &stats,
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Simulate "future" timestamp (as if clock moved backwards later)
+        let future_ts = now.saturating_add(100);
+        cache.insert("k".to_string(), ("v", future_ts, 0));
+
+        // With saturating_sub, age = 0, which is < ttl => not expired
+        assert_eq!(async_cache.get("k"), Some("v"));
+
+        // After some small delay still not expired (we won't actually sleep; logic stable)
+        let _ = order.lock(); // touch order to satisfy lint
     }
 }
