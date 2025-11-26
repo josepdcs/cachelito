@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `GlobalCache` (sync, global scope)
     - `AsyncGlobalCache` (async, global scope)
   - Works with all features: `limit`, `ttl`, `max_memory`
-  - **New dependency**: `fastrand = "2.2"` for fast random number generation
+  - **New dependency**: `fastrand = "2.3"` for fast random number generation
 
 ### Changed
 
