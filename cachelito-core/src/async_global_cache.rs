@@ -446,9 +446,12 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(order) {
-                            self.cache.remove(&evict_key);
-                            order.retain(|k| k != &evict_key);
+                        // O(1) random eviction: select random position and remove directly
+                        if !order.is_empty() {
+                            let pos = fastrand::usize(..order.len());
+                            if let Some(evict_key) = order.remove(pos) {
+                                self.cache.remove(&evict_key);
+                            }
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -563,10 +566,15 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(&*order) {
-                            self.cache.remove(&evict_key);
-                            order.retain(|k| k != &evict_key);
-                            true
+                        // O(1) random eviction: select random position and remove directly
+                        if !order.is_empty() {
+                            let pos = fastrand::usize(..order.len());
+                            if let Some(evict_key) = order.remove(pos) {
+                                self.cache.remove(&evict_key);
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }

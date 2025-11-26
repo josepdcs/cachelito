@@ -390,9 +390,13 @@ impl<R: Clone + 'static> GlobalCache<R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        let mut map_write = self.map.write();
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(&o) {
-                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                        // O(1) random eviction: select random position and remove directly
+                        if !o.is_empty() {
+                            let pos = fastrand::usize(..o.len());
+                            if let Some(evict_key) = o.remove(pos) {
+                                let mut map_write = self.map.write();
+                                map_write.remove(&evict_key);
+                            }
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -491,10 +495,16 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        let mut map_write = self.map.write();
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(&o) {
-                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
-                            true
+                        // O(1) random eviction: select random position and remove directly
+                        if !o.is_empty() {
+                            let pos = fastrand::usize(..o.len());
+                            if let Some(evict_key) = o.remove(pos) {
+                                let mut map_write = self.map.write();
+                                map_write.remove(&evict_key);
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }

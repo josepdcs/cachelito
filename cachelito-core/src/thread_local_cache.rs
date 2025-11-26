@@ -423,13 +423,15 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                         }
                     }
                     EvictionPolicy::Random => {
-                        if let Some(evict_key) = crate::utils::select_random_eviction_key(order) {
-                            // Remove from cache
-                            self.cache.with(|c| {
-                                c.borrow_mut().remove(&evict_key);
-                            });
-                            // Remove from order queue
-                            order.retain(|k| k != &evict_key);
+                        // O(1) random eviction: select random position and remove directly
+                        if !order.is_empty() {
+                            let pos = fastrand::usize(..order.len());
+                            if let Some(evict_key) = order.remove(pos) {
+                                // Remove from cache
+                                self.cache.with(|c| {
+                                    c.borrow_mut().remove(&evict_key);
+                                });
+                            }
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
@@ -536,16 +538,18 @@ impl<R: Clone + 'static + crate::MemoryEstimator> ThreadLocalCache<R> {
                             }
                         }
                         EvictionPolicy::Random => {
-                            if let Some(evict_key) =
-                                crate::utils::select_random_eviction_key(&order)
-                            {
-                                // Remove from cache
-                                self.cache.with(|c| {
-                                    c.borrow_mut().remove(&evict_key);
-                                });
-                                // Remove from order queue
-                                order.retain(|k| k != &evict_key);
-                                true
+                            // O(1) random eviction: select random position and remove directly
+                            if !order.is_empty() {
+                                let pos = fastrand::usize(..order.len());
+                                if let Some(evict_key) = order.remove(pos) {
+                                    // Remove from cache
+                                    self.cache.with(|c| {
+                                        c.borrow_mut().remove(&evict_key);
+                                    });
+                                    true
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             }

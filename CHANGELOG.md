@@ -33,10 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Random: O(1) eviction, O(1) cache hit, O(1) cache miss
 - **🎯 Policy Validation**: Updated policy validation to include "random"
   - Valid policies: "fifo", "lru", "lfu", "arc", "random"
-- **⚡ True O(1) Implementation**: `select_random_eviction_key()` uses direct VecDeque indexing
-  - No iterator collection overhead
-  - Direct `VecDeque::get(random_index)` for constant-time access
-  - `VecDeque::len()` is O(1), `VecDeque::get()` is O(1)
 
 ### Documentation
 
@@ -46,7 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **🧪 New Tests**:
   - `tests/random_policy_tests.rs` - 9 integration tests for sync cache
   - `cachelito-async/tests/random_policy_tests.rs` - 6 integration tests for async cache
-  - Unit tests in `cachelito-core/src/utils.rs` for `select_random_eviction_key()`
 - **📖 Updated Documentation**:
   - `EvictionPolicy` enum with Random variant details
   - Performance characteristics comparison table
