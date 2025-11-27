@@ -510,13 +510,18 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
-                        if let Some(evict_key) = o.pop_front() {
-                            let mut map_write = self.map.write();
-                            map_write.remove(&evict_key);
-                            true
-                        } else {
-                            false
+                        // Ensure we only count as evicted if we actually remove from the map
+                        let mut successfully_evicted = false;
+                        let mut map_write = self.map.write();
+                        while let Some(evict_key) = o.pop_front() {
+                            if map_write.contains_key(&evict_key) {
+                                map_write.remove(&evict_key);
+                                successfully_evicted = true;
+                                break;
+                            }
+                            // If key wasn't in map (orphan), continue popping until we remove a real one
                         }
+                        successfully_evicted
                     }
                 };
 
@@ -1039,6 +1044,53 @@ mod tests {
         for i in 0..100 {
             assert_eq!(cache.get(&format!("k{}", i)), Some(i));
         }
+    }
+
+    #[test]
+    fn test_memory_eviction_skips_orphan_and_removes_real_entry() {
+        // Shared structures
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        // max_memory allows only a single i32 (size 4)
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            None,
+            Some(std::mem::size_of::<i32>()),
+            EvictionPolicy::FIFO,
+            None,
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        // Insert first real entry
+        cache.insert_with_memory("k1", 1i32);
+
+        // Introduce an orphan key at the front of the order queue
+        {
+            let mut o = ORDER.lock();
+            o.push_front("orphan".to_string());
+        }
+
+        // Insert second entry which forces memory eviction
+        cache.insert_with_memory("k2", 2i32);
+
+        // The orphan should be ignored for memory purposes and a real key should be evicted.
+        // Expect k1 to be evicted and k2 to remain.
+        assert_eq!(cache.get("k1"), None);
+        assert_eq!(cache.get("k2"), Some(2));
+
+        // Ensure the orphan key is gone from the order
+        let order_contents: Vec<String> = {
+            let o = ORDER.lock();
+            o.iter().cloned().collect()
+        };
+        assert!(order_contents.iter().all(|k| k != "orphan"));
     }
 
     /// Test RwLock allows concurrent reads (no blocking)
