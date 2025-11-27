@@ -511,17 +511,17 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
                         // Ensure we only count as evicted if we actually remove from the map
-                        let mut evicted_real = false;
+                        let mut successfully_evicted = false;
                         let mut map_write = self.map.write();
                         while let Some(evict_key) = o.pop_front() {
                             if map_write.contains_key(&evict_key) {
                                 map_write.remove(&evict_key);
-                                evicted_real = true;
+                                successfully_evicted = true;
                                 break;
                             }
                             // If key wasn't in map (orphan), continue popping until we remove a real one
                         }
-                        evicted_real
+                        successfully_evicted
                     }
                 };
 
