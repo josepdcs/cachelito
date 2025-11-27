@@ -743,15 +743,20 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        // Simulate "future" timestamp (as if clock moved backwards later)
-        let future_ts = now.saturating_add(100);
-        cache.insert("k".to_string(), ("v", future_ts, 0));
+        // Insert via the cache API so the 'order' queue is updated as well
+        async_cache.insert("k", "v");
 
-        // With saturating_sub, age = 0, which is < ttl => not expired
+        // Simulate a "future" timestamp (as if the clock moved backwards later)
+        // Adjust only the timestamp of the already inserted entry
+        let future_ts = now.saturating_add(100);
+        if let Some(mut entry) = cache.get_mut("k") {
+            entry.1 = future_ts;
+        }
+
+        // With saturating_sub, age = 0, which is < ttl => NOT expired
         assert_eq!(async_cache.get("k"), Some("v"));
 
-        // After some small delay still not expired (we won't actually sleep; logic stable)
-        // Assert that the order queue contains the key "k"
+        // Verify that the order queue contains the key "k"
         assert!(order.lock().contains(&"k".to_string()));
     }
 }
