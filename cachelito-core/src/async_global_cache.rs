@@ -751,6 +751,7 @@ mod tests {
         assert_eq!(async_cache.get("k"), Some("v"));
 
         // After some small delay still not expired (we won't actually sleep; logic stable)
-        let _ = order.lock(); // touch order to satisfy lint
+        // Assert that the order queue contains the key "k"
+        assert!(order.lock().contains(&"k".to_string()));
     }
 }
