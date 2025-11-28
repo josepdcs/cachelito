@@ -378,6 +378,30 @@ pub fn invalidate_by_dependency(dependency: &str) -> usize {
     InvalidationRegistry::global().invalidate_by_dependency(dependency)
 }
 
+/// Invalidate a specific cache by its name
+///
+/// This function invalidates a single cache identified by its name.
+///
+/// # Arguments
+///
+/// * `cache_name` - The name of the cache to invalidate
+///
+/// # Returns
+///
+/// `true` if the cache was found and invalidated, `false` otherwise
+///
+/// # Examples
+///
+/// ```rust
+/// use cachelito::{cache, invalidate_cache};
+///
+/// // Invalidate a specific cache:
+/// invalidate_cache("get_user_profile");
+/// ```
+pub fn invalidate_cache(cache_name: &str) -> bool {
+    InvalidationRegistry::global().invalidate_cache(cache_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +512,13 @@ mod tests {
 
         // Non-existent cache
         assert!(!registry.invalidate_cache("cache2"));
+    }
+
+    #[test]
+    fn test_clear_registry() {
+        let registry = InvalidationRegistry::new();
+        registry.register("cache1", InvalidationMetadata::new(vec![], vec![], vec![]));
+        registry.clear();
+        assert!(registry.cache_metadata.read().is_empty());
     }
 }
