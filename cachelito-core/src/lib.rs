@@ -33,6 +33,7 @@ mod keys;
 mod memory_estimator;
 mod thread_local_cache;
 
+pub mod invalidation;
 pub mod utils;
 
 #[cfg(feature = "stats")]
@@ -45,6 +46,10 @@ pub use async_global_cache::AsyncGlobalCache;
 pub use cache_entry::CacheEntry;
 pub use eviction_policy::EvictionPolicy;
 pub use global_cache::GlobalCache;
+pub use invalidation::{
+    invalidate_cache, invalidate_by_dependency, invalidate_by_event, invalidate_by_tag, InvalidationMetadata,
+    InvalidationRegistry, InvalidationStrategy,
+};
 pub use keys::{CacheableKey, DefaultCacheableKey};
 pub use memory_estimator::MemoryEstimator;
 pub use thread_local_cache::ThreadLocalCache;

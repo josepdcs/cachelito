@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2025-11-27
+
+### Added
+
+- **🔥 Smart Cache Invalidation**: New intelligent invalidation system beyond simple TTL expiration
+  - **Tag-based invalidation**: Group related caches and invalidate them together
+    - Example: `#[cache(tags = ["user_data", "profile"])]`
+    - API: `invalidate_by_tag("user_data")` - returns count of invalidated caches
+  - **Event-driven invalidation**: Trigger invalidation when specific events occur
+    - Example: `#[cache(events = ["user_updated", "permissions_changed"])]`
+    - API: `invalidate_by_event("user_updated")` - returns count of invalidated caches
+  - **Dependency-based invalidation**: Cascade invalidation to dependent caches
+    - Example: `#[cache(dependencies = ["get_user_profile"])]`
+    - API: `invalidate_by_dependency("get_user_profile")` - returns count of invalidated caches
+  - **Manual invalidation**: Invalidate specific caches by name
+    - API: `invalidate_cache("cache_name")` - returns true if found and invalidated
+  - **Flexible combinations**: Use tags, events, and dependencies together
+  - **Zero overhead**: No performance impact when invalidation attributes are not used
+  - **Thread-safe**: All invalidation operations are atomic and concurrent-safe
+  
+- **New Core Module**: `cachelito_core::invalidation`
+  - `InvalidationRegistry` - Global registry for managing cache invalidation
+  - `InvalidationMetadata` - Metadata structure for tags, events, and dependencies
+  - `InvalidationStrategy` - Enum defining invalidation approaches
+  - Thread-safe registration and callback system
+
+### Changed
+
+- **Macro Attributes Extended**: `#[cache]` macro now accepts new attributes:
+  - `tags = ["tag1", "tag2"]` - Array of string tags
+  - `events = ["event1", "event2"]` - Array of event names
+  - `dependencies = ["cache1", "cache2"]` - Array of cache dependencies
+- **Parser Updates**: `cachelito-macro-utils` enhanced to parse array attributes
+  - New function: `parse_string_array_attribute()` for tag/event/dependency parsing
+  - Updated `SyncCacheAttributes` and `AsyncCacheAttributes` structs
+
+### Documentation
+
+- **📚 New Examples**:
+  - `examples/smart_invalidation.rs` - Comprehensive demonstration of all invalidation strategies
+- **🧪 New Tests**:
+  - `tests/invalidation_tests.rs` - 6 integration tests covering all invalidation scenarios:
+    - Tag-based invalidation
+    - Event-based invalidation
+    - Dependency-based invalidation
+    - Multiple strategies combined
+    - Selective invalidation
+    - Cascade invalidation
+- **📖 Updated Documentation**:
+  - New README section: "Smart Cache Invalidation"
+  - Complete API documentation for all invalidation functions
+  - Examples showing real-world usage patterns
+  - Benefits and use cases clearly explained
+
+### API
+
+New public functions in `cachelito` crate:
+- `invalidate_by_tag(tag: &str) -> usize`
+- `invalidate_by_event(event: &str) -> usize`
+- `invalidate_by_dependency(dependency: &str) -> usize`
+- `invalidate_cache(cache_name: &str) -> bool`
+
+New public types in `cachelito_core`:
+- `InvalidationRegistry::global()` - Access global registry
+- `InvalidationMetadata::new(tags, events, dependencies)` - Create metadata
+- `InvalidationStrategy` - Enum for invalidation types
+
 ## [0.11.0] - 2025-11-26
 
 ### Added

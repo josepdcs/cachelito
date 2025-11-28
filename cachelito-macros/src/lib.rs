@@ -105,11 +105,49 @@ fn generate_global_branch(
     block: &syn::Block,
     fn_name_str: &str,
     is_result: bool,
+    attrs: &SyncCacheAttributes,
 ) -> TokenStream2 {
     // Check if max_memory is None by comparing the token stream
     let has_max_memory = has_max_memory(max_memory_expr);
 
     let insert_call = generate_insert_call(has_max_memory, is_result);
+
+    // Generate invalidation registration code
+    let invalidation_registration = if !attrs.tags.is_empty()
+        || !attrs.events.is_empty()
+        || !attrs.dependencies.is_empty()
+    {
+        let tags = &attrs.tags;
+        let events = &attrs.events;
+        let deps = &attrs.dependencies;
+
+        quote! {
+            // Register invalidation metadata
+            {
+                use std::sync::Once;
+                static INVALIDATION_REGISTER_ONCE: Once = Once::new();
+                INVALIDATION_REGISTER_ONCE.call_once(|| {
+                    let metadata = cachelito_core::InvalidationMetadata::new(
+                        vec![#(#tags.to_string()),*],
+                        vec![#(#events.to_string()),*],
+                        vec![#(#deps.to_string()),*],
+                    );
+                    cachelito_core::InvalidationRegistry::global().register(#fn_name_str, metadata);
+
+                    // Register invalidation callback
+                    cachelito_core::InvalidationRegistry::global().register_callback(
+                        #fn_name_str,
+                        move || {
+                            #cache_ident.write().clear();
+                            #order_ident.lock().clear();
+                        }
+                    );
+                });
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     quote! {
         static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> =
@@ -129,6 +167,8 @@ fn generate_global_branch(
                 cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
             });
         }
+
+        #invalidation_registration
 
         #[cfg(feature = "stats")]
         let __cache = GlobalCache::<#ret_type>::new(
@@ -423,7 +463,10 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Use custom name if provided, otherwise use function name
-    let fn_name_str = attrs.custom_name.unwrap_or_else(|| ident.to_string());
+    let fn_name_str = attrs
+        .custom_name
+        .clone()
+        .unwrap_or_else(|| ident.to_string());
 
     // Generate thread-local and global cache branches
     let thread_local_branch = generate_thread_local_branch(
@@ -452,6 +495,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         block,
         &fn_name_str,
         is_result,
+        &attrs,
     );
 
     // Generate final expanded code

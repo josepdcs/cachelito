@@ -49,7 +49,7 @@ checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
 name = "cachelito"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cachelito-core",
  "cachelito-macros",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "cachelito-async"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cachelito-async-macros",
  "cachelito-core",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "cachelito-async-macros"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cachelito-macro-utils",
  "proc-macro2",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "cachelito-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "criterion",
  "dashmap",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "cachelito-macro-utils"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "cachelito-macros"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cachelito-macro-utils",
  "proc-macro2",
