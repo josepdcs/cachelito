@@ -41,9 +41,16 @@ fn parse_attributes(attr: TokenStream) -> AsyncCacheAttributes {
 ///   - `"fifo"` - First In, First Out
 ///   - `"lru"` - Least Recently Used (default)
 ///   - `"lfu"` - Least Frequently Used
+///   - `"arc"` - Adaptive Replacement Cache
+///   - `"random"` - Random Replacement
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
 /// - `name` (optional): Custom identifier for the cache. Default: the function name.
+/// - `max_memory` (optional): Maximum memory usage (e.g., "100MB", "1GB"). Requires
+///   the return type to implement `MemoryEstimator`.
+/// - `tags` (optional): Array of tags for group invalidation. Example: `["user_data", "profile"]`
+/// - `events` (optional): Array of events that trigger invalidation. Example: `["user_updated"]`
+/// - `dependencies` (optional): Array of cache dependencies. Example: `["get_user"]`
 ///
 /// # Cache Behavior
 ///
@@ -67,6 +74,30 @@ fn parse_attributes(attr: TokenStream) -> AsyncCacheAttributes {
 ///     tokio::time::sleep(Duration::from_secs(1)).await;
 ///     User { id, name: format!("User {}", id) }
 /// }
+/// ```
+///
+/// ## Cache with Invalidation
+///
+/// ```ignore
+/// use cachelito_async::cache_async;
+/// use cachelito_core::invalidate_by_tag;
+///
+/// #[cache_async(
+///     limit = 100,
+///     policy = "lru",
+///     tags = ["user_data"],
+///     events = ["user_updated"]
+/// )]
+/// async fn get_user_profile(user_id: u64) -> UserProfile {
+///     // Fetch from database
+///     fetch_profile_from_db(user_id).await
+/// }
+///
+/// // Later, invalidate all caches with the "user_data" tag
+/// invalidate_by_tag("user_data");
+///
+/// // Or invalidate by event
+/// invalidate_by_event("user_updated");
 /// ```
 ///
 /// # Performance Considerations
@@ -227,6 +258,40 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    // Generate invalidation registration code
+    let invalidation_registration = if !attrs.tags.is_empty()
+        || !attrs.events.is_empty()
+        || !attrs.dependencies.is_empty()
+    {
+        let tags = &attrs.tags;
+        let events = &attrs.events;
+        let deps = &attrs.dependencies;
+
+        quote! {
+            // Register invalidation metadata and callback (happens once on first access)
+            static INVALIDATION_REGISTERED: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
+            INVALIDATION_REGISTERED.get_or_init(|| {
+                let metadata = cachelito_core::InvalidationMetadata::new(
+                    vec![#(#tags.to_string()),*],
+                    vec![#(#events.to_string()),*],
+                    vec![#(#deps.to_string()),*],
+                );
+                cachelito_core::InvalidationRegistry::global().register(#fn_name_str, metadata);
+
+                // Register invalidation callback to clear the async cache
+                cachelito_core::InvalidationRegistry::global().register_callback(
+                    #fn_name_str,
+                    move || {
+                        #cache_ident.clear();
+                        #order_ident.lock().clear();
+                    }
+                );
+            });
+        }
+    } else {
+        quote! {}
+    };
+
     // Generate final expanded code
     let expanded = quote! {
         #vis #sig {
@@ -245,6 +310,8 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             STATS_REGISTERED.get_or_init(|| {
                 cachelito_core::stats_registry::register(#fn_name_str, &#stats_ident);
             });
+
+            #invalidation_registration
 
             #cache_logic
         }

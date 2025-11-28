@@ -312,6 +312,72 @@ impl Default for InvalidationRegistry {
     }
 }
 
+/// Global convenience function to invalidate all caches with a given tag
+///
+/// # Arguments
+///
+/// * `tag` - The tag to match
+///
+/// # Returns
+///
+/// Number of caches invalidated
+///
+/// # Example
+///
+/// ```ignore
+/// use cachelito_core::invalidate_by_tag;
+///
+/// let count = invalidate_by_tag("user_data");
+/// println!("Invalidated {} caches", count);
+/// ```
+pub fn invalidate_by_tag(tag: &str) -> usize {
+    InvalidationRegistry::global().invalidate_by_tag(tag)
+}
+
+/// Global convenience function to invalidate all caches listening to an event
+///
+/// # Arguments
+///
+/// * `event` - The event that occurred
+///
+/// # Returns
+///
+/// Number of caches invalidated
+///
+/// # Example
+///
+/// ```ignore
+/// use cachelito_core::invalidate_by_event;
+///
+/// let count = invalidate_by_event("user_updated");
+/// println!("Invalidated {} caches", count);
+/// ```
+pub fn invalidate_by_event(event: &str) -> usize {
+    InvalidationRegistry::global().invalidate_by_event(event)
+}
+
+/// Global convenience function to invalidate all dependent caches
+///
+/// # Arguments
+///
+/// * `dependency` - The dependency that changed
+///
+/// # Returns
+///
+/// Number of caches invalidated
+///
+/// # Example
+///
+/// ```ignore
+/// use cachelito_core::invalidate_by_dependency;
+///
+/// let count = invalidate_by_dependency("get_user");
+/// println!("Invalidated {} caches", count);
+/// ```
+pub fn invalidate_by_dependency(dependency: &str) -> usize {
+    InvalidationRegistry::global().invalidate_by_dependency(dependency)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
