@@ -80,7 +80,7 @@ fn parse_attributes(attr: TokenStream) -> AsyncCacheAttributes {
 ///
 /// ```ignore
 /// use cachelito_async::cache_async;
-/// use cachelito_core::invalidate_by_tag;
+/// use cachelito_core::{invalidate_by_tag, invalidate_by_event};
 ///
 /// #[cache_async(
 ///     limit = 100,
