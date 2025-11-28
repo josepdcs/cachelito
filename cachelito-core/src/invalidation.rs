@@ -39,8 +39,6 @@ pub enum InvalidationStrategy {
     Event(String),
     /// Invalidate by dependency
     Dependency(String),
-    /// Invalidate all entries
-    All,
 }
 
 /// Metadata about cache invalidation configuration
