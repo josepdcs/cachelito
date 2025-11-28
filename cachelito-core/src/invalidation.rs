@@ -6,7 +6,7 @@
 //! - **Tag-based invalidation**: Group related entries and invalidate them together
 //! - **Event-driven invalidation**: Trigger invalidation based on events
 //! - **Dependency-based invalidation**: Cascade invalidation to dependent caches
-//! - **Conditional invalidation**: Custom predicates for invalidation logic
+//! - **Conditional invalidation**: Custom predicates for invalidation logic _(planned for a future release)_
 //!
 //! # Examples
 //!
