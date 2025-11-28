@@ -387,14 +387,26 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
             attrs.ttl = parse_ttl_attribute(&nv);
         } else {
             // Try to parse as common attribute
-            parse_common_attribute(
+            if !parse_common_attribute(
                 &nv,
                 &mut attrs.custom_name,
                 &mut attrs.max_memory,
                 &mut attrs.tags,
                 &mut attrs.events,
                 &mut attrs.dependencies,
-            )?;
+            )? {
+                // Unknown attribute - generate compile error
+                let attr_name = nv
+                    .path
+                    .get_ident()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let err_msg = format!(
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies",
+                    attr_name
+                );
+                return Err(quote! { compile_error!(#err_msg) });
+            }
         }
     }
 
@@ -456,14 +468,26 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
             }
         } else {
             // Try to parse as common attribute
-            parse_common_attribute(
+            if !parse_common_attribute(
                 &nv,
                 &mut attrs.custom_name,
                 &mut attrs.max_memory,
                 &mut attrs.tags,
                 &mut attrs.events,
                 &mut attrs.dependencies,
-            )?;
+            )? {
+                // Unknown attribute - generate compile error
+                let attr_name = nv
+                    .path
+                    .get_ident()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let err_msg = format!(
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies",
+                    attr_name
+                );
+                return Err(quote! { compile_error!(#err_msg) });
+            }
         }
     }
 
@@ -806,5 +830,65 @@ mod tests {
             result.unwrap(),
             vec!["tag1".to_string(), "tag2".to_string(), "tag3".to_string()]
         );
+    }
+
+    #[test]
+    fn test_parse_async_attributes_unknown_attribute() {
+        let result = parse_async_attributes(quote! {
+            limit = 100,
+            unknown_attr = "value"
+        });
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let err_str = err.to_string();
+            assert!(err_str.contains("Unknown attribute"));
+            assert!(err_str.contains("unknown_attr"));
+        }
+    }
+
+    #[test]
+    fn test_parse_sync_attributes_unknown_attribute() {
+        let result = parse_sync_attributes(quote! {
+            limit = 100,
+            typo_tag = ["tag1"]
+        });
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let err_str = err.to_string();
+            assert!(err_str.contains("Unknown attribute"));
+            assert!(err_str.contains("typo_tag"));
+        }
+    }
+
+    #[test]
+    fn test_parse_async_attributes_typo_in_tags() {
+        // Test common typo: "tag" instead of "tags"
+        let result = parse_async_attributes(quote! {
+            tag = ["user_data"]
+        });
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let err_str = err.to_string();
+            assert!(err_str.contains("Unknown attribute"));
+            assert!(err_str.contains("tag"));
+        }
+    }
+
+    #[test]
+    fn test_parse_sync_attributes_typo_in_events() {
+        // Test common typo: "event" instead of "events"
+        let result = parse_sync_attributes(quote! {
+            event = ["user_updated"]
+        });
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let err_str = err.to_string();
+            assert!(err_str.contains("Unknown attribute"));
+            assert!(err_str.contains("event"));
+        }
     }
 }

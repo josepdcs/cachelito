@@ -135,13 +135,11 @@ fn generate_global_branch(
                     cachelito_core::InvalidationRegistry::global().register(#fn_name_str, metadata);
 
                     // Register invalidation callback
-                    let cache_ref = &#cache_ident;
-                    let order_ref = &#order_ident;
                     cachelito_core::InvalidationRegistry::global().register_callback(
                         #fn_name_str,
                         move || {
-                            cache_ref.write().clear();
-                            order_ref.lock().clear();
+                            #cache_ident.write().clear();
+                            #order_ident.lock().clear();
                         }
                     );
                 });
