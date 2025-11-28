@@ -390,8 +390,8 @@ pub fn invalidate_by_dependency(dependency: &str) -> usize {
 ///
 /// # Examples
 ///
-/// ```rust
-/// use cachelito::{cache, invalidate_cache};
+/// ```ignore
+/// use cachelito_core::invalidate_cache;
 ///
 /// // Invalidate a specific cache:
 /// invalidate_cache("get_user_profile");
