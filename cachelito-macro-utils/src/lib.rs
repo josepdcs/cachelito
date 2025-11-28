@@ -25,6 +25,9 @@ pub struct AsyncCacheAttributes {
     pub ttl: TokenStream2,
     pub custom_name: Option<String>,
     pub max_memory: TokenStream2,
+    pub tags: Vec<String>,
+    pub events: Vec<String>,
+    pub dependencies: Vec<String>,
 }
 
 impl Default for AsyncCacheAttributes {
@@ -35,6 +38,9 @@ impl Default for AsyncCacheAttributes {
             ttl: quote! { Option::<u64>::None },
             custom_name: None,
             max_memory: quote! { Option::<usize>::None },
+            tags: Vec::new(),
+            events: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 }
@@ -47,6 +53,9 @@ pub struct SyncCacheAttributes {
     pub scope: TokenStream2,
     pub custom_name: Option<String>,
     pub max_memory: TokenStream2,
+    pub tags: Vec<String>,
+    pub events: Vec<String>,
+    pub dependencies: Vec<String>,
 }
 
 impl Default for SyncCacheAttributes {
@@ -58,6 +67,9 @@ impl Default for SyncCacheAttributes {
             scope: quote! { cachelito_core::CacheScope::Global },
             custom_name: None,
             max_memory: quote! { None },
+            tags: Vec::new(),
+            events: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 }
@@ -286,6 +298,71 @@ pub fn generate_key_expr_with_cacheable_key(
     }
 }
 
+/// Parse array of strings from attribute (for tags, events, dependencies)
+///
+/// Supports formats like:
+/// - `tags = ["tag1", "tag2"]`
+/// - `tags = ["single"]`
+/// - `events = ["event1"]`
+pub fn parse_string_array_attribute(nv: &MetaNameValue) -> Result<Vec<String>, TokenStream2> {
+    match &nv.value {
+        Expr::Array(array) => {
+            let mut strings = Vec::new();
+            for elem in &array.elems {
+                match elem {
+                    Expr::Lit(expr_lit) => match &expr_lit.lit {
+                        syn::Lit::Str(s) => {
+                            strings.push(s.value());
+                        }
+                        _ => {
+                            return Err(
+                                quote! { compile_error!("Array elements must be string literals") },
+                            );
+                        }
+                    },
+                    _ => {
+                        return Err(
+                            quote! { compile_error!("Array elements must be string literals") },
+                        );
+                    }
+                }
+            }
+            Ok(strings)
+        }
+        _ => Err(quote! { compile_error!("Expected array of strings like [\"tag1\", \"tag2\"]") }),
+    }
+}
+
+/// Parse common attributes shared between async and sync caches
+/// Returns true if the attribute was recognized and processed
+fn parse_common_attribute(
+    nv: &MetaNameValue,
+    custom_name: &mut Option<String>,
+    max_memory: &mut TokenStream2,
+    tags: &mut Vec<String>,
+    events: &mut Vec<String>,
+    dependencies: &mut Vec<String>,
+) -> Result<bool, TokenStream2> {
+    if nv.path.is_ident("name") {
+        *custom_name = parse_name_attribute(nv);
+        Ok(true)
+    } else if nv.path.is_ident("max_memory") {
+        *max_memory = parse_max_memory_attribute(nv);
+        Ok(true)
+    } else if nv.path.is_ident("tags") {
+        *tags = parse_string_array_attribute(nv)?;
+        Ok(true)
+    } else if nv.path.is_ident("events") {
+        *events = parse_string_array_attribute(nv)?;
+        Ok(true)
+    } else if nv.path.is_ident("dependencies") {
+        *dependencies = parse_string_array_attribute(nv)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// Parse async cache attributes from a token stream
 pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes, TokenStream2> {
     use syn::parse::Parser;
@@ -308,10 +385,16 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
             }
         } else if nv.path.is_ident("ttl") {
             attrs.ttl = parse_ttl_attribute(&nv);
-        } else if nv.path.is_ident("name") {
-            attrs.custom_name = parse_name_attribute(&nv);
-        } else if nv.path.is_ident("max_memory") {
-            attrs.max_memory = parse_max_memory_attribute(&nv);
+        } else {
+            // Try to parse as common attribute
+            parse_common_attribute(
+                &nv,
+                &mut attrs.custom_name,
+                &mut attrs.max_memory,
+                &mut attrs.tags,
+                &mut attrs.events,
+                &mut attrs.dependencies,
+            )?;
         }
     }
 
@@ -371,10 +454,16 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                 }
                 Err(err) => return Err(err),
             }
-        } else if nv.path.is_ident("name") {
-            attrs.custom_name = parse_name_attribute(&nv);
-        } else if nv.path.is_ident("max_memory") {
-            attrs.max_memory = parse_max_memory_attribute(&nv);
+        } else {
+            // Try to parse as common attribute
+            parse_common_attribute(
+                &nv,
+                &mut attrs.custom_name,
+                &mut attrs.max_memory,
+                &mut attrs.tags,
+                &mut attrs.events,
+                &mut attrs.dependencies,
+            )?;
         }
     }
 
@@ -568,5 +657,154 @@ mod tests {
             "cachelito_core :: CacheScope :: ThreadLocal"
         );
         assert_eq!(attrs.custom_name, Some("sync_cache".to_string()));
+    }
+
+    #[test]
+    fn test_parse_common_attribute_name() {
+        let nv: MetaNameValue = parse_quote! { name = "test_cache" };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+        assert_eq!(custom_name, Some("test_cache".to_string()));
+    }
+
+    #[test]
+    fn test_parse_common_attribute_max_memory() {
+        let nv: MetaNameValue = parse_quote! { max_memory = "100MB" };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+        let expected = 100 * 1024 * 1024;
+        assert_eq!(max_memory.to_string(), format!("Some ({}usize)", expected));
+    }
+
+    #[test]
+    fn test_parse_common_attribute_tags() {
+        let nv: MetaNameValue = parse_quote! { tags = ["tag1", "tag2"] };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+        assert_eq!(tags, vec!["tag1".to_string(), "tag2".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_common_attribute_events() {
+        let nv: MetaNameValue = parse_quote! { events = ["event1"] };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+        assert_eq!(events, vec!["event1".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_common_attribute_dependencies() {
+        let nv: MetaNameValue = parse_quote! { dependencies = ["dep1", "dep2"] };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+        assert_eq!(dependencies, vec!["dep1".to_string(), "dep2".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_common_attribute_unknown() {
+        let nv: MetaNameValue = parse_quote! { unknown = "value" };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false); // Not recognized
+    }
+
+    #[test]
+    fn test_parse_string_array_attribute() {
+        let nv: MetaNameValue = parse_quote! { tags = ["tag1", "tag2", "tag3"] };
+        let result = parse_string_array_attribute(&nv);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            vec!["tag1".to_string(), "tag2".to_string(), "tag3".to_string()]
+        );
     }
 }

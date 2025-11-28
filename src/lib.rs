@@ -119,3 +119,102 @@
 
 pub use cachelito_core::*;
 pub use cachelito_macros::cache;
+
+/// Invalidate all caches associated with a specific tag
+///
+/// This function triggers invalidation of all caches that have been
+/// registered with the given tag.
+///
+/// # Arguments
+///
+/// * `tag` - The tag to invalidate
+///
+/// # Returns
+///
+/// The number of caches that were invalidated
+///
+/// # Examples
+///
+/// ```rust
+/// use cachelito::{cache, invalidate_by_tag};
+///
+/// // Later, when data changes:
+/// invalidate_by_tag("user_data");
+/// ```
+pub fn invalidate_by_tag(tag: &str) -> usize {
+    InvalidationRegistry::global().invalidate_by_tag(tag)
+}
+
+/// Invalidate all caches associated with a specific event
+///
+/// This function triggers invalidation of all caches that have been
+/// configured to listen to the given event.
+///
+/// # Arguments
+///
+/// * `event` - The event that occurred
+///
+/// # Returns
+///
+/// The number of caches that were invalidated
+///
+/// # Examples
+///
+/// ```rust
+/// use cachelito::{cache, invalidate_by_event};
+///
+/// // When an event occurs:
+/// invalidate_by_event("user_updated");
+/// ```
+pub fn invalidate_by_event(event: &str) -> usize {
+    InvalidationRegistry::global().invalidate_by_event(event)
+}
+
+/// Invalidate all caches that depend on a specific dependency
+///
+/// This function triggers cascade invalidation of all caches that
+/// have declared a dependency on the given function/cache.
+///
+/// # Arguments
+///
+/// * `dependency` - The dependency that changed
+///
+/// # Returns
+///
+/// The number of caches that were invalidated
+///
+/// # Examples
+///
+/// ```rust
+/// use cachelito::{cache, invalidate_by_dependency};
+///
+/// // When a dependency changes:
+/// invalidate_by_dependency("get_user_permissions");
+/// ```
+pub fn invalidate_by_dependency(dependency: &str) -> usize {
+    InvalidationRegistry::global().invalidate_by_dependency(dependency)
+}
+
+/// Invalidate a specific cache by its name
+///
+/// This function invalidates a single cache identified by its name.
+///
+/// # Arguments
+///
+/// * `cache_name` - The name of the cache to invalidate
+///
+/// # Returns
+///
+/// `true` if the cache was found and invalidated, `false` otherwise
+///
+/// # Examples
+///
+/// ```rust
+/// use cachelito::{cache, invalidate_cache};
+///
+/// // Invalidate a specific cache:
+/// invalidate_cache("get_user_profile");
+/// ```
+pub fn invalidate_cache(cache_name: &str) -> bool {
+    InvalidationRegistry::global().invalidate_cache(cache_name)
+}

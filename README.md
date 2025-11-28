@@ -22,6 +22,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎯 **ARC (Adaptive Replacement Cache)**: Self-tuning policy combining recency & frequency
 - 🎲 **Random Replacement**: O(1) eviction for baseline benchmarks and random access patterns
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
+- 🔥 **Smart Invalidation (v0.12.0)**: Tag-based, event-driven, and dependency-based cache invalidation
 - 📏 **MemoryEstimator trait**: Used internally for memory-based limits (customizable for user types)
 - 📈 **Statistics (v0.6.0+)**: Track hit/miss rates via `stats` feature & `stats_registry`
 - 🔮 **Async/await support (v0.7.0)**: Dedicated `cachelito-async` crate (lock-free DashMap)
@@ -36,17 +37,17 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.11.0"
+cachelito = "0.12.0"
 # Or with statistics:
-# cachelito = { version = "0.11.0", features = ["stats"] }
+# cachelito = { version = "0.12.0", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.11.x).
+> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.12.x).
 ```toml
 [dependencies]
-cachelito-async = "0.11.0"
+cachelito-async = "0.12.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -1054,6 +1055,154 @@ fn main() {
 
 **Default behavior:** If `name` is not provided, the function name is used as the identifier.
 
+## Smart Cache Invalidation
+
+Starting from version 0.12.0, Cachelito supports smart invalidation mechanisms beyond simple TTL expiration, providing fine-grained control over when and how cached entries are invalidated.
+
+### Invalidation Strategies
+
+Cachelito supports three complementary invalidation strategies:
+
+1. **Tag-based invalidation**: Group related entries and invalidate them together
+2. **Event-driven invalidation**: Trigger invalidation when specific events occur
+3. **Dependency-based invalidation**: Cascade invalidation to dependent caches
+
+### Tag-Based Invalidation
+
+Use tags to group related cache entries and invalidate them together:
+
+```rust
+use cachelito::{cache, invalidate_by_tag};
+
+#[cache(
+    scope = "global",
+    tags = ["user_data", "profile"],
+    name = "get_user_profile"
+)]
+fn get_user_profile(user_id: u64) -> UserProfile {
+    // Expensive database query
+    fetch_user_from_db(user_id)
+}
+
+#[cache(
+    scope = "global",
+    tags = ["user_data", "settings"],
+    name = "get_user_settings"
+)]
+fn get_user_settings(user_id: u64) -> UserSettings {
+    fetch_settings_from_db(user_id)
+}
+
+// Later, when user data is updated:
+invalidate_by_tag("user_data"); // Invalidates both functions
+```
+
+### Event-Driven Invalidation
+
+Trigger cache invalidation based on application events:
+
+```rust
+use cachelito::{cache, invalidate_by_event};
+
+#[cache(
+    scope = "global",
+    events = ["user_updated", "permissions_changed"],
+    name = "get_user_permissions"
+)]
+fn get_user_permissions(user_id: u64) -> Vec<String> {
+    fetch_permissions_from_db(user_id)
+}
+
+// When a permission changes:
+invalidate_by_event("permissions_changed");
+
+// When user profile is updated:
+invalidate_by_event("user_updated");
+```
+
+### Dependency-Based Invalidation
+
+Create cascading invalidation when dependent caches change:
+
+```rust
+use cachelito::{cache, invalidate_by_dependency};
+
+#[cache(scope = "global", name = "get_user")]
+fn get_user(user_id: u64) -> User {
+    fetch_user_from_db(user_id)
+}
+
+#[cache(
+    scope = "global",
+    dependencies = ["get_user"],
+    name = "get_user_dashboard"
+)]
+fn get_user_dashboard(user_id: u64) -> Dashboard {
+    // This cache depends on get_user
+    build_dashboard(user_id)
+}
+
+// When the user cache changes:
+invalidate_by_dependency("get_user"); // Invalidates get_user_dashboard
+```
+
+### Combining Multiple Strategies
+
+You can combine tags, events, and dependencies for maximum flexibility:
+
+```rust
+use cachelito::cache;
+
+#[cache(
+    scope = "global",
+    tags = ["user_data", "dashboard"],
+    events = ["user_updated"],
+    dependencies = ["get_user_profile", "get_user_permissions"],
+    name = "get_user_dashboard"
+)]
+fn get_user_dashboard(user_id: u64) -> Dashboard {
+    // This cache can be invalidated by:
+    // - Tag: invalidate_by_tag("user_data")
+    // - Event: invalidate_by_event("user_updated")
+    // - Dependency: invalidate_by_dependency("get_user_profile")
+    build_dashboard(user_id)
+}
+```
+
+### Manual Cache Invalidation
+
+Invalidate specific caches by their name:
+
+```rust
+use cachelito::invalidate_cache;
+
+// Invalidate a specific cache function
+if invalidate_cache("get_user_profile") {
+    println!("Cache invalidated successfully");
+}
+```
+
+### Invalidation API
+
+The invalidation API is simple and intuitive:
+
+- `invalidate_by_tag(tag: &str) -> usize` - Returns the number of caches invalidated
+- `invalidate_by_event(event: &str) -> usize` - Returns the number of caches invalidated
+- `invalidate_by_dependency(dependency: &str) -> usize` - Returns the number of caches invalidated
+- `invalidate_cache(cache_name: &str) -> bool` - Returns `true` if the cache was found and invalidated
+
+### Benefits
+
+- **Fine-grained control**: Invalidate only what needs to be invalidated
+- **Event-driven**: React to application events automatically
+- **Cascading updates**: Maintain consistency across dependent caches
+- **Flexible grouping**: Use tags to organize related caches
+- **Performance**: No overhead when invalidation attributes are not used
+
+### Complete Example
+
+See [`examples/smart_invalidation.rs`](examples/smart_invalidation.rs) for a complete working example demonstrating all invalidation strategies.
+
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
@@ -1076,7 +1225,49 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.11.0
+### Latest Release: Version 0.12.0
+
+**🔥 Smart Cache Invalidation!**
+
+Version 0.12.0 introduces intelligent cache invalidation mechanisms beyond simple TTL expiration:
+
+**New Features:**
+
+- 🏷️ **Tag-Based Invalidation** - Group related caches and invalidate them together
+- 📡 **Event-Driven Invalidation** - Trigger invalidation when application events occur
+- 🔗 **Dependency-Based Invalidation** - Cascade invalidation to dependent caches
+- 🎯 **Manual Invalidation** - Invalidate specific caches by name
+- 🔄 **Flexible Combinations** - Use tags, events, and dependencies together
+- ⚡ **Zero Overhead** - No performance impact when not using invalidation
+- 🔒 **Thread-Safe** - All operations are atomic and concurrent-safe
+
+**Quick Start:**
+
+```rust
+use cachelito::{cache, invalidate_by_tag, invalidate_by_event};
+
+// Tag-based grouping
+#[cache(tags = ["user_data", "profile"], name = "get_user_profile")]
+fn get_user_profile(user_id: u64) -> UserProfile {
+    fetch_from_db(user_id)
+}
+
+// Event-driven invalidation
+#[cache(events = ["user_updated"], name = "get_user_settings")]
+fn get_user_settings(user_id: u64) -> Settings {
+    fetch_settings(user_id)
+}
+
+// Invalidate all user_data caches
+invalidate_by_tag("user_data");
+
+// Invalidate on event
+invalidate_by_event("user_updated");
+```
+
+**See also:** [`examples/smart_invalidation.rs`](examples/smart_invalidation.rs)
+
+### Previous Release: Version 0.11.0
 
 **🎲 Random Replacement Policy!**
 
