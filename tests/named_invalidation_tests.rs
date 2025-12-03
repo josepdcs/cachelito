@@ -134,7 +134,7 @@ fn test_invalidation_check_with_thread_local() {
 // Complex check function with multiple conditions
 fn is_complex_stale(key: &String, val: &(String, u64)) -> bool {
     // Invalidate if key is "special" OR value's second element is > 100
-    key == "special" || val.1 > 100
+    key.contains("special") || val.1 > 100
 }
 
 #[cache(scope = "global", name = "complex_check", invalidate_on = is_complex_stale)]
@@ -150,12 +150,12 @@ fn test_complex_invalidation_check() {
     assert_eq!(val1, val2);
 
     // Special key - always invalidated
-    let val3 = get_tuple("special".to_string(), 50);
-    let val4 = get_tuple("special".to_string(), 50);
+    let _val3 = get_tuple("special".to_string(), 50);
+    let _val4 = get_tuple("special".to_string(), 50);
     // Values would be same but re-executed each time (if counter was used, would differ)
 
     // Large number - always invalidated
-    let val5 = get_tuple("normal".to_string(), 150);
-    let val6 = get_tuple("normal".to_string(), 150);
+    let _val5 = get_tuple("normal".to_string(), 150);
+    let _val6 = get_tuple("normal".to_string(), 150);
     // Same situation as special key
 }
