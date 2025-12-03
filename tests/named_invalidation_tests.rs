@@ -49,19 +49,25 @@ fn is_invalid_value(_key: &String, val: &String) -> bool {
 
 #[cache(scope = "global", name = "with_content_check", invalidate_on = is_invalid_value)]
 fn get_data(key: String) -> String {
-    format!("data_{}", key)
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("data_{}_{}", key, count)
 }
 
 #[test]
 fn test_content_based_invalidation_check() {
-    // Valid content - should cache
+    // Valid content - should cache (no "invalid" in result)
     let val1 = get_data("valid".to_string());
     let val2 = get_data("valid".to_string());
-    assert_eq!(val1, val2);
+    assert_eq!(val1, val2); // Same value = cached, not re-executed
 
-    // Invalid content - check function always invalidates
+    // Invalid content - check function detects "invalid" in the value and always invalidates
     let val3 = get_data("invalid".to_string());
-    assert_eq!(val3, "data_invalid");
+    let val4 = get_data("invalid".to_string());
+    // Different values prove function was re-executed (counter incremented)
+    assert_ne!(val3, val4);
+    assert!(val3.contains("invalid"));
+    assert!(val4.contains("invalid"));
 }
 
 // Check function based on key pattern
