@@ -171,7 +171,7 @@ impl InvalidationRegistry {
             .insert(cache_name.to_string(), Arc::new(callback));
     }
 
-    /// Register a invalidation check callback for a cache
+    /// Register an invalidation callback for a cache
     ///
     /// This callback will be invoked when invalidating entries based on a check function.
     /// The check function receives the cache key and returns true if the entry
