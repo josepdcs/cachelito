@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       - Complex conditions: Combine multiple criteria
   - **Automatic registration**: All global-scope caches automatically support conditional invalidation
   - **Thread-safe execution**: Invalidation check callbacks are registered and executed safely
-  - **Zero overhead**: No performance impact on cache operations, only during invalidation
+  - **Performance**: Registration of conditional invalidation handlers via `invalidate_with`/`invalidate_all_with` has zero overhead on cache operations. Named invalidation checks (`invalidate_on` attribute) incur overhead, as the check function is evaluated on every cache access.
   
 - **Enhanced InvalidationRegistry**:
   - `register_invalidation_callback()` - Register conditional invalidation handlers
