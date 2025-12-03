@@ -103,7 +103,7 @@ fn generate_invalidation_check(invalidate_on: &Option<syn::Path>) -> TokenStream
                 // Function returned false, entry is valid
                 return cached;
             }
-            // If function returned true, fall through to re-execute
+            // If function returned true, entry is stale/invalid - fall through to re-execute and refresh cache
         }
     } else {
         quote! {
