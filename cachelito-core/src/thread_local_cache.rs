@@ -26,10 +26,12 @@ use crate::utils::{
 /// # Features
 ///
 /// - **Thread-local storage**: Each thread has its own cache instance
-/// - **Configurable limits**: Optional maximum cache size
-/// - **Eviction policies**: FIFO or LRU eviction when limit is reached
+/// - **Configurable limits**: Optional entry count limit and memory limit
+/// - **Eviction policies**: FIFO, LRU (default), LFU, ARC, and Random
 /// - **TTL support**: Optional time-to-live for automatic expiration
 /// - **Result-aware**: Special handling for `Result<T, E>` types
+/// - **Memory-based limits**: Optional maximum memory usage (requires `MemoryEstimator`)
+/// - **Statistics tracking**: Optional hit/miss monitoring (requires `stats` feature)
 ///
 /// # Thread Safety
 ///

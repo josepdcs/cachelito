@@ -6,7 +6,7 @@
 //! - **Tag-based invalidation**: Group related entries and invalidate them together
 //! - **Event-driven invalidation**: Trigger invalidation based on events
 //! - **Dependency-based invalidation**: Cascade invalidation to dependent caches
-//! - **Conditional invalidation**: Custom predicates for invalidation logic _(planned for a future release)_
+//! - **Conditional invalidation**: Custom check functions for invalidation logic (v0.13.0)
 //!
 //! # Examples
 //!
@@ -81,8 +81,12 @@ pub struct InvalidationRegistry {
     dependency_to_caches: RwLock<HashMap<String, HashSet<String>>>,
     /// Map from cache name to its metadata
     cache_metadata: RwLock<HashMap<String, InvalidationMetadata>>,
-    /// Callbacks for invalidation actions (cache_name -> invalidation function)
-    invalidation_callbacks: RwLock<HashMap<String, Arc<dyn Fn() + Send + Sync>>>,
+    /// Callbacks for full invalidation actions (cache_name -> clear function)
+    clear_callbacks: RwLock<HashMap<String, Arc<dyn Fn() + Send + Sync>>>,
+    /// Callbacks for selective invalidation checks (cache_name -> check function)
+    /// These callbacks receive a check function and invalidate entries that match it
+    invalidation_check_callbacks:
+        RwLock<HashMap<String, Arc<dyn Fn(&dyn Fn(&str) -> bool) + Send + Sync>>>,
 }
 
 impl InvalidationRegistry {
@@ -93,7 +97,8 @@ impl InvalidationRegistry {
             event_to_caches: RwLock::new(HashMap::new()),
             dependency_to_caches: RwLock::new(HashMap::new()),
             cache_metadata: RwLock::new(HashMap::new()),
-            invalidation_callbacks: RwLock::new(HashMap::new()),
+            clear_callbacks: RwLock::new(HashMap::new()),
+            invalidation_check_callbacks: RwLock::new(HashMap::new()),
         }
     }
 
@@ -161,7 +166,26 @@ impl InvalidationRegistry {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.invalidation_callbacks
+        self.clear_callbacks
+            .write()
+            .insert(cache_name.to_string(), Arc::new(callback));
+    }
+
+    /// Register an invalidation callback for a cache
+    ///
+    /// This callback will be invoked when invalidating entries based on a check function.
+    /// The check function receives the cache key and returns true if the entry
+    /// should be invalidated.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_name` - Name of the cache
+    /// * `callback` - Function that takes a check function and invalidates matching entries
+    pub fn register_invalidation_callback<F>(&self, cache_name: &str, callback: F)
+    where
+        F: Fn(&dyn Fn(&str) -> bool) + Send + Sync + 'static,
+    {
+        self.invalidation_check_callbacks
             .write()
             .insert(cache_name.to_string(), Arc::new(callback));
     }
@@ -236,7 +260,7 @@ impl InvalidationRegistry {
     ///
     /// `true` if the cache was found and invalidated
     pub fn invalidate_cache(&self, cache_name: &str) -> bool {
-        if let Some(callback) = self.invalidation_callbacks.read().get(cache_name) {
+        if let Some(callback) = self.clear_callbacks.read().get(cache_name) {
             callback();
             true
         } else {
@@ -254,7 +278,7 @@ impl InvalidationRegistry {
     ///
     /// Number of caches successfully invalidated
     fn invalidate_caches(&self, cache_names: &HashSet<String>) -> usize {
-        let callbacks = self.invalidation_callbacks.read();
+        let callbacks = self.clear_callbacks.read();
         let mut count = 0;
 
         for name in cache_names {
@@ -294,13 +318,87 @@ impl InvalidationRegistry {
             .unwrap_or_default()
     }
 
+    /// Invalidate entries in a specific cache based on a check function
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_name` - Name of the cache to invalidate
+    /// * `predicate` - Check function that returns true for keys that should be invalidated
+    ///
+    /// # Returns
+    ///
+    /// `true` if the cache was found and the check function was applied
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use cachelito_core::InvalidationRegistry;
+    ///
+    /// let registry = InvalidationRegistry::global();
+    ///
+    /// // Invalidate all entries where user_id > 1000
+    /// registry.invalidate_with("get_user", |key| {
+    ///     key.parse::<u64>().unwrap_or(0) > 1000
+    /// });
+    /// ```
+    pub fn invalidate_with<F>(&self, cache_name: &str, predicate: F) -> bool
+    where
+        F: Fn(&str) -> bool,
+    {
+        if let Some(callback) = self.invalidation_check_callbacks.read().get(cache_name) {
+            callback(&predicate);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Invalidate entries across all caches based on a check function
+    ///
+    /// # Arguments
+    ///
+    /// * `predicate` - Check function that returns true for keys that should be invalidated
+    ///
+    /// # Returns
+    ///
+    /// Number of caches that had the check function applied
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use cachelito_core::InvalidationRegistry;
+    ///
+    /// let registry = InvalidationRegistry::global();
+    ///
+    /// // Invalidate all entries with numeric keys > 1000 across all caches
+    /// registry.invalidate_all_with(|_cache_name, key| {
+    ///     key.parse::<u64>().unwrap_or(0) > 1000
+    /// });
+    /// ```
+    pub fn invalidate_all_with<F>(&self, predicate: F) -> usize
+    where
+        F: Fn(&str, &str) -> bool,
+    {
+        let callbacks = self.invalidation_check_callbacks.read();
+        let mut count = 0;
+
+        for (cache_name, callback) in callbacks.iter() {
+            let cache_name_clone = cache_name.clone();
+            callback(&|key: &str| predicate(&cache_name_clone, key));
+            count += 1;
+        }
+
+        count
+    }
+
     /// Clear all registrations
     pub fn clear(&self) {
         self.tag_to_caches.write().clear();
         self.event_to_caches.write().clear();
         self.dependency_to_caches.write().clear();
         self.cache_metadata.write().clear();
-        self.invalidation_callbacks.write().clear();
+        self.clear_callbacks.write().clear();
+        self.invalidation_check_callbacks.write().clear();
     }
 }
 
@@ -398,6 +496,65 @@ pub fn invalidate_by_dependency(dependency: &str) -> usize {
 /// ```
 pub fn invalidate_cache(cache_name: &str) -> bool {
     InvalidationRegistry::global().invalidate_cache(cache_name)
+}
+
+/// Invalidate entries in a specific cache based on a check function
+///
+/// This function allows conditional invalidation of cache entries based on their keys.
+///
+/// # Arguments
+///
+/// * `cache_name` - Name of the cache to invalidate
+/// * `predicate` - Check function that returns true for keys that should be invalidated
+///
+/// # Returns
+///
+/// `true` if the cache was found and the check function was applied
+///
+/// # Examples
+///
+/// ```ignore
+/// use cachelito_core::invalidate_with;
+///
+/// // Invalidate all entries where user_id > 1000
+/// invalidate_with("get_user", |key| {
+///     key.parse::<u64>().unwrap_or(0) > 1000
+/// });
+/// ```
+pub fn invalidate_with<F>(cache_name: &str, predicate: F) -> bool
+where
+    F: Fn(&str) -> bool,
+{
+    InvalidationRegistry::global().invalidate_with(cache_name, predicate)
+}
+
+/// Invalidate entries across all caches based on a check function
+///
+/// This function applies a check function to all registered caches.
+///
+/// # Arguments
+///
+/// * `predicate` - Check function that receives cache name and key, returns true for entries to invalidate
+///
+/// # Returns
+///
+/// Number of caches that had the check function applied
+///
+/// # Examples
+///
+/// ```ignore
+/// use cachelito_core::invalidate_all_with;
+///
+/// // Invalidate all entries with numeric keys > 1000 across all caches
+/// invalidate_all_with(|_cache_name, key| {
+///     key.parse::<u64>().unwrap_or(0) > 1000
+/// });
+/// ```
+pub fn invalidate_all_with<F>(predicate: F) -> usize
+where
+    F: Fn(&str, &str) -> bool,
+{
+    InvalidationRegistry::global().invalidate_all_with(predicate)
 }
 
 #[cfg(test)]
@@ -518,5 +675,158 @@ mod tests {
         registry.register("cache1", InvalidationMetadata::new(vec![], vec![], vec![]));
         registry.clear();
         assert!(registry.cache_metadata.read().is_empty());
+    }
+
+    #[test]
+    fn test_conditional_invalidation() {
+        use std::sync::Mutex;
+
+        let registry = InvalidationRegistry::new();
+        let removed_keys = Arc::new(Mutex::new(Vec::new()));
+        let removed_keys_clone = removed_keys.clone();
+
+        // Register a check function callback that tracks removed keys
+        registry.register_invalidation_callback(
+            "cache1",
+            move |check_fn: &dyn Fn(&str) -> bool| {
+                let test_keys = vec!["key1", "key2", "key100", "key500", "key1001"];
+                let mut removed = removed_keys_clone.lock().unwrap();
+                removed.clear();
+
+                for key in test_keys {
+                    if check_fn(key) {
+                        removed.push(key.to_string());
+                    }
+                }
+            },
+        );
+
+        // Invalidate keys that parse to numbers > 100
+        registry.invalidate_with("cache1", |key: &str| {
+            key.strip_prefix("key")
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|n| n > 100)
+                .unwrap_or(false)
+        });
+
+        let removed = removed_keys.lock().unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"key500".to_string()));
+        assert!(removed.contains(&"key1001".to_string()));
+        assert!(!removed.contains(&"key1".to_string()));
+        assert!(!removed.contains(&"key2".to_string()));
+        assert!(!removed.contains(&"key100".to_string()));
+    }
+
+    #[test]
+    fn test_conditional_invalidation_nonexistent_cache() {
+        let registry = InvalidationRegistry::new();
+
+        // Should return false for non-registered cache
+        let result = registry.invalidate_with("nonexistent", |_key: &str| true);
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_invalidate_all_with_check_function() {
+        use std::sync::Mutex;
+
+        let registry = InvalidationRegistry::new();
+
+        // Track invalidations for multiple caches
+        let cache1_removed = Arc::new(Mutex::new(Vec::new()));
+        let cache2_removed = Arc::new(Mutex::new(Vec::new()));
+
+        let cache1_removed_clone = cache1_removed.clone();
+        let cache2_removed_clone = cache2_removed.clone();
+
+        // Register check function callbacks for two caches
+        registry.register_invalidation_callback(
+            "cache1",
+            move |check_fn: &dyn Fn(&str) -> bool| {
+                let test_keys = vec!["1", "2", "3", "4", "5"];
+                let mut removed = cache1_removed_clone.lock().unwrap();
+                removed.clear();
+
+                for key in test_keys {
+                    if check_fn(key) {
+                        removed.push(key.to_string());
+                    }
+                }
+            },
+        );
+
+        registry.register_invalidation_callback(
+            "cache2",
+            move |check_fn: &dyn Fn(&str) -> bool| {
+                let test_keys = vec!["10", "20", "30"];
+                let mut removed = cache2_removed_clone.lock().unwrap();
+                removed.clear();
+
+                for key in test_keys {
+                    if check_fn(key) {
+                        removed.push(key.to_string());
+                    }
+                }
+            },
+        );
+
+        // Invalidate all entries with numeric keys >= 3 across all caches
+        let count = registry.invalidate_all_with(|_cache_name: &str, key: &str| {
+            key.parse::<u64>().unwrap_or(0) >= 3
+        });
+
+        assert_eq!(count, 2); // Two caches processed
+
+        let cache1_removed = cache1_removed.lock().unwrap();
+        assert_eq!(cache1_removed.len(), 3); // 3, 4, 5
+        assert!(cache1_removed.contains(&"3".to_string()));
+        assert!(cache1_removed.contains(&"4".to_string()));
+        assert!(cache1_removed.contains(&"5".to_string()));
+
+        let cache2_removed = cache2_removed.lock().unwrap();
+        assert_eq!(cache2_removed.len(), 3); // 10, 20, 30
+        assert!(cache2_removed.contains(&"10".to_string()));
+        assert!(cache2_removed.contains(&"20".to_string()));
+        assert!(cache2_removed.contains(&"30".to_string()));
+    }
+
+    #[test]
+    fn test_complex_conditional_checks() {
+        use std::sync::Mutex;
+
+        let registry = InvalidationRegistry::new();
+        let removed_keys = Arc::new(Mutex::new(Vec::new()));
+        let removed_keys_clone = removed_keys.clone();
+
+        registry.register_invalidation_callback(
+            "cache1",
+            move |check_fn: &dyn Fn(&str) -> bool| {
+                let test_keys = vec!["user_10", "user_20", "user_30", "user_40", "user_50"];
+                let mut removed = removed_keys_clone.lock().unwrap();
+                removed.clear();
+
+                for key in test_keys {
+                    if check_fn(key) {
+                        removed.push(key.to_string());
+                    }
+                }
+            },
+        );
+
+        // Invalidate keys where ID is divisible by 20
+        registry.invalidate_with("cache1", |key: &str| {
+            key.strip_prefix("user_")
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|n| n % 20 == 0)
+                .unwrap_or(false)
+        });
+
+        let removed = removed_keys.lock().unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"user_20".to_string()));
+        assert!(removed.contains(&"user_40".to_string()));
+        assert!(!removed.contains(&"user_10".to_string()));
+        assert!(!removed.contains(&"user_30".to_string()));
     }
 }

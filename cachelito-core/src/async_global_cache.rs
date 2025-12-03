@@ -18,17 +18,24 @@ use std::collections::VecDeque;
 /// # Features
 ///
 /// - **Lock-free reads/writes**: Uses DashMap for concurrent access without blocking
-/// - **Eviction policies**: FIFO, LRU, and LFU
+/// - **Eviction policies**: FIFO, LRU (default), LFU, ARC, and Random
+///   - **FIFO**: First In, First Out - simple and predictable
+///   - **LRU**: Least Recently Used - evicts least recently accessed entries
+///   - **LFU**: Least Frequently Used - evicts least frequently accessed entries
+///   - **ARC**: Adaptive Replacement Cache - hybrid policy combining recency and frequency
+///   - **Random**: Random replacement - O(1) eviction with minimal overhead
+/// - **Cache limits**: Entry count limits and memory-based limits
 /// - **TTL support**: Automatic expiration of entries
 /// - **Statistics**: Optional cache hit/miss tracking (with `stats` feature)
-/// - **Frequency tracking**: For LFU policy
+/// - **Frequency tracking**: For LFU and ARC policies
+/// - **Memory estimation**: Support for memory-based eviction (requires `MemoryEstimator`)
 ///
 /// # Cache Entry Structure
 ///
 /// Each cache entry is stored as a tuple: `(value, timestamp, frequency)`
 /// - `value`: The cached value of type R
 /// - `timestamp`: Unix timestamp when the entry was created (for TTL)
-/// - `frequency`: Access counter for LFU policy
+/// - `frequency`: Access counter for LFU and ARC policies
 ///
 /// # Examples
 ///

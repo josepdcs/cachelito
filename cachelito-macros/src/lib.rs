@@ -52,11 +52,13 @@ fn generate_thread_local_branch(
     key_expr: &TokenStream2,
     block: &syn::Block,
     is_result: bool,
+    invalidate_on: &Option<syn::Path>,
 ) -> TokenStream2 {
     // Check if max_memory is None by comparing the token stream
     let has_max_memory = has_max_memory(max_memory_expr);
 
     let insert_call = generate_insert_call(has_max_memory, is_result);
+    let invalidation_check = generate_invalidation_check(invalidate_on);
 
     quote! {
         thread_local! {
@@ -76,7 +78,7 @@ fn generate_thread_local_branch(
         let __key = #key_expr;
 
         if let Some(cached) = __cache.get(&__key) {
-            return cached;
+            #invalidation_check
         }
 
         let __result = (|| #block)();
@@ -89,6 +91,25 @@ fn has_max_memory(max_memory_expr: &TokenStream2) -> bool {
     let max_memory_str = max_memory_expr.to_string();
     let has_max_memory = !max_memory_str.contains("None");
     has_max_memory
+}
+
+/// Generate invalidation check code if an invalidate_on function is specified
+fn generate_invalidation_check(invalidate_on: &Option<syn::Path>) -> TokenStream2 {
+    if let Some(pred_fn) = invalidate_on {
+        quote! {
+            // Validate cached value with invalidate_on function
+            // If function returns true, entry is stale - don't use it, re-execute
+            if !#pred_fn(&__key, &cached) {
+                // Function returned false, entry is valid
+                return cached;
+            }
+            // If function returned true, entry is stale/invalid - fall through to re-execute and refresh cache
+        }
+    } else {
+        quote! {
+            return cached;
+        }
+    }
 }
 
 /// Generate the global cache branch
@@ -111,6 +132,7 @@ fn generate_global_branch(
     let has_max_memory = has_max_memory(max_memory_expr);
 
     let insert_call = generate_insert_call(has_max_memory, is_result);
+    let invalidation_check = generate_invalidation_check(&attrs.invalidate_on);
 
     // Generate invalidation registration code
     let invalidation_registration = if !attrs.tags.is_empty()
@@ -149,6 +171,39 @@ fn generate_global_branch(
         quote! {}
     };
 
+    // Always register invalidation callback for global caches
+    let invalidation_callback_registration = quote! {
+        // Register callback for runtime invalidation checks
+        {
+            use std::sync::Once;
+            static INVALIDATION_CALLBACK_REGISTER_ONCE: Once = Once::new();
+            INVALIDATION_CALLBACK_REGISTER_ONCE.call_once(|| {
+                cachelito_core::InvalidationRegistry::global().register_invalidation_callback(
+                    #fn_name_str,
+                    move |check_fn: &dyn Fn(&str) -> bool| {
+                        let mut map_write = #cache_ident.write();
+                        let mut order_write = #order_ident.lock();
+
+                        // Collect keys to remove based on check function
+                        let keys_to_remove: Vec<String> = map_write
+                            .keys()
+                            .filter(|k| check_fn(k.as_str()))
+                            .cloned()
+                            .collect();
+
+                        // Remove matched keys
+                        for key in &keys_to_remove {
+                            map_write.remove(key);
+                            if let Some(pos) = order_write.iter().position(|k| k == key) {
+                                order_write.remove(pos);
+                            }
+                        }
+                    }
+                );
+            });
+        }
+    };
+
     quote! {
         static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> =
             once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
@@ -169,6 +224,7 @@ fn generate_global_branch(
         }
 
         #invalidation_registration
+        #invalidation_callback_registration
 
         #[cfg(feature = "stats")]
         let __cache = GlobalCache::<#ret_type>::new(
@@ -192,7 +248,7 @@ fn generate_global_branch(
 
         let __key = #key_expr;
         if let Some(cached) = __cache.get(&__key) {
-            return cached;
+            #invalidation_check
         }
 
         let __result = (|| #block)();
@@ -219,9 +275,15 @@ fn generate_global_branch(
 ///
 /// - `limit` (optional): Maximum number of entries in the cache. When the limit is reached,
 ///   entries are evicted according to the specified policy. Default: unlimited.
+/// - `max_memory` (optional): Maximum memory size for the cache (e.g., `"100MB"`, `"1GB"`).
+///   When specified, entries are evicted based on memory usage. Requires implementing
+///   `MemoryEstimator` trait for cached types. Default: None (no memory limit).
 /// - `policy` (optional): Eviction policy to use when the cache is full. Options:
 ///   - `"fifo"` - First In, First Out (default)
 ///   - `"lru"` - Least Recently Used
+///   - `"lfu"` - Least Frequently Used
+///   - `"arc"` - Adaptive Replacement Cache (hybrid LRU/LFU)
+///   - `"random"` - Random Replacement
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
 /// - `scope` (optional): Cache scope - where the cache is stored. Options:
@@ -230,6 +292,15 @@ fn generate_global_branch(
 /// - `name` (optional): Custom identifier for the cache in the statistics registry.
 ///   Default: the function name. Useful when you want a more descriptive name or
 ///   when caching multiple versions of a function. Only relevant with `stats` feature.
+/// - `tags` (optional): Array of tags for invalidation grouping (e.g., `tags = ["user_data", "profile"]`).
+///   Enables tag-based cache invalidation. Only relevant with `scope = "global"`.
+/// - `events` (optional): Array of event names that trigger invalidation (e.g., `events = ["user_updated"]`).
+///   Enables event-driven cache invalidation. Only relevant with `scope = "global"`.
+/// - `dependencies` (optional): Array of cache names this cache depends on (e.g., `dependencies = ["get_user"]`).
+///   When dependencies are invalidated, this cache is also invalidated. Only relevant with `scope = "global"`.
+/// - `invalidate_on` (optional): Function that checks if a cached entry should be invalidated.
+///   Signature: `fn(key: &String, value: &T) -> bool`. Return `true` to invalidate.
+///   The check runs on every cache access. Example: `invalidate_on = is_stale`.
 ///
 /// # Cache Behavior
 ///
@@ -401,12 +472,16 @@ fn generate_global_branch(
 /// # Performance Considerations
 ///
 /// - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method
-/// - **Thread-local storage** (default): Each thread has its own cache (no locks needed)
-/// - **Global storage**: With `scope = "global"`, uses Mutex for synchronization (adds overhead)
-/// - **Memory usage**: Controlled by the `limit` parameter
+/// - **Thread-local storage**: Each thread has its own cache (no locks needed)
+/// - **Global storage**: With `scope = "global"`, uses `parking_lot::RwLock` for concurrent reads
+/// - **Memory usage**: Controlled by `limit` and/or `max_memory` parameters
 /// - **FIFO overhead**: O(1) for all operations
 /// - **LRU overhead**: O(n) for cache hits (reordering), O(1) for misses and evictions
+/// - **LFU overhead**: O(n) for eviction (finding minimum frequency)
+/// - **ARC overhead**: O(n) for cache operations (scoring and reordering)
+/// - **Random overhead**: O(1) for eviction selection
 /// - **TTL overhead**: O(1) expiration check on each get()
+/// - **Memory estimation**: O(1) if `MemoryEstimator` is implemented efficiently
 ///
 #[proc_macro_attribute]
 pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -480,6 +555,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &key_expr,
         block,
         is_result,
+        &attrs.invalidate_on,
     );
 
     let global_branch = generate_global_branch(

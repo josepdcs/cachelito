@@ -28,6 +28,7 @@ pub struct AsyncCacheAttributes {
     pub tags: Vec<String>,
     pub events: Vec<String>,
     pub dependencies: Vec<String>,
+    pub invalidate_on: Option<syn::Path>,
 }
 
 impl Default for AsyncCacheAttributes {
@@ -41,6 +42,7 @@ impl Default for AsyncCacheAttributes {
             tags: Vec::new(),
             events: Vec::new(),
             dependencies: Vec::new(),
+            invalidate_on: None,
         }
     }
 }
@@ -56,6 +58,7 @@ pub struct SyncCacheAttributes {
     pub tags: Vec<String>,
     pub events: Vec<String>,
     pub dependencies: Vec<String>,
+    pub invalidate_on: Option<syn::Path>,
 }
 
 impl Default for SyncCacheAttributes {
@@ -70,6 +73,7 @@ impl Default for SyncCacheAttributes {
             tags: Vec::new(),
             events: Vec::new(),
             dependencies: Vec::new(),
+            invalidate_on: None,
         }
     }
 }
@@ -333,6 +337,17 @@ pub fn parse_string_array_attribute(nv: &MetaNameValue) -> Result<Vec<String>, T
     }
 }
 
+/// Parse the `invalidate_on` attribute
+/// Expects a function path like `invalidate_on = is_stale` or `invalidate_on = my_module::is_stale`
+pub fn parse_invalidate_on_attribute(nv: &MetaNameValue) -> Result<syn::Path, TokenStream2> {
+    match &nv.value {
+        Expr::Path(expr_path) => Ok(expr_path.path.clone()),
+        _ => Err(
+            quote! { compile_error!("Invalid syntax for `invalidate_on`: expected `invalidate_on = function_name`") },
+        ),
+    }
+}
+
 /// Parse common attributes shared between async and sync caches
 /// Returns true if the attribute was recognized and processed
 fn parse_common_attribute(
@@ -342,6 +357,7 @@ fn parse_common_attribute(
     tags: &mut Vec<String>,
     events: &mut Vec<String>,
     dependencies: &mut Vec<String>,
+    invalidate_on: &mut Option<syn::Path>,
 ) -> Result<bool, TokenStream2> {
     if nv.path.is_ident("name") {
         *custom_name = parse_name_attribute(nv);
@@ -357,6 +373,9 @@ fn parse_common_attribute(
         Ok(true)
     } else if nv.path.is_ident("dependencies") {
         *dependencies = parse_string_array_attribute(nv)?;
+        Ok(true)
+    } else if nv.path.is_ident("invalidate_on") {
+        *invalidate_on = Some(parse_invalidate_on_attribute(nv)?);
         Ok(true)
     } else {
         Ok(false)
@@ -394,6 +413,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                 &mut attrs.tags,
                 &mut attrs.events,
                 &mut attrs.dependencies,
+                &mut attrs.invalidate_on,
             )? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
@@ -402,7 +422,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -475,6 +495,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                 &mut attrs.tags,
                 &mut attrs.events,
                 &mut attrs.dependencies,
+                &mut attrs.invalidate_on,
             )? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
@@ -483,7 +504,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -691,6 +712,7 @@ mod tests {
         let mut tags = Vec::new();
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -699,6 +721,7 @@ mod tests {
             &mut tags,
             &mut events,
             &mut dependencies,
+            &mut invalidate_on,
         );
 
         assert!(result.is_ok());
@@ -714,6 +737,7 @@ mod tests {
         let mut tags = Vec::new();
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -722,6 +746,7 @@ mod tests {
             &mut tags,
             &mut events,
             &mut dependencies,
+            &mut invalidate_on,
         );
 
         assert!(result.is_ok());
@@ -738,6 +763,7 @@ mod tests {
         let mut tags = Vec::new();
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -746,6 +772,7 @@ mod tests {
             &mut tags,
             &mut events,
             &mut dependencies,
+            &mut invalidate_on,
         );
 
         assert!(result.is_ok());
@@ -761,6 +788,7 @@ mod tests {
         let mut tags = Vec::new();
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -769,6 +797,7 @@ mod tests {
             &mut tags,
             &mut events,
             &mut dependencies,
+            &mut invalidate_on,
         );
 
         assert!(result.is_ok());
@@ -784,6 +813,7 @@ mod tests {
         let mut tags = Vec::new();
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -792,6 +822,7 @@ mod tests {
             &mut tags,
             &mut events,
             &mut dependencies,
+            &mut invalidate_on,
         );
 
         assert!(result.is_ok());
@@ -807,6 +838,7 @@ mod tests {
         let mut tags = Vec::new();
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -815,10 +847,46 @@ mod tests {
             &mut tags,
             &mut events,
             &mut dependencies,
+            &mut invalidate_on,
         );
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), false); // Not recognized
+    }
+
+    #[test]
+    fn test_parse_common_attribute_invalidate_on() {
+        let nv: MetaNameValue = parse_quote! { invalidate_on = is_stale };
+        let mut custom_name = None;
+        let mut max_memory = quote! { None };
+        let mut tags = Vec::new();
+        let mut events = Vec::new();
+        let mut dependencies = Vec::new();
+        let mut invalidate_on = None;
+
+        let result = parse_common_attribute(
+            &nv,
+            &mut custom_name,
+            &mut max_memory,
+            &mut tags,
+            &mut events,
+            &mut dependencies,
+            &mut invalidate_on,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+        assert!(invalidate_on.is_some());
+        assert_eq!(
+            invalidate_on
+                .unwrap()
+                .segments
+                .first()
+                .unwrap()
+                .ident
+                .to_string(),
+            "is_stale"
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::CacheStats;
 /// A thread-safe global cache that can be shared across multiple threads.
 ///
 /// Unlike `ThreadLocalCache` which uses thread-local storage, `GlobalCache` stores
-/// cached values in global static variables protected by `Mutex`, allowing cache
+/// cached values in global static variables protected by locks, allowing cache
 /// sharing across all threads in the application.
 ///
 /// # Type Parameters
@@ -23,10 +23,11 @@ use crate::CacheStats;
 ///
 /// # Fields
 ///
-/// * `map` - Static reference to a lazy-initialized mutex-protected HashMap storing cache entries
-/// * `order` - Static reference to a lazy-initialized mutex-protected VecDeque tracking insertion/access order
+/// * `map` - Static reference to a lazy-initialized RwLock-protected HashMap storing cache entries
+/// * `order` - Static reference to a lazy-initialized Mutex-protected VecDeque tracking insertion/access order
 /// * `limit` - Optional maximum number of entries in the cache
-/// * `policy` - Eviction policy (FIFO or LRU) used when limit is reached
+/// * `max_memory` - Optional maximum memory size in bytes
+/// * `policy` - Eviction policy (FIFO, LRU, LFU, ARC, or Random) used when limit is reached
 /// * `ttl` - Optional time-to-live in seconds for cache entries
 ///
 /// # Thread Safety
@@ -44,7 +45,7 @@ use crate::CacheStats;
 ///
 /// # Performance Considerations
 ///
-/// - **Synchronization overhead**: Each cache operation requires acquiring mutex locks
+/// - **Synchronization overhead**: Each cache operation requires acquiring locks
 /// - **Lock contention**: High concurrent access may cause threads to wait
 /// - **Shared benefits**: All threads benefit from cached results
 /// - **Best for**: Expensive computations where sharing outweighs synchronization cost
