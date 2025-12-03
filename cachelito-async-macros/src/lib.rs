@@ -175,6 +175,23 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
         cachelito_core::EvictionPolicy::from(#policy_str)
     };
 
+    // Generate invalidation check expression
+    let invalidation_check = if let Some(pred_fn) = &attrs.invalidate_on {
+        quote! {
+            // Validate cached value with invalidation check
+            // If function returns true, entry is stale - don't use it, re-execute
+            if !#pred_fn(&__key, &__cached) {
+                // Check function returned false, entry is valid
+                return __cached;
+            }
+            // If function returned true, fall through to re-execute
+        }
+    } else {
+        quote! {
+            return __cached;
+        }
+    };
+
     // Generate cache logic based on Result or regular return
     let cache_logic = if is_result {
         // Check if we need memory-aware insertion
@@ -204,7 +221,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             // Try to get from cache
             if let Some(__cached) = __cache.get(&__key) {
-                return __cached;
+                #invalidation_check
             }
 
             // Execute original async function (cache miss or expired)
@@ -245,7 +262,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             // Try to get from cache
             if let Some(__cached) = __cache.get(&__key) {
-                return __cached;
+                #invalidation_check
             }
 
             // Execute original async function (cache miss or expired)
@@ -292,6 +309,34 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    // Always register invalidation callback for async caches
+    let invalidation_callback_registration = quote! {
+        // Register invalidation check callback
+        static INVALIDATION_CHECK_REGISTERED: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
+        INVALIDATION_CHECK_REGISTERED.get_or_init(|| {
+            cachelito_core::InvalidationRegistry::global().register_invalidation_callback(
+                #fn_name_str,
+                move |invalidation_check: &dyn Fn(&str) -> bool| {
+                    // Collect keys to remove based on invalidation check function
+                    let keys_to_remove: Vec<String> = #cache_ident
+                        .iter()
+                        .filter(|entry| invalidation_check(entry.key().as_str()))
+                        .map(|entry| entry.key().clone())
+                        .collect();
+
+                    // Remove matched keys
+                    let mut order_write = #order_ident.lock();
+                    for key in &keys_to_remove {
+                        #cache_ident.remove(key);
+                        if let Some(pos) = order_write.iter().position(|k| k == key) {
+                            order_write.remove(pos);
+                        }
+                    }
+                }
+            );
+        });
+    };
+
     // Generate final expanded code
     let expanded = quote! {
         #vis #sig {
@@ -312,6 +357,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             });
 
             #invalidation_registration
+            #invalidation_callback_registration
 
             #cache_logic
         }

@@ -23,6 +23,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎲 **Random Replacement**: O(1) eviction for baseline benchmarks and random access patterns
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - 🔥 **Smart Invalidation (v0.12.0)**: Tag-based, event-driven, and dependency-based cache invalidation
+- 🎯 **Conditional Invalidation (v0.13.0)**: Runtime invalidation with custom check functions and named invalidation checks
 - 📏 **MemoryEstimator trait**: Used internally for memory-based limits (customizable for user types)
 - 📈 **Statistics (v0.6.0+)**: Track hit/miss rates via `stats` feature & `stats_registry`
 - 🔮 **Async/await support (v0.7.0)**: Dedicated `cachelito-async` crate (lock-free DashMap)
@@ -37,17 +38,17 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.12.0"
+cachelito = "0.13.0"
 # Or with statistics:
-# cachelito = { version = "0.12.0", features = ["stats"] }
+# cachelito = { version = "0.13.0", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.12.x).
+> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.13.x).
 ```toml
 [dependencies]
-cachelito-async = "0.12.0"
+cachelito-async = "0.13.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -1199,9 +1200,195 @@ The invalidation API is simple and intuitive:
 - **Flexible grouping**: Use tags to organize related caches
 - **Performance**: No overhead when invalidation attributes are not used
 
+### Conditional Invalidation with Check Functions (v0.13.0)
+
+For even more control, you can use custom check functions (predicates) to selectively invalidate cache entries based on runtime conditions:
+
+#### Single Cache Conditional Invalidation
+
+Invalidate specific entries in a cache based on custom logic:
+
+```rust
+use cachelito::{cache, invalidate_with};
+
+#[cache(scope = "global", name = "get_user", limit = 1000)]
+fn get_user(user_id: u64) -> User {
+    fetch_user_from_db(user_id)
+}
+
+// Invalidate only users with ID > 1000
+invalidate_with("get_user", |key| {
+    key.parse::<u64>().unwrap_or(0) > 1000
+});
+
+// Invalidate users based on a pattern
+invalidate_with("get_user", |key| {
+    key.starts_with("admin_")
+});
+```
+
+#### Global Conditional Invalidation
+
+Apply a check function across all registered caches:
+
+```rust
+use cachelito::invalidate_all_with;
+
+#[cache(scope = "global", name = "get_user")]
+fn get_user(user_id: u64) -> User {
+    fetch_user_from_db(user_id)
+}
+
+#[cache(scope = "global", name = "get_product")]
+fn get_product(product_id: u64) -> Product {
+    fetch_product_from_db(product_id)
+}
+
+// Invalidate all entries with numeric IDs >= 1000 across ALL caches
+let count = invalidate_all_with(|_cache_name, key| {
+    key.parse::<u64>().unwrap_or(0) >= 1000
+});
+println!("Applied check function to {} caches", count);
+```
+
+#### Complex Check Conditions
+
+Use any Rust logic in your check functions:
+
+```rust
+use cachelito::invalidate_with;
+
+// Invalidate entries where ID is divisible by 30
+invalidate_with("get_user", |key| {
+    key.parse::<u64>()
+        .map(|id| id % 30 == 0)
+        .unwrap_or(false)
+});
+
+// Invalidate entries matching a range
+invalidate_with("get_product", |key| {
+    if let Ok(id) = key.parse::<u64>() {
+        id >= 100 && id < 1000
+    } else {
+        false
+    }
+});
+```
+
+#### Conditional Invalidation API
+
+- `invalidate_with(cache_name: &str, check_fn: F) -> bool` 
+  - Invalidates entries in a specific cache where `check_fn(key)` returns `true`
+  - Returns `true` if the cache was found and the check function was applied
+  
+- `invalidate_all_with(check_fn: F) -> usize`
+  - Invalidates entries across all caches where `check_fn(cache_name, key)` returns `true`
+  - Returns the number of caches that had the check function applied
+
+#### Use Cases for Conditional Invalidation
+
+- **Time-based cleanup**: Invalidate entries older than a specific timestamp
+- **Range-based invalidation**: Remove entries with IDs above/below thresholds
+- **Pattern matching**: Invalidate entries matching specific key patterns
+- **Selective cleanup**: Remove stale data based on business logic
+- **Multi-cache coordination**: Apply consistent invalidation rules across caches
+
+#### Performance Considerations
+
+- **O(n) operation**: Conditional invalidation checks all keys in the cache
+- **Lock acquisition**: Briefly holds write lock during key collection and removal
+- **Automatic registration**: All global-scope caches support conditional invalidation
+- **Thread-safe**: Safe to call from multiple threads concurrently
+
+### Named Invalidation Check Functions (Macro Attribute)
+
+For automatic validation on every cache access, you can specify an invalidation check function directly in the macro:
+
+```rust
+use cachelito::cache;
+use std::time::{Duration, Instant};
+
+#[derive(Clone)]
+struct User {
+    id: u64,
+    name: String,
+    updated_at: Instant,
+}
+
+// Define invalidation check function
+fn is_stale(_key: &String, value: &User) -> bool {
+    // Return true if entry should be invalidated (is stale)
+    value.updated_at.elapsed() > Duration::from_secs(3600)
+}
+
+// Use invalidation check as macro attribute
+#[cache(
+    scope = "global",
+    name = "get_user",
+    invalidate_on = is_stale
+)]
+fn get_user(user_id: u64) -> User {
+    fetch_user_from_db(user_id)
+}
+
+// Check function is evaluated on EVERY cache access
+let user = get_user(42); // Returns cached value only if !is_stale()
+```
+
+#### How Named Invalidation Checks Work
+
+1. **Evaluated on every access**: The check function runs each time `get()` is called
+2. **Signature**: `fn check_fn(key: &String, value: &T) -> bool`
+3. **Return `true` to invalidate**: If the function returns `true`, the cached entry is considered stale
+4. **Re-execution**: When stale, the function re-executes and the result is cached
+5. **Works with all scopes**: Compatible with both `global` and `thread` scope
+
+#### Common Check Function Patterns
+
+```rust
+// Time-based staleness
+fn is_older_than_5min(_key: &String, val: &CachedData) -> bool {
+    val.timestamp.elapsed() > Duration::from_secs(300)
+}
+
+// Key-based invalidation
+fn is_admin_key(key: &String, _val: &Data) -> bool {
+    key.contains("admin") // Note: keys are stored with Debug format
+}
+
+// Value-based validation
+fn has_invalid_data(_key: &String, val: &String) -> bool {
+    val.contains("ERROR") || val.is_empty()
+}
+
+// Complex conditions
+fn needs_refresh(key: &String, val: &(u64, Instant)) -> bool {
+    let (count, timestamp) = val;
+    // Refresh if count > 1000 OR older than 1 hour
+    *count > 1000 || timestamp.elapsed() > Duration::from_secs(3600)
+}
+```
+
+#### Key Format Note
+
+Cache keys are stored using Rust's Debug format (`{:?}`), which means string keys will have quotes. Use `contains()` instead of exact matching:
+
+```rust
+// ✅ Correct
+fn check_admin(key: &String, _val: &T) -> bool {
+    key.contains("admin")
+}
+
+// ❌ Won't work (key is "\"admin_123\"" not "admin_123")
+fn check_admin(key: &String, _val: &T) -> bool {
+    key.starts_with("admin")
+}
+```
+
+
 ### Complete Example
 
-See [`examples/smart_invalidation.rs`](examples/smart_invalidation.rs) for a complete working example demonstrating all invalidation strategies.
+See [`examples/smart_invalidation.rs`](examples/smart_invalidation.rs) and [`examples/named_invalidation.rs`](examples/named_invalidation.rs) for complete working examples demonstrating all invalidation strategies.
 
 ## Limitations
 
@@ -1225,7 +1412,53 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.12.0
+### Latest Release: Version 0.13.0
+
+**🎯 Conditional Invalidation with Custom Check Functions!**
+
+Version 0.13.0 introduces powerful conditional invalidation, allowing you to selectively invalidate cache entries based on runtime conditions:
+
+**New Features:**
+
+- 🎯 **Conditional Invalidation** - Invalidate entries matching custom check functions (predicates)
+- 🌐 **Global Conditional Invalidation Support** - Apply check functions across all registered caches
+- 🔑 **Key-Based Filtering** - Match entries by key patterns, ranges, or any custom logic
+- 🏷️ **Named Invalidation Check Functions** - Automatic validation on every cache access with `invalidate_on = function_name` attribute
+- ⚡ **Automatic Registration** - All global-scope caches support conditional invalidation by default
+- 🔒 **Thread-Safe Execution** - Safe concurrent check function execution
+- 💡 **Flexible Conditions** - Use any Rust logic in your check functions
+
+**Quick Start:**
+
+```rust
+use cachelito::{cache, invalidate_with, invalidate_all_with};
+
+// Named invalidation check function (evaluated on every access)
+fn is_stale(_key: &String, value: &User) -> bool {
+    value.updated_at.elapsed() > Duration::from_secs(3600)
+}
+
+#[cache(scope = "global", name = "get_user", invalidate_on = is_stale)]
+fn get_user(user_id: u64) -> User {
+    fetch_user_from_db(user_id)
+}
+
+// Manual conditional invalidation
+invalidate_with("get_user", |key| {
+    key.parse::<u64>().unwrap_or(0) > 1000
+});
+
+// Global invalidation across all caches
+invalidate_all_with(|_cache_name, key| {
+    key.parse::<u64>().unwrap_or(0) >= 1000
+});
+```
+
+**See also:**
+- [`examples/conditional_invalidation.rs`](examples/conditional_invalidation.rs) - Manual conditional invalidation
+- [`examples/named_invalidation.rs`](examples/named_invalidation.rs) - Named invalidation check functions
+
+### Previous Release: Version 0.12.0
 
 **🔥 Smart Cache Invalidation!**
 

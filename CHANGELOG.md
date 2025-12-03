@@ -5,6 +5,102 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2025-12-02
+
+### Added
+
+- **🎯 Conditional Invalidation with Check Functions**: Powerful new way to invalidate cache entries based on runtime conditions
+  - **Conditional invalidation for single cache**: Invalidate entries matching custom check functions (predicates)
+    - API: `invalidate_with("cache_name", |key| key.parse::<u64>().unwrap_or(0) > 1000)`
+    - Filter cache entries by key patterns, value ranges, or any custom logic
+  - **Global conditional invalidation**: Apply check functions across all registered caches
+    - API: `invalidate_all_with(|cache_name, key| check_logic)`
+    - Invalidate entries matching conditions across multiple caches simultaneously
+  - **Named Invalidation Check Functions (Macro Attribute)**: Automatic validation on every cache access
+    - Define invalidation check function: `fn is_stale(key: &String, value: &T) -> bool`
+    - Use as macro attribute: `#[cache(invalidate_on = is_stale)]`
+    - Check function evaluated on EVERY cache access
+    - Returns `true` to invalidate (re-execute), `false` to use cached value
+    - Works with both `global` and `thread` scope
+    - Example use cases:
+      - Time-based staleness: `value.timestamp.elapsed() > Duration::from_secs(3600)`
+      - Key-based patterns: `key.contains("admin")`
+      - Value validation: `value.is_valid()`
+      - Complex conditions: Combine multiple criteria
+  - **Automatic registration**: All global-scope caches automatically support conditional invalidation
+  - **Thread-safe execution**: Invalidation check callbacks are registered and executed safely
+  - **Zero overhead**: No performance impact on cache operations, only during invalidation
+  
+- **Enhanced InvalidationRegistry**:
+  - `register_invalidation_callback()` - Register conditional invalidation handlers
+  - `invalidate_with()` - Invalidate specific cache with check function
+  - `invalidate_all_with()` - Invalidate all caches with check function
+  - Check functions receive cache keys as `&str` for flexible matching
+
+- **Enhanced Macro Attributes**:
+  - New attribute: `invalidate_on = function_name` for named invalidation check functions
+  - Accepts function path: `invalidate_on = is_stale` or `invalidate_on = my_module::validator`
+  - Compatible with all existing attributes (limit, policy, scope, etc.)
+
+### Changed
+
+- **Macro Improvements**: Both `#[cache]` and `#[cache_async]` macros now support `invalidate_on` attribute
+  - Always registered for global-scope caches, regardless of tags/events/dependencies
+  - Separate registration for invalidation metadata vs conditional check callbacks
+  - Uses `Once`/`OnceCell` for one-time initialization
+  - Check function validation happens before returning cached value
+  - If check function returns `true`, function re-executes and new value is cached
+
+### Documentation
+
+- **📚 New Examples**:
+  - `examples/conditional_invalidation.rs` - Comprehensive demonstration of conditional invalidation:
+    - Invalidate by key value range
+    - Invalidate by key pattern
+    - Global conditional invalidation across multiple caches
+    - Complex conditional checks (e.g., divisibility, string patterns)
+  - `examples/named_invalidation.rs` - Named invalidation check functions demonstration:
+    - Time-based auto-invalidation
+    - Key-based pattern matching
+    - Always-fresh check functions
+    - Multiple check function patterns
+- **🧪 New Tests**:
+  - `tests/conditional_invalidation_tests.rs` - 5 integration tests covering:
+    - Basic conditional invalidation with macros
+    - Pattern-based invalidation
+    - Global multi-cache conditional invalidation
+    - Complex conditional checks
+    - Edge cases (no matches, non-existent caches)
+  - `tests/named_invalidation_tests.rs` - 6 integration tests covering:
+    - Time-based invalidation checks
+    - Content-based validation
+    - Key-based validation
+    - Complex multi-condition checks
+    - Thread-local cache with invalidation checks
+  - `cachelito-async/tests/async_conditional_invalidation_tests.rs` - 4 async tests
+  - `cachelito-core/src/invalidation.rs` - 5 new unit tests for conditional invalidation functionality
+
+### Use Cases
+
+Conditional invalidation is ideal for:
+- **Time-based cleanup**: Invalidate entries older than a specific timestamp
+- **Range-based invalidation**: Remove entries with IDs above/below thresholds
+- **Pattern matching**: Invalidate entries matching specific key patterns
+- **Selective cleanup**: Remove stale data based on business logic
+- **Multi-cache coordination**: Apply consistent invalidation rules across caches
+- **Automatic validation**: Use named invalidation checks for on-access validation
+- **Security**: Invalidate sensitive data (e.g., admin keys) on every access
+
+### Important Notes
+
+- **Key Format**: Cache keys are stored using Debug format (`{:?}`), so string keys include quotes
+  - Use `key.contains("pattern")` instead of `key.starts_with("pattern")`
+- **Check Function Signature**: `fn(key: &String, value: &T) -> bool`
+  - Return `true` to invalidate (entry is stale)
+  - Return `false` to keep (entry is fresh)
+- **Performance**: Named invalidation checks run on EVERY cache access, so keep them lightweight
+- **Re-execution**: When check function returns `true`, the function re-executes and new value replaces old
+
 ## [0.12.0] - 2025-11-27
 
 ### Added
