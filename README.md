@@ -1562,7 +1562,71 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.13.0
+### Latest Release: Version 0.14.0
+
+**🎯 Conditional Caching with `cache_if`!**
+
+Version 0.14.0 introduces conditional caching, giving you fine-grained control over **when** results should be cached based on custom predicates:
+
+**New Features:**
+
+- 🎯 **Conditional Caching** - Control caching with custom `cache_if` predicates
+- 🚫 **Error Filtering** - Automatically skip caching errors (default for `Result` types)
+- 📊 **Value-Based Caching** - Cache only results meeting specific criteria (non-empty, valid, etc.)
+- 💡 **Smart Defaults** - `Result<T, E>` types only cache `Ok` values by default
+- 🔧 **Custom Logic** - Use any Rust logic in your cache predicates
+- ⚡ **Zero Overhead** - No performance penalty when predicates return `true`
+- 🔒 **Type-Safe** - Compile-time validation of predicate functions
+
+**Quick Start:**
+
+```rust
+use cachelito::cache;
+
+// Only cache non-empty results
+fn should_cache(_key: &String, result: &Vec<String>) -> bool {
+    !result.is_empty()
+}
+
+#[cache(scope = "global", limit = 100, cache_if = should_cache)]
+fn fetch_items(category: String) -> Vec<String> {
+    // Empty results won't be cached
+    database.query(category)
+}
+
+// Default behavior: Result types only cache Ok values
+#[cache(scope = "global", limit = 50)]
+fn validate_email(email: String) -> Result<String, String> {
+    if email.contains('@') {
+        Ok(format!("Valid: {}", email))  // ✅ Cached
+    } else {
+        Err(format!("Invalid: {}", email))  // ❌ NOT cached
+    }
+}
+
+// Custom predicate for Result types
+fn cache_only_ok(_key: &String, result: &Result<User, Error>) -> bool {
+    result.is_ok()
+}
+
+#[cache(scope = "global", cache_if = cache_only_ok)]
+fn fetch_user(id: u32) -> Result<User, Error> {
+    // Only successful results are cached
+    api_client.get_user(id)
+}
+```
+
+**Common Use Cases:**
+
+- ✅ Don't cache empty collections
+- ✅ Skip caching `None` values
+- ✅ Only cache successful HTTP responses
+- ✅ Filter out invalid or temporary data
+- ✅ Cache based on value characteristics
+
+**See also:** [`examples/conditional_caching.rs`](examples/conditional_caching.rs)
+
+### Previous Release: Version 0.13.0
 
 **🎯 Conditional Invalidation with Custom Check Functions!**
 
@@ -1608,6 +1672,8 @@ invalidate_all_with(|_cache_name, key| {
 - [`examples/conditional_invalidation.rs`](examples/conditional_invalidation.rs) - Manual conditional invalidation
 - [`examples/named_invalidation.rs`](examples/named_invalidation.rs) - Named invalidation check functions
 
+---
+
 ### Previous Release: Version 0.12.0
 
 **🔥 Smart Cache Invalidation!**
@@ -1650,7 +1716,9 @@ invalidate_by_event("user_updated");
 
 **See also:** [`examples/smart_invalidation.rs`](examples/smart_invalidation.rs)
 
-### Previous Release: Version 0.11.0
+---
+
+### Version 0.11.0
 
 **🎲 Random Replacement Policy!**
 
