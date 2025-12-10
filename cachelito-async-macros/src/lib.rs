@@ -18,6 +18,61 @@ fn parse_attributes(attr: TokenStream) -> AsyncCacheAttributes {
         }
     }
 }
+/// Generate the appropriate insert call based on max_memory configuration
+fn generate_insert_call(max_memory_expr: &TokenStream2) -> TokenStream2 {
+    let max_memory_str = max_memory_expr.to_string();
+    let has_max_memory = !max_memory_str.contains("None");
+
+    if has_max_memory {
+        quote! { __cache.insert_with_memory(&__key, __result.clone()); }
+    } else {
+        quote! { __cache.insert(&__key, __result.clone()); }
+    }
+}
+
+/// Generate common cache lookup and execution logic
+fn generate_cache_logic_block(
+    key_expr: &TokenStream2,
+    cache_ident: &syn::Ident,
+    order_ident: &syn::Ident,
+    stats_ident: &syn::Ident,
+    limit_expr: &TokenStream2,
+    max_memory_expr: &TokenStream2,
+    policy_expr: &TokenStream2,
+    ttl_expr: &TokenStream2,
+    invalidation_check: &TokenStream2,
+    block: &syn::Block,
+    cache_insert: &TokenStream2,
+) -> TokenStream2 {
+    quote! {
+        // Generate cache key
+        let __key = #key_expr;
+
+        // Create AsyncGlobalCache wrapper
+        let __cache = cachelito_core::AsyncGlobalCache::new(
+            &*#cache_ident,
+            &*#order_ident,
+            #limit_expr,
+            #max_memory_expr,
+            #policy_expr,
+            #ttl_expr,
+            &*#stats_ident,
+        );
+
+        // Try to get from cache
+        if let Some(__cached) = __cache.get(&__key) {
+            #invalidation_check
+        }
+
+        // Execute original async function (cache miss or expired)
+        let __result = (async #block).await;
+
+        // Cache the result (conditional based on cache_if predicate or default behavior)
+        #cache_insert
+
+        __result
+    }
+}
 
 /// A procedural macro that adds automatic async memoization to async functions and methods.
 ///
@@ -51,6 +106,11 @@ fn parse_attributes(attr: TokenStream) -> AsyncCacheAttributes {
 /// - `tags` (optional): Array of tags for group invalidation. Example: `["user_data", "profile"]`
 /// - `events` (optional): Array of events that trigger invalidation. Example: `["user_updated"]`
 /// - `dependencies` (optional): Array of cache dependencies. Example: `["get_user"]`
+/// - `invalidate_on` (optional): Function that checks if a cached entry should be invalidated.
+///   Signature: `fn(key: &String, value: &T) -> bool`. Return `true` to invalidate.
+/// - `cache_if` (optional): Function that determines if a result should be cached.
+///   Signature: `fn(key: &String, value: &T) -> bool`. Return `true` to cache the result.
+///   When not specified, all results are cached (default behavior).
 ///
 /// # Cache Behavior
 ///
@@ -159,10 +219,17 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Generate cache key expression
     let key_expr = generate_key_expr(has_self, &arg_pats);
 
-    // Detect Result type
-    let is_result = {
+    // Detect Result type and extract inner type if needed
+    let (is_result, _cache_value_type) = {
         let s = quote!(#ret_type).to_string().replace(' ', "");
-        s.starts_with("Result<") || s.starts_with("std::result::Result<")
+        if s.starts_with("Result<") || s.starts_with("std::result::Result<") {
+            // Extract the Ok type from Result<T, E>
+            // For simplicity, we'll use the full return type and let the compiler infer
+            // But we need to specify that the cache stores the inner T, not Result<T, E>
+            (true, ret_type.clone())
+        } else {
+            (false, ret_type.clone())
+        }
     };
 
     let limit_expr = &attrs.limit;
@@ -193,86 +260,43 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Generate cache logic based on Result or regular return
-    let cache_logic = if is_result {
-        // Check if we need memory-aware insertion
-        // max_memory is a TokenStream2, check if it represents None
-        let max_memory_str = max_memory_expr.to_string();
+    let cache_logic = {
+        let insert_call = generate_insert_call(max_memory_expr);
 
-        let insert_call = if !max_memory_str.contains("None") {
-            quote! { __cache.insert_with_memory(&__key, __ok_value.clone()); }
+        // Generate conditional caching logic
+        let cache_insert = if let Some(pred_fn) = &attrs.cache_if {
+            quote! {
+                // Only cache if the cache_if predicate returns true
+                if #pred_fn(&__key, &__result) {
+                    #insert_call
+                }
+            }
+        } else if is_result {
+            // Default behavior for Result types: only cache Ok values
+            quote! {
+                if __result.is_ok() {
+                    #insert_call
+                }
+            }
         } else {
-            quote! { __cache.insert(&__key, __ok_value.clone()); }
+            // Default behavior for regular types: always cache
+            insert_call
         };
 
-        quote! {
-            // Generate cache key
-            let __key = #key_expr;
-
-            // Create AsyncGlobalCache wrapper
-            let __cache = cachelito_core::AsyncGlobalCache::new(
-                &*#cache_ident,
-                &*#order_ident,
-                #limit_expr,
-                #max_memory_expr,
-                #policy_expr,
-                #ttl_expr,
-                &*#stats_ident,
-            );
-
-            // Try to get from cache
-            if let Some(__cached) = __cache.get(&__key) {
-                #invalidation_check
-            }
-
-            // Execute original async function (cache miss or expired)
-            let __result = (async #block).await;
-
-            // Only cache Ok values
-            if let Ok(ref __ok_value) = __result {
-                #insert_call
-            }
-
-            __result
-        }
-    } else {
-        // Check if we need memory-aware insertion
-        // max_memory is a TokenStream2, check if it represents None
-        let max_memory_str = max_memory_expr.to_string();
-
-        let insert_call = if !max_memory_str.contains("None") {
-            quote! { __cache.insert_with_memory(&__key, __result.clone()); }
-        } else {
-            quote! { __cache.insert(&__key, __result.clone()); }
-        };
-
-        quote! {
-            // Generate cache key
-            let __key = #key_expr;
-
-            // Create AsyncGlobalCache wrapper
-            let __cache = cachelito_core::AsyncGlobalCache::new(
-                &*#cache_ident,
-                &*#order_ident,
-                #limit_expr,
-                #max_memory_expr,
-                #policy_expr,
-                #ttl_expr,
-                &*#stats_ident,
-            );
-
-            // Try to get from cache
-            if let Some(__cached) = __cache.get(&__key) {
-                #invalidation_check
-            }
-
-            // Execute original async function (cache miss or expired)
-            let __result = (async #block).await;
-
-            // Cache the result
-            #insert_call
-
-            __result
-        }
+        // Use the common helper function to generate the cache logic block
+        generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            limit_expr,
+            max_memory_expr,
+            &policy_expr,
+            ttl_expr,
+            &invalidation_check,
+            block,
+            &cache_insert,
+        )
     };
 
     // Generate invalidation registration code
@@ -364,4 +388,329 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    #[test]
+    fn test_generate_insert_call_without_max_memory() {
+        let max_memory_expr = quote! { None };
+        let result = generate_insert_call(&max_memory_expr);
+        let result_str = result.to_string();
+
+        assert!(result_str.contains("__cache") && result_str.contains("insert"));
+        assert!(!result_str.contains("insert_with_memory"));
+    }
+
+    #[test]
+    fn test_generate_insert_call_with_max_memory() {
+        let max_memory_expr = quote! { Some(1024 * 1024) };
+        let result = generate_insert_call(&max_memory_expr);
+        let result_str = result.to_string();
+
+        assert!(result_str.contains("insert_with_memory"));
+    }
+
+    #[test]
+    fn test_generate_cache_logic_block_structure() {
+        let key_expr = quote! { format!("{:?}", arg1) };
+        let cache_ident = syn::Ident::new("__CACHE_TEST", proc_macro2::Span::call_site());
+        let order_ident = syn::Ident::new("__ORDER_TEST", proc_macro2::Span::call_site());
+        let stats_ident = syn::Ident::new("__STATS_TEST", proc_macro2::Span::call_site());
+        let limit_expr = quote! { Some(100) };
+        let max_memory_expr = quote! { None };
+        let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
+        let ttl_expr = quote! { None };
+        let invalidation_check = quote! { return __cached; };
+        let block: syn::Block = syn::parse2(quote! { { 42 } }).unwrap();
+        let cache_insert = quote! { __cache.insert(&__key, __result.clone()); };
+
+        let result = generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            &limit_expr,
+            &max_memory_expr,
+            &policy_expr,
+            &ttl_expr,
+            &invalidation_check,
+            &block,
+            &cache_insert,
+        );
+
+        let result_str = result.to_string();
+
+        // Verify key components are present
+        assert!(result_str.contains("let __key"));
+        assert!(result_str.contains("AsyncGlobalCache") && result_str.contains("new"));
+        assert!(result_str.contains("__cache") && result_str.contains("get"));
+        assert!(result_str.contains("let __result"));
+        assert!(result_str.contains("__CACHE_TEST"));
+        assert!(result_str.contains("__ORDER_TEST"));
+        assert!(result_str.contains("__STATS_TEST"));
+    }
+
+    #[test]
+    fn test_generate_cache_logic_includes_all_parameters() {
+        let key_expr = quote! { format!("{:?}", x) };
+        let cache_ident = syn::Ident::new("__CACHE_FN", proc_macro2::Span::call_site());
+        let order_ident = syn::Ident::new("__ORDER_FN", proc_macro2::Span::call_site());
+        let stats_ident = syn::Ident::new("__STATS_FN", proc_macro2::Span::call_site());
+        let limit_expr = quote! { Some(50) };
+        let max_memory_expr = quote! { Some(1024) };
+        let policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
+        let ttl_expr = quote! { Some(60) };
+        let invalidation_check = quote! { if !check_fn(&__key, &__cached) { return __cached; } };
+        let block: syn::Block = syn::parse2(quote! { { expensive_computation() } }).unwrap();
+        let cache_insert = quote! {
+            if should_cache(&__key, &__result) {
+                __cache.insert(&__key, __result.clone());
+            }
+        };
+
+        let result = generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            &limit_expr,
+            &max_memory_expr,
+            &policy_expr,
+            &ttl_expr,
+            &invalidation_check,
+            &block,
+            &cache_insert,
+        );
+
+        let result_str = result.to_string();
+
+        // Verify all parameters are used
+        assert!(result_str.contains("Some (50)"));
+        assert!(result_str.contains("Some (1024)"));
+        assert!(result_str.contains("Some (60)"));
+        assert!(result_str.contains("check_fn"));
+        assert!(result_str.contains("should_cache"));
+        assert!(result_str.contains("expensive_computation"));
+    }
+
+    #[test]
+    fn test_insert_call_format() {
+        let max_memory_none = quote! { None };
+        let result_none = generate_insert_call(&max_memory_none);
+
+        // Should call insert method
+        assert_eq!(
+            result_none.to_string(),
+            "__cache . insert (& __key , __result . clone ()) ;"
+        );
+
+        let max_memory_some = quote! { Some(2048) };
+        let result_some = generate_insert_call(&max_memory_some);
+
+        // Should call insert_with_memory method
+        assert_eq!(
+            result_some.to_string(),
+            "__cache . insert_with_memory (& __key , __result . clone ()) ;"
+        );
+    }
+
+    #[test]
+    fn test_cache_logic_block_contains_invalidation_check() {
+        let key_expr = quote! { key };
+        let cache_ident = syn::Ident::new("CACHE", proc_macro2::Span::call_site());
+        let order_ident = syn::Ident::new("ORDER", proc_macro2::Span::call_site());
+        let stats_ident = syn::Ident::new("STATS", proc_macro2::Span::call_site());
+        let limit_expr = quote! { None };
+        let max_memory_expr = quote! { None };
+        let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
+        let ttl_expr = quote! { None };
+
+        // Test with custom invalidation check
+        let custom_invalidation = quote! {
+            if my_custom_check(&__key, &__cached) {
+                return __cached;
+            }
+        };
+        let block: syn::Block = syn::parse2(quote! { { compute() } }).unwrap();
+        let cache_insert = quote! { __cache.insert(&__key, __result.clone()); };
+
+        let result = generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            &limit_expr,
+            &max_memory_expr,
+            &policy_expr,
+            &ttl_expr,
+            &custom_invalidation,
+            &block,
+            &cache_insert,
+        );
+
+        let result_str = result.to_string();
+        assert!(result_str.contains("my_custom_check"));
+    }
+
+    #[test]
+    fn test_cache_logic_block_contains_cache_insert() {
+        let key_expr = quote! { key };
+        let cache_ident = syn::Ident::new("CACHE", proc_macro2::Span::call_site());
+        let order_ident = syn::Ident::new("ORDER", proc_macro2::Span::call_site());
+        let stats_ident = syn::Ident::new("STATS", proc_macro2::Span::call_site());
+        let limit_expr = quote! { None };
+        let max_memory_expr = quote! { None };
+        let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
+        let ttl_expr = quote! { None };
+        let invalidation_check = quote! { return __cached; };
+        let block: syn::Block = syn::parse2(quote! { { compute() } }).unwrap();
+
+        // Test with conditional cache insert
+        let conditional_insert = quote! {
+            if predicate(&__key, &__result) {
+                __cache.insert(&__key, __result.clone());
+            }
+        };
+
+        let result = generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            &limit_expr,
+            &max_memory_expr,
+            &policy_expr,
+            &ttl_expr,
+            &invalidation_check,
+            &block,
+            &conditional_insert,
+        );
+
+        let result_str = result.to_string();
+        assert!(result_str.contains("predicate"));
+        assert!(result_str.contains("if"));
+    }
+
+    #[test]
+    fn test_generate_insert_call_detects_none_correctly() {
+        // Test various representations of None
+        let none_variants = vec![quote! { None }, quote! { ::std::option::Option::None }];
+
+        for none_expr in none_variants {
+            let result = generate_insert_call(&none_expr);
+            let result_str = result.to_string();
+            assert!(
+                result_str.contains("insert") && !result_str.contains("insert_with_memory"),
+                "Failed for None variant: {}",
+                none_expr
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_insert_call_detects_some_correctly() {
+        // Test various representations of Some
+        let some_variants = vec![
+            quote! { Some(100) },
+            quote! { Some(1024 * 1024) },
+            quote! { Some(MAX_SIZE) },
+        ];
+
+        for some_expr in some_variants {
+            let result = generate_insert_call(&some_expr);
+            let result_str = result.to_string();
+            assert!(
+                result_str.contains("insert_with_memory"),
+                "Failed for Some variant: {}",
+                some_expr
+            );
+        }
+    }
+
+    #[test]
+    fn test_cache_logic_block_async_execution() {
+        let key_expr = quote! { format!("{:?}", id) };
+        let cache_ident = syn::Ident::new("CACHE", proc_macro2::Span::call_site());
+        let order_ident = syn::Ident::new("ORDER", proc_macro2::Span::call_site());
+        let stats_ident = syn::Ident::new("STATS", proc_macro2::Span::call_site());
+        let limit_expr = quote! { None };
+        let max_memory_expr = quote! { None };
+        let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
+        let ttl_expr = quote! { None };
+        let invalidation_check = quote! { return __cached; };
+        let block: syn::Block = syn::parse2(quote! {
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                42
+            }
+        })
+        .unwrap();
+        let cache_insert = quote! { __cache.insert(&__key, __result.clone()); };
+
+        let result = generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            &limit_expr,
+            &max_memory_expr,
+            &policy_expr,
+            &ttl_expr,
+            &invalidation_check,
+            &block,
+            &cache_insert,
+        );
+
+        let result_str = result.to_string();
+
+        // Verify async execution structure
+        assert!(result_str.contains("(async"));
+        assert!(result_str.contains(") . await"));
+        assert!(result_str.contains("tokio :: time :: sleep"));
+    }
+
+    #[test]
+    fn test_cache_logic_block_contains_async_global_cache_initialization() {
+        let key_expr = quote! { key };
+        let cache_ident = syn::Ident::new("TEST_CACHE", proc_macro2::Span::call_site());
+        let order_ident = syn::Ident::new("TEST_ORDER", proc_macro2::Span::call_site());
+        let stats_ident = syn::Ident::new("TEST_STATS", proc_macro2::Span::call_site());
+        let limit_expr = quote! { Some(200) };
+        let max_memory_expr = quote! { Some(4096) };
+        let policy_expr = quote! { cachelito_core::EvictionPolicy::ARC };
+        let ttl_expr = quote! { Some(120) };
+        let invalidation_check = quote! { return __cached; };
+        let block: syn::Block = syn::parse2(quote! { { value } }).unwrap();
+        let cache_insert = quote! { __cache.insert_with_memory(&__key, __result.clone()); };
+
+        let result = generate_cache_logic_block(
+            &key_expr,
+            &cache_ident,
+            &order_ident,
+            &stats_ident,
+            &limit_expr,
+            &max_memory_expr,
+            &policy_expr,
+            &ttl_expr,
+            &invalidation_check,
+            &block,
+            &cache_insert,
+        );
+
+        let result_str = result.to_string();
+
+        // Verify AsyncGlobalCache initialization with all parameters
+        assert!(result_str.contains("AsyncGlobalCache :: new"));
+        assert!(result_str.contains("& * TEST_CACHE"));
+        assert!(result_str.contains("& * TEST_ORDER"));
+        assert!(result_str.contains("Some (200)"));
+        assert!(result_str.contains("Some (4096)"));
+        assert!(result_str.contains("EvictionPolicy :: ARC"));
+        assert!(result_str.contains("Some (120)"));
+        assert!(result_str.contains("& * TEST_STATS"));
+    }
 }

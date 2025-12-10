@@ -1,6 +1,6 @@
 [package]
 name = "cachelito-core"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -26,7 +26,7 @@ dashmap = "6.1"
 fastrand = "2.3"
 
 [dev-dependencies]
-criterion = "0.7.0"
+criterion = "0.8.1"
 serial_test = "3.2"
 
 [lib]

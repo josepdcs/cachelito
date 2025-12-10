@@ -24,6 +24,7 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
 - 🔥 **Smart Invalidation (v0.12.0)**: Tag-based, event-driven, and dependency-based cache invalidation
 - 🎯 **Conditional Invalidation (v0.13.0)**: Runtime invalidation with custom check functions and named invalidation checks
+- 🎛️ **Conditional Caching (v0.14.0)**: Control when results are cached with `cache_if` predicate functions
 - 📏 **MemoryEstimator trait**: Used internally for memory-based limits (customizable for user types)
 - 📈 **Statistics (v0.6.0+)**: Track hit/miss rates via `stats` feature & `stats_registry`
 - 🔮 **Async/await support (v0.7.0)**: Dedicated `cachelito-async` crate (lock-free DashMap)
@@ -38,17 +39,17 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.13.0"
+cachelito = "0.14.0"
 # Or with statistics:
-# cachelito = { version = "0.13.0", features = ["stats"] }
+# cachelito = { version = "0.14.0", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.13.x).
+> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.14.x).
 ```toml
 [dependencies]
-cachelito-async = "0.13.0"
+cachelito-async = "0.14.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -1390,6 +1391,155 @@ fn check_admin(key: &String, _val: &T) -> bool {
 
 See [`examples/smart_invalidation.rs`](examples/smart_invalidation.rs) and [`examples/named_invalidation.rs`](examples/named_invalidation.rs) for complete working examples demonstrating all invalidation strategies.
 
+### Conditional Caching with `cache_if` (v0.14.0)
+
+By default, **all** function results are cached. The `cache_if` attribute allows you to control **when** results should be cached based on custom predicates. This is useful for:
+- **Avoiding cache pollution**: Don't cache empty results, error states, or invalid data
+- **Memory efficiency**: Only cache valuable results
+- **Business logic**: Cache based on result characteristics
+
+#### Basic Usage
+
+```rust
+use cachelito::cache;
+
+// Only cache non-empty vectors
+fn should_cache_non_empty(_key: &String, result: &Vec<String>) -> bool {
+    !result.is_empty()
+}
+
+#[cache(scope = "global", limit = 100, cache_if = should_cache_non_empty)]
+fn fetch_items(category: String) -> Vec<String> {
+    // Simulate database query
+    match category.as_str() {
+        "electronics" => vec!["laptop".to_string(), "phone".to_string()],
+        "empty_category" => vec![], // This won't be cached!
+        _ => vec![],
+    }
+}
+
+fn main() {
+    // First call with "electronics" - computes and caches
+    let items1 = fetch_items("electronics".to_string());
+    // Second call - returns cached result
+    let items2 = fetch_items("electronics".to_string());
+    
+    // First call with "empty_category" - computes but doesn't cache
+    let items3 = fetch_items("empty_category".to_string());
+    // Second call - computes again (not cached)
+    let items4 = fetch_items("empty_category".to_string());
+}
+```
+
+#### Common Patterns
+
+**Don't cache None values:**
+```rust
+fn cache_some(_key: &String, result: &Option<User>) -> bool {
+    result.is_some()
+}
+
+#[cache(scope = "thread", cache_if = cache_some)]
+fn find_user(id: u32) -> Option<User> {
+    database.find_user(id)
+}
+```
+
+**Only cache successful HTTP responses:**
+```rust
+#[derive(Clone)]
+struct ApiResponse {
+    status: u16,
+    body: String,
+}
+
+fn cache_success(_key: &String, response: &ApiResponse) -> bool {
+    response.status >= 200 && response.status < 300
+}
+
+#[cache(scope = "global", limit = 50, cache_if = cache_success)]
+fn api_call(url: String) -> ApiResponse {
+    // Only 2xx responses will be cached
+    make_http_request(url)
+}
+```
+
+**Cache based on value size:**
+```rust
+fn cache_if_large(_key: &String, data: &Vec<u8>) -> bool {
+    data.len() > 1024 // Only cache results larger than 1KB
+}
+
+#[cache(scope = "global", cache_if = cache_if_large)]
+fn process_data(input: String) -> Vec<u8> {
+    expensive_processing(input)
+}
+```
+
+**Cache based on value criteria:**
+```rust
+fn cache_if_positive(_key: &String, value: &i32) -> bool {
+    *value > 0
+}
+
+#[cache(scope = "thread", cache_if = cache_if_positive)]
+fn compute(x: i32, y: i32) -> i32 {
+    x + y // Only positive results will be cached
+}
+```
+
+#### Async Support
+
+The `cache_if` attribute also works with async functions:
+
+```rust
+use cachelito_async::cache_async;
+
+fn should_cache_non_empty(_key: &String, result: &Vec<String>) -> bool {
+    !result.is_empty()
+}
+
+#[cache_async(limit = 100, cache_if = should_cache_non_empty)]
+async fn fetch_items_async(category: String) -> Vec<String> {
+    // Async database query
+    fetch_from_db_async(category).await
+}
+```
+
+#### Combining with Result Types
+
+When caching functions that return `Result<T, E>`, remember that:
+1. **Without `cache_if`: Only `Ok` values are cached** (default behavior, `Err` is never cached)
+2. **With `cache_if`: The predicate receives the full `Result`** and can inspect both `Ok` and `Err` variants to decide whether to cache
+
+```rust
+fn cache_valid_ok(_key: &String, result: &Result<String, String>) -> bool {
+    matches!(result, Ok(data) if !data.is_empty())
+}
+
+#[cache(limit = 50, cache_if = cache_valid_ok)]
+fn fetch_data(id: u32) -> Result<String, String> {
+    match id {
+        1..=10 => Ok(format!("Data {}", id)),   // ✅ Cached
+        11..=20 => Ok(String::new()),           // ❌ Not cached (empty)
+        _ => Err("Invalid ID".to_string()),     // ❌ Not cached (Err)
+    }
+}
+```
+
+#### Performance Impact
+
+- **Zero overhead when not used**: If `cache_if` is not specified, there's no performance impact
+- **Check runs after computation**: The predicate function is called AFTER computing the result but BEFORE caching
+- **Should be fast**: Keep predicate functions simple and fast (they're called on every cache miss)
+- **Minimal lock overhead**: The predicate evaluation happens without holding locks, but the insert operation (if predicate returns true) will acquire the cache lock as usual
+
+#### See Also
+
+- [`examples/conditional_caching.rs`](examples/conditional_caching.rs) - Complete sync examples
+- [`cachelito-async/examples/conditional_caching_async.rs`](cachelito-async/examples/conditional_caching_async.rs) - Async examples
+- [`tests/conditional_caching_tests.rs`](tests/conditional_caching_tests.rs) - Test suite
+
 ## Limitations
 
 - Cannot be used with generic functions (lifetime and type parameter support is limited)
@@ -1576,76 +1726,6 @@ fn compute(x: u64) -> u64 { x * x }
 See the Memory-Based Limits section above for complete details.
 
 ---
-
-### Previous Release: Version 0.9.0
-
-**🎯 ARC - Adaptive Replacement Cache!**
-
-Version 0.9.0 introduces a self-tuning cache policy that automatically adapts to your workload:
-
-**New Features:**
-
-- 🎯 **ARC Eviction Policy** - Adaptive Replacement Cache that combines LRU and LFU
-- 🧠 **Self-Tuning** - Automatically balances between recency and frequency
-- **Scan-Resistant** - Protects frequently accessed items from sequential scans
-- ⚡ **Operation Complexity** - Insert is O(1); get and evict are O(n)
-- 🔄 **Mixed Workloads** - Ideal for workloads with varying access patterns
-- 📊 **Both Sync & Async** - ARC available in `cachelito` and `cachelito-async`
-
-**Breaking Changes:**
-
-- **Default policy changed from FIFO to LRU** - LRU is more effective for most use cases. To keep FIFO behavior, explicitly use `policy = "fifo"`
-
-
-See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
-
----
-
-### Previous Release: Version 0.8.0
-
-**🔥 LFU Eviction Policy & LRU as Default!**
-
-Version 0.8.0 completes the eviction policy trio and improves defaults:
-
-**New Features:**
-
-- 🔥 **LFU Eviction Policy** - Least Frequently Used eviction strategy
-- 📊 **Frequency Tracking** - Automatic access frequency counters for each cache entry
-- 🎯 **Three Policies** - Choose between FIFO, LRU (default), and LFU
-- 📈 **Smart Eviction** - LFU keeps frequently accessed items cached longer
-- ⚡ **Optimized Performance** - O(1) cache hits for LFU, O(n) eviction
-- 🔄 **Both Sync & Async** - LFU available in `cachelito` and `cachelito-async`
-
-**Breaking Change:**
-
-- **Default policy changed from FIFO to LRU** - LRU is more effective for most use cases. To keep FIFO behavior, explicitly use `policy = "fifo"`
-
-
-See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
-
----
-
-### Version 0.7.0
-
-**🔮 Async/Await Support:**
-
-- 🚀 **Async Function Caching** - Use `#[cache_async]` for async/await functions
-- 🔓 **Lock-Free Concurrency** - DashMap provides non-blocking cache access
-- 🌐 **Global Async Cache** - Shared across all tasks and threads automatically
-- ⚡ **Zero Blocking** - Cache operations don't require `.await`
-- 📊 **FIFO and LRU Policies** - Eviction policies supported
-- ⏱️ **TTL Support** - Time-based expiration for async caches
-
-### Previous Release: Version 0.6.0
-
-**Statistics & Global Scope:**
-
-- 🌐 **Global scope by default** - Cache is now shared across threads by default
-- 📈 **Cache Statistics** - Track hit/miss rates and performance metrics
-- 🎯 **Stats Registry** - Centralized API: `stats_registry::get("function_name")`
-- 🏷️ **Custom Cache Names** - Use `name` attribute for custom identifiers
-
-For full details, see the [complete changelog](CHANGELOG.md).
 
 ## License
 
