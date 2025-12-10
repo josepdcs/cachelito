@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2025-12-09
+
+### Added
+
+- **🎯 Conditional Caching with `cache_if` Attribute**: Control when results are cached based on custom predicates
+  - **Selective caching**: Only cache results that pass a predicate function
+  - **Signature**: `fn(key: &String, value: &T) -> bool` - return `true` to cache, `false` to skip
+  - **Works with all cache types**: Sync (`#[cache]`) and async (`#[cache_async]`) macros
+  - **Compatible with all policies**: FIFO, LRU, LFU, ARC, Random
+  - **Default behavior preserved**: When `cache_if` is not specified, all results are cached (existing behavior)
+  - **Example use cases**:
+    - Don't cache empty results: `fn cache_non_empty(_: &String, v: &Vec<T>) -> bool { !v.is_empty() }`
+    - Only cache successful responses: `fn cache_success(_: &String, r: &Response) -> bool { r.status == 200 }`
+    - Don't cache `None` values: `fn cache_some(_: &String, v: &Option<T>) -> bool { v.is_some() }`
+    - Cache based on value thresholds: `fn cache_large(_: &String, v: &Vec<u8>) -> bool { v.len() > 1024 }`
+    - Custom business logic: Any boolean condition based on key or value
+
+- **Enhanced Macro Attributes**:
+  - New attribute: `cache_if = function_name` for conditional caching
+  - Accepts function path: `cache_if = should_cache` or `cache_if = my_module::validator`
+  - Compatible with all existing attributes (limit, policy, scope, ttl, max_memory, etc.)
+  - Check runs AFTER computing result but BEFORE inserting into cache
+  - Zero overhead when not used (default behavior unchanged)
+
+### Examples
+
+```rust
+// Only cache non-empty vectors
+fn should_cache(_key: &String, result: &Vec<String>) -> bool {
+    !result.is_empty()
+}
+
+#[cache(scope = "global", limit = 100, cache_if = should_cache)]
+fn fetch_items(category: String) -> Vec<String> {
+    // Empty results won't be cached
+    fetch_from_db(category)
+}
+
+// Only cache Some values
+fn cache_some(_key: &String, result: &Option<User>) -> bool {
+    result.is_some()
+}
+
+#[cache(scope = "thread", cache_if = cache_some)]
+fn find_user(id: u32) -> Option<User> {
+    // None values won't be cached
+    database.find_user(id)
+}
+
+// Only cache successful HTTP responses
+fn cache_success(_key: &String, response: &ApiResponse) -> bool {
+    response.status >= 200 && response.status < 300
+}
+
+#[cache_async(limit = 50, policy = "lru", cache_if = cache_success)]
+async fn api_call(url: String) -> ApiResponse {
+    // Only 2xx responses will be cached
+    http_client.get(url).await
+}
+```
+
 ## [0.13.0] - 2025-12-02
 
 ### Added

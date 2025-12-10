@@ -53,12 +53,13 @@ fn generate_thread_local_branch(
     block: &syn::Block,
     is_result: bool,
     invalidate_on: &Option<syn::Path>,
+    cache_if: &Option<syn::Path>,
 ) -> TokenStream2 {
     // Check if max_memory is None by comparing the token stream
     let has_max_memory = has_max_memory(max_memory_expr);
 
-    let insert_call = generate_insert_call(has_max_memory, is_result);
     let invalidation_check = generate_invalidation_check(invalidate_on);
+    let cache_condition = generate_cache_condition(cache_if, has_max_memory, is_result);
 
     quote! {
         thread_local! {
@@ -82,7 +83,7 @@ fn generate_thread_local_branch(
         }
 
         let __result = (|| #block)();
-        #insert_call
+        #cache_condition
         __result
     }
 }
@@ -112,6 +113,28 @@ fn generate_invalidation_check(invalidate_on: &Option<syn::Path>) -> TokenStream
     }
 }
 
+/// Generate cache condition check code if a cache_if function is specified
+fn generate_cache_condition(
+    cache_if: &Option<syn::Path>,
+    has_max_memory: bool,
+    is_result: bool,
+) -> TokenStream2 {
+    let insert_call = generate_insert_call(has_max_memory, is_result);
+
+    if let Some(pred_fn) = cache_if {
+        quote! {
+            // Check if result should be cached using cache_if function
+            // Only cache if function returns true
+            if #pred_fn(&__key, &__result) {
+                #insert_call
+            }
+        }
+    } else {
+        // Always cache if no predicate is specified (default behavior)
+        insert_call
+    }
+}
+
 /// Generate the global cache branch
 fn generate_global_branch(
     cache_ident: &syn::Ident,
@@ -131,8 +154,8 @@ fn generate_global_branch(
     // Check if max_memory is None by comparing the token stream
     let has_max_memory = has_max_memory(max_memory_expr);
 
-    let insert_call = generate_insert_call(has_max_memory, is_result);
     let invalidation_check = generate_invalidation_check(&attrs.invalidate_on);
+    let cache_condition = generate_cache_condition(&attrs.cache_if, has_max_memory, is_result);
 
     // Generate invalidation registration code
     let invalidation_registration = if !attrs.tags.is_empty()
@@ -252,7 +275,7 @@ fn generate_global_branch(
         }
 
         let __result = (|| #block)();
-        #insert_call
+        #cache_condition
         __result
     }
 }
@@ -301,6 +324,10 @@ fn generate_global_branch(
 /// - `invalidate_on` (optional): Function that checks if a cached entry should be invalidated.
 ///   Signature: `fn(key: &String, value: &T) -> bool`. Return `true` to invalidate.
 ///   The check runs on every cache access. Example: `invalidate_on = is_stale`.
+/// - `cache_if` (optional): Function that determines if a result should be cached.
+///   Signature: `fn(key: &String, value: &T) -> bool`. Return `true` to cache the result.
+///   The check runs after computing the result but before caching it. Example: `cache_if = should_cache`.
+///   When not specified, all results are cached (default behavior).
 ///
 /// # Cache Behavior
 ///
@@ -556,6 +583,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         block,
         is_result,
         &attrs.invalidate_on,
+        &attrs.cache_if,
     );
 
     let global_branch = generate_global_branch(

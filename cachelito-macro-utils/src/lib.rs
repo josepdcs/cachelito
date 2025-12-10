@@ -29,6 +29,7 @@ pub struct AsyncCacheAttributes {
     pub events: Vec<String>,
     pub dependencies: Vec<String>,
     pub invalidate_on: Option<syn::Path>,
+    pub cache_if: Option<syn::Path>,
 }
 
 impl Default for AsyncCacheAttributes {
@@ -43,6 +44,7 @@ impl Default for AsyncCacheAttributes {
             events: Vec::new(),
             dependencies: Vec::new(),
             invalidate_on: None,
+            cache_if: None,
         }
     }
 }
@@ -59,6 +61,7 @@ pub struct SyncCacheAttributes {
     pub events: Vec<String>,
     pub dependencies: Vec<String>,
     pub invalidate_on: Option<syn::Path>,
+    pub cache_if: Option<syn::Path>,
 }
 
 impl Default for SyncCacheAttributes {
@@ -74,6 +77,7 @@ impl Default for SyncCacheAttributes {
             events: Vec::new(),
             dependencies: Vec::new(),
             invalidate_on: None,
+            cache_if: None,
         }
     }
 }
@@ -82,12 +86,10 @@ impl Default for SyncCacheAttributes {
 pub fn parse_limit_attribute(nv: &MetaNameValue) -> TokenStream2 {
     match &nv.value {
         Expr::Lit(expr_lit) => match &expr_lit.lit {
-            syn::Lit::Int(lit_int) => {
-                let val = lit_int
-                    .base10_parse::<usize>()
-                    .expect("limit must be a positive integer");
-                quote! { Some(#val) }
-            }
+            syn::Lit::Int(lit_int) => match lit_int.base10_parse::<usize>() {
+                Ok(val) => quote! { Some(#val) },
+                Err(_) => quote! { compile_error!("limit must be a valid positive integer") },
+            },
             _ => quote! { compile_error!("Invalid literal for `limit`: expected integer") },
         },
         _ => quote! { compile_error!("Invalid syntax for `limit`: expected `limit = <integer>`") },
@@ -348,6 +350,17 @@ pub fn parse_invalidate_on_attribute(nv: &MetaNameValue) -> Result<syn::Path, To
     }
 }
 
+/// Parse the `cache_if` attribute
+/// Expects a function path like `cache_if = should_cache` or `cache_if = my_module::should_cache`
+pub fn parse_cache_if_attribute(nv: &MetaNameValue) -> Result<syn::Path, TokenStream2> {
+    match &nv.value {
+        Expr::Path(expr_path) => Ok(expr_path.path.clone()),
+        _ => Err(
+            quote! { compile_error!("Invalid syntax for `cache_if`: expected `cache_if = function_name`") },
+        ),
+    }
+}
+
 /// Parse common attributes shared between async and sync caches
 /// Returns true if the attribute was recognized and processed
 fn parse_common_attribute(
@@ -358,6 +371,7 @@ fn parse_common_attribute(
     events: &mut Vec<String>,
     dependencies: &mut Vec<String>,
     invalidate_on: &mut Option<syn::Path>,
+    cache_if: &mut Option<syn::Path>,
 ) -> Result<bool, TokenStream2> {
     if nv.path.is_ident("name") {
         *custom_name = parse_name_attribute(nv);
@@ -376,6 +390,9 @@ fn parse_common_attribute(
         Ok(true)
     } else if nv.path.is_ident("invalidate_on") {
         *invalidate_on = Some(parse_invalidate_on_attribute(nv)?);
+        Ok(true)
+    } else if nv.path.is_ident("cache_if") {
+        *cache_if = Some(parse_cache_if_attribute(nv)?);
         Ok(true)
     } else {
         Ok(false)
@@ -414,6 +431,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                 &mut attrs.events,
                 &mut attrs.dependencies,
                 &mut attrs.invalidate_on,
+                &mut attrs.cache_if,
             )? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
@@ -422,7 +440,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on, cache_if",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -496,6 +514,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                 &mut attrs.events,
                 &mut attrs.dependencies,
                 &mut attrs.invalidate_on,
+                &mut attrs.cache_if,
             )? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
@@ -504,7 +523,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on, cache_if",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -713,6 +732,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -722,6 +742,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
@@ -738,6 +759,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -747,6 +769,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
@@ -764,6 +787,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -773,6 +797,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
@@ -789,6 +814,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -798,6 +824,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
@@ -814,6 +841,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -823,6 +851,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
@@ -839,6 +868,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -848,6 +878,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
@@ -863,6 +894,7 @@ mod tests {
         let mut events = Vec::new();
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
+        let mut cache_if = None;
 
         let result = parse_common_attribute(
             &nv,
@@ -872,6 +904,7 @@ mod tests {
             &mut events,
             &mut dependencies,
             &mut invalidate_on,
+            &mut cache_if,
         );
 
         assert!(result.is_ok());
