@@ -11,7 +11,7 @@
 // 5. Cache based on result value (only positive numbers)
 // 6. Only cache Ok results with custom predicate
 // 7. Default Result behavior - only Ok values cached automatically
-// 8. Only cache valid division results (finite numbers, no errors)
+// 8. Only cache valid division results (finite numbers, no errors, no Infinity/NaN)
 
 use cachelito::cache;
 
@@ -144,6 +144,10 @@ fn validate_email(email: String) -> Result<String, String> {
 }
 
 // Example 8: Only cache specific error-free computations
+// The predicate function determines what gets cached:
+// - Err values are NOT cached
+// - Ok(Infinity) and Ok(NaN) are NOT cached (not finite)
+// - Only Ok(finite) values are cached
 fn cache_valid_division(_key: &String, result: &Result<f64, String>) -> bool {
     matches!(result, Ok(val) if val.is_finite())
 }
@@ -153,14 +157,13 @@ fn divide(a: f64, b: f64) -> Result<f64, String> {
     println!("Dividing {} / {}", a, b);
 
     if b == 0.0 {
-        Err("Division by zero".to_string()) // This won't be cached
+        // Errors are not cached (caught by the predicate)
+        Err("Division by zero".to_string())
     } else {
-        let result = a / b;
-        if result.is_finite() {
-            Ok(result) // Only cached if finite
-        } else {
-            Ok(result) // Infinity/NaN won't be cached
-        }
+        // Always return Ok, but the predicate decides if it's cached:
+        // - Finite values: cached
+        // - Infinity/NaN: NOT cached (predicate returns false)
+        Ok(a / b)
     }
 }
 
@@ -289,4 +292,13 @@ fn main() {
     println!("First call (MAX / 2.0): {:?}", div5);
     let div6 = divide(f64::MAX, 2.0);
     println!("Second call (MAX / 2.0 - cached): {:?}", div6);
+
+    // Demonstrate that Infinity is not cached (non-finite)
+    let div7 = divide(f64::MAX, 1e-300);
+    println!("First call (MAX / 1e-300 = Infinity): {:?}", div7);
+    let div8 = divide(f64::MAX, 1e-300);
+    println!(
+        "Second call (MAX / 1e-300 - NOT cached, Infinity is not finite): {:?}",
+        div8
+    );
 }
