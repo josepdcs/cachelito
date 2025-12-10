@@ -1532,7 +1532,7 @@ fn fetch_data(id: u32) -> Result<String, String> {
 - **Zero overhead when not used**: If `cache_if` is not specified, there's no performance impact
 - **Check runs after computation**: The predicate function is called AFTER computing the result but BEFORE caching
 - **Should be fast**: Keep predicate functions simple and fast (they're called on every cache miss)
-- **No lock contention**: The check happens before acquiring the cache lock
+- **Minimal lock overhead**: The predicate evaluation happens without holding locks, but the insert operation (if predicate returns true) will acquire the cache lock as usual
 
 #### See Also
 
