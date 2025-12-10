@@ -1509,8 +1509,8 @@ async fn fetch_items_async(category: String) -> Vec<String> {
 #### Combining with Result Types
 
 When caching functions that return `Result<T, E>`, remember that:
-1. **Err values are NEVER cached** (default behavior)
-2. **`cache_if` applies ONLY to Ok values**
+1. **Without `cache_if`: Only `Ok` values are cached** (default behavior, `Err` is never cached)
+2. **With `cache_if`: The predicate receives the full `Result`** and can inspect both `Ok` and `Err` variants to decide whether to cache
 
 ```rust
 fn cache_valid_ok(_key: &String, result: &Result<String, String>) -> bool {
