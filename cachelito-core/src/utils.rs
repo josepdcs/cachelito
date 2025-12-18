@@ -395,7 +395,7 @@ where
 /// - **Frequency**: How many times the entry has been accessed
 /// - **Recency**: Position in the access order (more recent = higher weight)
 /// - **Age Factor**: Penalizes entries approaching their TTL expiration (if TTL is configured)
-/// - **Score**: `frequency × position_weight × age_factor`
+/// - **Score**: `frequency^weight × position_weight × age_factor`
 ///
 /// The key with the **lowest score** is chosen for eviction. This means:
 /// - Old entries approaching expiration are prioritized for removal
