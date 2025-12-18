@@ -9,14 +9,17 @@ A flexible and efficient async caching library for Rust async/await functions.
 ## Features
 
 - 🚀 **Lock-free caching** - Uses DashMap for concurrent access without blocking
-- 🎯 **Multiple eviction policies** - FIFO, LRU, LFU, and ARC (Adaptive Replacement Cache)
+- 🎯 **Multiple eviction policies** - FIFO, LRU, LFU, ARC, Random, and TLRU (Time-aware LRU)
+- ⏰ **TLRU with frequency_weight** - Fine-tune recency vs frequency balance (v0.15.0)
 - 💾 **Memory-based limits** - Control cache size by memory usage (v0.10.1)
-- ⏰ **TTL support** - Automatic expiration of cached entries
+- ⏱️ **TTL support** - Automatic expiration of cached entries
 - 📊 **Limit control** - Set maximum cache size by entry count or memory
 - 🔍 **Result caching** - Only caches `Ok` values from `Result` types
 - 🌐 **Global cache** - Shared across all tasks and threads
 - ⚡ **Zero async overhead** - No `.await` needed for cache operations
 - 📈 **Statistics** - Track cache hit/miss rates and performance metrics
+- 🎛️ **Conditional caching** - Cache only valid results with `cache_if` predicates (v0.14.0)
+- 🔥 **Smart invalidation** - Tag-based, event-driven, and conditional invalidation (v0.12.0+)
 
 ## Installation
 
@@ -147,6 +150,42 @@ async fn main() {
 - Custom cache naming with `name` attribute
 - Thread-safe counters using `AtomicU64`
 
+### TLRU with Frequency Weight
+
+Fine-tune the balance between recency and frequency in TLRU eviction decisions:
+
+```rust
+use cachelito_async::cache_async;
+
+// Low frequency_weight (0.3) - emphasizes recency
+// Good for time-sensitive data where freshness matters more
+#[cache_async(policy = "tlru", limit = 100, ttl = 300, frequency_weight = 0.3)]
+async fn fetch_realtime_prices(symbol: String) -> f64 {
+    // Recent entries are prioritized over frequently accessed ones
+    stock_api::get_price(&symbol).await
+}
+
+// High frequency_weight (1.5) - emphasizes frequency
+// Good for popular content that should stay cached
+#[cache_async(policy = "tlru", limit = 100, ttl = 300, frequency_weight = 1.5)]
+async fn fetch_trending_posts(topic: String) -> Vec<Post> {
+    // Popular entries remain cached longer despite age
+    database::get_trending(&topic).await
+}
+
+// Default (omit frequency_weight) - balanced approach
+#[cache_async(policy = "tlru", limit = 100, ttl = 300)]
+async fn fetch_user_data(user_id: u64) -> UserData {
+    // Balanced between recency and frequency
+    api::get_user(user_id).await
+}
+```
+
+**Frequency Weight Guide:**
+- `< 1.0` → Emphasize recency (time-sensitive data: stock prices, news)
+- `= 1.0` (default) → Balanced (general-purpose caching)
+- `> 1.0` → Emphasize frequency (popular content: trending posts, hot products)
+
 ### Combining Features
 
 ```rust
@@ -164,12 +203,19 @@ async fn complex_operation(x: i32, y: i32) -> Result<i32, Error> {
 
 ## Macro Parameters
 
-| Parameter | Type                | Default       | Description                           |
-|-----------|---------------------|---------------|---------------------------------------|
-| `limit`   | `usize`             | unlimited     | Maximum number of entries in cache    |
-| `policy`  | `"fifo"` \| `"lru"` | `"fifo"`      | Eviction policy when limit is reached |
-| `ttl`     | `u64`               | none          | Time-to-live in seconds               |
-| `name`    | `String`            | function name | Custom cache identifier               |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | `usize` | unlimited | Maximum number of entries in cache |
+| `policy` | `"fifo"` \| `"lru"` \| `"lfu"` \| `"arc"` \| `"random"` \| `"tlru"` | `"fifo"` | Eviction policy when limit is reached |
+| `ttl` | `u64` | none | Time-to-live in seconds |
+| `frequency_weight` | `f64` | 1.0 | Weight factor for frequency in TLRU (v0.15.0) |
+| `name` | `String` | function name | Custom cache identifier |
+| `max_memory` | `String` | none | Maximum memory usage (e.g., "100MB") |
+| `tags` | `[String]` | none | Tags for group invalidation |
+| `events` | `[String]` | none | Events that trigger invalidation |
+| `dependencies` | `[String]` | none | Cache dependencies |
+| `invalidate_on` | function | none | Function to check if entry should be invalidated |
+| `cache_if` | function | none | Function to determine if result should be cached |
 
 ## Eviction Policies
 
@@ -211,6 +257,17 @@ async fn complex_operation(x: i32, y: i32) -> Result<i32, Error> {
 - Best for baseline benchmarks
 - Good for truly random access patterns
 
+### TLRU (Time-aware Least Recently Used)
+
+- Combines recency, frequency, and time-based expiration
+- O(n) performance for eviction and cache hits
+- Customizable with `frequency_weight` parameter
+- Formula: `score = frequency^weight × position × age_factor`
+- `frequency_weight < 1.0`: Emphasize recency (good for time-sensitive data)
+- `frequency_weight > 1.0`: Emphasize frequency (good for popular content)
+- Best for time-sensitive data with TTL
+- Without TTL, behaves like ARC
+
 **Policy Comparison:**
 
 | Policy | Eviction | Cache Hit | Use Case |
@@ -219,7 +276,8 @@ async fn complex_operation(x: i32, y: i32) -> Result<i32, Error> {
 | **FIFO** | O(1) | O(1) | Simple predictable caching |
 | **LFU** | O(n) | O(1) | Frequency patterns matter |
 | **ARC** | O(n) | O(n) | Mixed workloads, adaptive |
-| **Random** | O(1) | O(1) | Baseline, random access |
+| **Random** | O(1) | O(1) | Baseline benchmarks |
+| **TLRU** | O(n) | O(n) | Time-sensitive with TTL |
 
 ## Performance
 
@@ -247,6 +305,7 @@ excellent concurrent performance without traditional locks.
 
 - `async_basic.rs` - Basic async caching
 - `async_lru.rs` - LRU eviction policy
+- `async_tlru.rs` - TLRU (Time-aware LRU) eviction policy with concurrent operations
 - `async_concurrent.rs` - Concurrent task access
 - `async_stats.rs` - Cache statistics tracking
 
@@ -255,6 +314,7 @@ Run examples with:
 ```bash
 cargo run --example async_basic
 cargo run --example async_lru
+cargo run --example async_tlru
 cargo run --example async_concurrent
 cargo run --example async_stats
 ```

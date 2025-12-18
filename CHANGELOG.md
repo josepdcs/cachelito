@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2025-12-17
+
+### Added
+
+- **⏰ TLRU (Time-aware Least Recently Used) Eviction Policy**: Intelligent eviction combining recency, frequency, and time-based factors
+  - **Smart scoring formula**: `frequency × position_weight × age_factor`
+  - **Age-aware eviction**: Entries approaching TTL expiration are prioritized for removal
+  - **Triple consideration**: Evaluates access frequency, recency, and age simultaneously
+  - **Optimal for time-sensitive data**: Perfect for caches with expiring content (weather, stock prices, session data)
+  - **Backward compatible**: Without TTL, behaves like ARC policy (frequency + recency)
+  - **Usage**: `#[cache(policy = "tlru", limit = 100, ttl = 300)]`
+  - **Age factor calculation**: `1.0 - (elapsed_time / ttl)` where 1.0 = fresh, 0.0 = expired
+  - **Example use cases**:
+    - Weather data with 5-minute freshness
+    - Stock prices with 1-second TTL
+    - Session data with 30-minute expiration
+    - API responses with time-based validity
+
+- **Enhanced Eviction Policies**:
+  - New policy option: `policy = "tlru"` for Time-aware LRU
+  - Works with all cache scopes: thread-local and global
+  - Compatible with async caching (`cachelito-async`)
+  - Supports both entry-count (`limit`) and memory-based (`max_memory`) limits
+
+- **Performance Characteristics**:
+  - Eviction: O(n) where n is the cache size (evaluates all entries to find lowest score)
+  - Cache hit: O(n) (updates both recency order and frequency counter)
+  - Cache miss: O(1) (simple insertion)
+  - Best for: Mixed access patterns with time-sensitive data
+
+### Implementation Details
+
+- Added `find_tlru_eviction_key()` utility function in `cachelito-core`
+- Extended all cache implementations: `ThreadLocalCache`, `GlobalCache`, `AsyncGlobalCache`
+- Comprehensive unit tests for TLRU scoring algorithm
+- Documentation with practical examples
+
 ## [0.14.0] - 2025-12-09
 
 ### Added

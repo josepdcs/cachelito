@@ -12,12 +12,17 @@
 //! - **Thread-Local Storage**: Safe, lock-free caching using `thread_local!`
 //! - **Global Cache**: Thread-safe cache shared across all threads using `parking_lot::RwLock`
 //! - **Async Cache**: Lock-free async cache using `DashMap` for concurrent async operations
-//! - **Eviction Policies**: Support for FIFO, LRU (default), LFU, ARC, and Random
+//! - **Eviction Policies**: Support for FIFO, LRU (default), LFU, ARC, Random, and TLRU
 //!   - **FIFO**: First In, First Out - simple and predictable
 //!   - **LRU**: Least Recently Used - evicts least recently accessed entries
 //!   - **LFU**: Least Frequently Used - evicts least frequently accessed entries
 //!   - **ARC**: Adaptive Replacement Cache - self-tuning policy combining recency and frequency
 //!   - **Random**: Random replacement - O(1) eviction with minimal overhead
+//!   - **TLRU**: Time-aware LRU - combines recency, frequency, and time-based expiration
+//!     - Customizable with `frequency_weight` parameter to control recency vs frequency balance
+//!     - Formula: `score = frequency^weight × position × age_factor`
+//!     - `frequency_weight < 1.0`: Emphasize recency (good for time-sensitive data)
+//!     - `frequency_weight > 1.0`: Emphasize frequency (good for popular content)
 //! - **Cache Limits**: Control cache size with entry count limits (`limit`) or memory limits (`max_memory`)
 //! - **Memory Estimation**: `MemoryEstimator` trait for accurate memory usage tracking
 //! - **TTL Support**: Time-to-live expiration for automatic cache invalidation

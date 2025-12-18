@@ -9,11 +9,17 @@
 //! ## Features
 //!
 //! - 🚀 **Lock-free caching**: Uses DashMap for concurrent access without blocking
-//! - 🎯 **Multiple eviction policies**: FIFO and LRU
-//! - ⏰ **TTL support**: Automatic expiration of cached entries
-//! - 📊 **Limit control**: Set maximum cache size
+//! - 🎯 **Multiple eviction policies**: FIFO, LRU, LFU, ARC, Random, and TLRU
+//! - ⏰ **TLRU with frequency_weight**: Fine-tune recency vs frequency balance (v0.15.0)
+//! - 💾 **Memory-based limits**: Control cache size by memory usage
+//! - ⏱️ **TTL support**: Automatic expiration of cached entries
+//! - 📊 **Limit control**: Set maximum cache size by entry count or memory
 //! - 🔍 **Result caching**: Only caches `Ok` values from `Result` types
 //! - 🌐 **Global cache**: Shared across all tasks and threads
+//! - ⚡ **Zero async overhead**: No `.await` needed for cache operations
+//! - 📈 **Statistics**: Track hit/miss rates via `stats_registry`
+//! - 🎛️ **Conditional caching**: Cache only valid results with `cache_if` predicates
+//! - 🔥 **Smart invalidation**: Tag-based, event-driven, and conditional invalidation
 //!
 //! ## Quick Start
 //!
@@ -90,9 +96,16 @@
 //! ## Macro Parameters
 //!
 //! - `limit`: Maximum number of entries (default: unlimited)
-//! - `policy`: Eviction policy - `"fifo"` or `"lru"` (default: `"fifo"`)
+//! - `policy`: Eviction policy - `"fifo"`, `"lru"`, `"lfu"`, `"arc"`, `"random"`, or `"tlru"` (default: `"fifo"`)
 //! - `ttl`: Time-to-live in seconds (default: none)
+//! - `frequency_weight`: Weight factor for frequency in TLRU policy (default: 1.0)
 //! - `name`: Custom cache identifier (default: function name)
+//! - `max_memory`: Maximum memory usage (e.g., "100MB", default: none)
+//! - `tags`: Tags for group invalidation (default: none)
+//! - `events`: Events that trigger invalidation (default: none)
+//! - `dependencies`: Cache dependencies (default: none)
+//! - `invalidate_on`: Function to check if entry should be invalidated (default: none)
+//! - `cache_if`: Function to determine if result should be cached (default: none)
 //!
 //! ## Performance
 //!

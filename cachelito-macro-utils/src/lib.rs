@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{punctuated::Punctuated, Expr, MetaNameValue, Token};
 
 /// List of supported eviction policies
-static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc", "random"];
+static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc", "random", "tlru"];
 
 pub fn policies_str_with_separator(separator: &str) -> String {
     POLICIES
@@ -30,6 +30,7 @@ pub struct AsyncCacheAttributes {
     pub dependencies: Vec<String>,
     pub invalidate_on: Option<syn::Path>,
     pub cache_if: Option<syn::Path>,
+    pub frequency_weight: TokenStream2,
 }
 
 impl Default for AsyncCacheAttributes {
@@ -45,6 +46,7 @@ impl Default for AsyncCacheAttributes {
             dependencies: Vec::new(),
             invalidate_on: None,
             cache_if: None,
+            frequency_weight: quote! { Option::<f64>::None },
         }
     }
 }
@@ -62,6 +64,7 @@ pub struct SyncCacheAttributes {
     pub dependencies: Vec<String>,
     pub invalidate_on: Option<syn::Path>,
     pub cache_if: Option<syn::Path>,
+    pub frequency_weight: TokenStream2,
 }
 
 impl Default for SyncCacheAttributes {
@@ -78,6 +81,7 @@ impl Default for SyncCacheAttributes {
             dependencies: Vec::new(),
             invalidate_on: None,
             cache_if: None,
+            frequency_weight: quote! { None },
         }
     }
 }
@@ -139,6 +143,50 @@ pub fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
             _ => quote! { compile_error!("Invalid literal for `ttl`: expected integer (seconds)") },
         },
         _ => quote! { compile_error!("Invalid syntax for `ttl`: expected `ttl = <integer>`") },
+    }
+}
+
+/// Parse the `frequency_weight` attribute
+///
+/// Accepts a float value > 0.0. Values of 0.0 or negative are rejected because:
+/// - frequency_weight = 0.0 would cause `0^0` undefined behavior when frequency is 0
+/// - A weight of 0 has no semantic meaning (would make all frequencies equal to 1)
+///
+/// The value is parsed for all policies, but is only used when the TLRU policy is selected.
+///
+/// # Examples
+/// - `frequency_weight = 0.3` → Valid (low weight, emphasizes recency)
+/// - `frequency_weight = 1.0` → Valid (balanced, default behavior)
+/// - `frequency_weight = 1.5` → Valid (high weight, emphasizes frequency)
+/// - `frequency_weight = 0.0` → **Compile error**
+pub fn parse_frequency_weight_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Float(lit_float) => {
+                let val = lit_float
+                    .base10_parse::<f64>()
+                    .expect("frequency_weight must be a float");
+                if val <= 0.0 {
+                    quote! { compile_error!("frequency_weight must be > 0.0 (zero would cause 0^0 undefined behavior and has no semantic meaning)") }
+                } else {
+                    quote! { Some(#val) }
+                }
+            }
+            syn::Lit::Int(lit_int) => {
+                // Allow integer literals
+                let val = lit_int
+                    .base10_parse::<u64>()
+                    .expect("frequency_weight must be a number");
+                let val_f64 = val as f64;
+                quote! { Some(#val_f64) }
+            }
+            _ => {
+                quote! { compile_error!("Invalid literal for `frequency_weight`: expected float") }
+            }
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `frequency_weight`: expected `frequency_weight = <float>`") }
+        }
     }
 }
 
@@ -372,6 +420,7 @@ fn parse_common_attribute(
     dependencies: &mut Vec<String>,
     invalidate_on: &mut Option<syn::Path>,
     cache_if: &mut Option<syn::Path>,
+    frequency_weight: &mut TokenStream2,
 ) -> Result<bool, TokenStream2> {
     if nv.path.is_ident("name") {
         *custom_name = parse_name_attribute(nv);
@@ -393,6 +442,9 @@ fn parse_common_attribute(
         Ok(true)
     } else if nv.path.is_ident("cache_if") {
         *cache_if = Some(parse_cache_if_attribute(nv)?);
+        Ok(true)
+    } else if nv.path.is_ident("frequency_weight") {
+        *frequency_weight = parse_frequency_weight_attribute(nv);
         Ok(true)
     } else {
         Ok(false)
@@ -432,6 +484,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                 &mut attrs.dependencies,
                 &mut attrs.invalidate_on,
                 &mut attrs.cache_if,
+                &mut attrs.frequency_weight,
             )? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
@@ -440,7 +493,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on, cache_if",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on, cache_if, frequency_weight",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -479,6 +532,8 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                         quote! { cachelito_core::EvictionPolicy::ARC }
                     } else if policy_str == "random" {
                         quote! { cachelito_core::EvictionPolicy::Random }
+                    } else if policy_str == "tlru" {
+                        quote! { cachelito_core::EvictionPolicy::TLRU }
                     } else {
                         let policies = policies_str_with_separator(", ");
                         let err_msg = format!("Invalid policy: expected one of {}", policies);
@@ -515,6 +570,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                 &mut attrs.dependencies,
                 &mut attrs.invalidate_on,
                 &mut attrs.cache_if,
+                &mut attrs.frequency_weight,
             )? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
@@ -523,7 +579,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on, cache_if",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on, cache_if, frequency_weight",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -543,10 +599,16 @@ mod tests {
     #[test]
     fn test_policies_str_with_separator() {
         let result = policies_str_with_separator(", ");
-        assert_eq!(result, "\"fifo\", \"lru\", \"lfu\", \"arc\", \"random\"");
+        assert_eq!(
+            result,
+            "\"fifo\", \"lru\", \"lfu\", \"arc\", \"random\", \"tlru\""
+        );
 
         let result = policies_str_with_separator("|");
-        assert_eq!(result, "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"|\"random\"");
+        assert_eq!(
+            result,
+            "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"|\"random\"|\"tlru\""
+        );
     }
 
     #[test]
@@ -733,6 +795,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -743,6 +806,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -760,6 +824,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -770,6 +835,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -788,6 +854,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -798,6 +865,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -815,6 +883,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -825,6 +894,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -842,6 +912,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -852,6 +923,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -869,6 +941,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -879,6 +952,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -895,6 +969,7 @@ mod tests {
         let mut dependencies = Vec::new();
         let mut invalidate_on = None;
         let mut cache_if = None;
+        let mut frequency_weight = quote! { None };
 
         let result = parse_common_attribute(
             &nv,
@@ -905,6 +980,7 @@ mod tests {
             &mut dependencies,
             &mut invalidate_on,
             &mut cache_if,
+            &mut frequency_weight,
         );
 
         assert!(result.is_ok());
@@ -991,5 +1067,83 @@ mod tests {
             assert!(err_str.contains("Unknown attribute"));
             assert!(err_str.contains("event"));
         }
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_valid_float() {
+        // Test valid float values
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.3 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (0.3f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 1.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        // Note: TokenStream may omit .0 for whole numbers
+        assert!(result.to_string() == "Some (1f64)" || result.to_string() == "Some (1.0f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 1.5 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (1.5f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 2.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert!(result.to_string() == "Some (2f64)" || result.to_string() == "Some (2.0f64)");
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_valid_int() {
+        // Test that integer literals are accepted and converted to float
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 1 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (1f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 2 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (2f64)");
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_rejects_zero() {
+        // Test that 0.0 is rejected (would cause 0^0 undefined behavior)
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        let result_str = result.to_string();
+        assert!(result_str.contains("compile_error"));
+        assert!(result_str.contains("must be > 0.0"));
+        assert!(result_str.contains("0^0"));
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_rejects_negative() {
+        // Test that negative values are rejected
+        let nv: MetaNameValue = parse_quote! { frequency_weight = -0.5 };
+        let result = parse_frequency_weight_attribute(&nv);
+        let result_str = result.to_string();
+        assert!(result_str.contains("compile_error"));
+        assert!(result_str.contains("must be > 0.0"));
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_very_small_positive() {
+        // Test that very small positive values are accepted
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.01 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (0.01f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.001 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (0.001f64)");
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_large_values() {
+        // Test that large values are accepted
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 10.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert!(result.to_string() == "Some (10f64)" || result.to_string() == "Some (10.0f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 100.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert!(result.to_string() == "Some (100f64)" || result.to_string() == "Some (100.0f64)");
     }
 }

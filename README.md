@@ -8,6 +8,52 @@
 
 A lightweight, thread-safe caching library for Rust that provides automatic memoization through procedural macros.
 
+## 📑 Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+  - [For Synchronous Functions](#for-synchronous-functions)
+  - [For Async Functions](#for-async-functions)
+- [Which Version Should I Use?](#which-version-should-i-use)
+- [Usage](#usage)
+  - [Basic Function Caching](#basic-function-caching)
+  - [Caching with Methods](#caching-with-methods)
+  - [Custom Cache Keys](#custom-cache-keys)
+  - [Caching Result Types](#caching-result-types)
+  - [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies)
+    - [LRU (Least Recently Used)](#lru-least-recently-used)
+    - [FIFO (First In, First Out)](#fifo-first-in-first-out)
+    - [LFU (Least Frequently Used)](#lfu-least-frequently-used)
+    - [ARC (Adaptive Replacement Cache)](#arc-adaptive-replacement-cache)
+    - [Random Replacement](#random-replacement)
+    - [TLRU (Time-aware Least Recently Used)](#tlru-time-aware-least-recently-used)
+    - [TLRU with Custom Frequency Weight](#tlru-with-custom-frequency-weight)
+  - [Time-To-Live (TTL) Expiration](#time-to-live-ttl-expiration)
+  - [Global Scope Cache](#global-scope-cache)
+  - [Thread-Local Caching](#thread-local-caching)
+- [Synchronization with parking_lot](#synchronization-with-parking_lot)
+- [How It Works](#how-it-works)
+- [Async/Await Support](#asyncawait-support)
+- [Examples](#examples)
+- [Performance Considerations](#performance-considerations)
+- [Cache Statistics](#cache-statistics)
+  - [Enabling Statistics](#enabling-statistics)
+  - [Accessing Statistics](#accessing-statistics)
+  - [Custom Cache Names](#custom-cache-names)
+- [Smart Cache Invalidation](#smart-cache-invalidation)
+  - [Tag-Based Invalidation](#tag-based-invalidation)
+  - [Event-Driven Invalidation](#event-driven-invalidation)
+  - [Dependency-Based Invalidation](#dependency-based-invalidation)
+  - [Conditional Invalidation](#conditional-invalidation)
+  - [Conditional Caching with cache_if](#conditional-caching-with-cache_if-v0140)
+- [Limitations](#limitations)
+- [Documentation](#documentation)
+- [Changelog](#changelog)
+  - [Latest Release: Version 0.15.0](#latest-release-version-0150)
+  - [Previous Releases](#previous-release-version-0140)
+- [License](#license)
+- [Contributing](#contributing)
+
 ## Features
 
 - 🚀 **Easy to use**: Simply add `#[cache]` attribute to any function or method
@@ -17,17 +63,18 @@ A lightweight, thread-safe caching library for Rust that provides automatic memo
 - 🎯 **Flexible key generation**: Supports custom cache key implementations
 - 🎨 **Result-aware**: Intelligently caches only successful `Result::Ok` values
 - 🗑️ **Cache entry limits**: Control growth with numeric `limit`
-- 💾 **Memory-based limits (v0.10.0)**: New `max_memory = "100MB"` attribute for memory-aware eviction
-- 📊 **Eviction policies**: FIFO, LRU (default), LFU *(v0.8.0)*, ARC *(v0.9.0)*, Random *(v0.11.0)*
+- 💾 **Memory-based limits**: New `max_memory = "100MB"` attribute for memory-aware eviction
+- 📊 **Eviction policies**: FIFO, LRU (default), LFU, ARC, Random, TLRU *(v0.15.0)*
 - 🎯 **ARC (Adaptive Replacement Cache)**: Self-tuning policy combining recency & frequency
+- ⏰ **TLRU (Time-aware LRU)**: Combines recency, frequency, and time-based expiration for optimal eviction
 - 🎲 **Random Replacement**: O(1) eviction for baseline benchmarks and random access patterns
 - ⏱️ **TTL support**: Time-to-live expiration for automatic cache invalidation
-- 🔥 **Smart Invalidation (v0.12.0)**: Tag-based, event-driven, and dependency-based cache invalidation
+- 🔥 **Smart Invalidation**: Tag-based, event-driven, and dependency-based cache invalidation
 - 🎯 **Conditional Invalidation (v0.13.0)**: Runtime invalidation with custom check functions and named invalidation checks
 - 🎛️ **Conditional Caching (v0.14.0)**: Control when results are cached with `cache_if` predicate functions
 - 📏 **MemoryEstimator trait**: Used internally for memory-based limits (customizable for user types)
-- 📈 **Statistics (v0.6.0+)**: Track hit/miss rates via `stats` feature & `stats_registry`
-- 🔮 **Async/await support (v0.7.0)**: Dedicated `cachelito-async` crate (lock-free DashMap)
+- 📈 **Statistics**: Track hit/miss rates via `stats` feature & `stats_registry`
+- 🔮 **Async/await support**: Dedicated `cachelito-async` crate (lock-free DashMap)
 - ✅ **Type-safe**: Full compile-time type checking
 - 📦 **Minimal dependencies**: Uses `parking_lot` for optimal performance
 
@@ -39,17 +86,17 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cachelito = "0.14.0"
+cachelito = "0.15.0"
 # Or with statistics:
-# cachelito = { version = "0.14.0", features = ["stats"] }
+# cachelito = { version = "0.15.0", features = ["stats"] }
 ```
 
 ### For Async Functions
 
-> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.14.x).
+> **Note:** `cachelito-async` follows the same versioning as `cachelito` core (0.15.x).
 ```toml
 [dependencies]
-cachelito-async = "0.14.0"
+cachelito-async = "0.15.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -63,12 +110,26 @@ tokio = { version = "1", features = ["full"] }
 | **Global shared cache** | `cachelito` / `cachelito-async`  | `#[cache]` / `#[cache_async]`   | Cross-thread/task sharing                     |
 | **High concurrency**    | `cachelito-async`                | `#[cache_async]`                | Many concurrent async tasks                   |
 | **Statistics tracking** | `cachelito` (v0.6.0+)            | `#[cache]` + feature `stats`    | Performance monitoring                        |
-| **Memory limits**       | `cachelito` (v0.10.0)            | `#[cache(max_memory = "64MB")]` | Large objects / controlled memory usage       |
+| **Memory limits**       | `cachelito` (v0.10.0+)           | `#[cache(max_memory = "64MB")]` | Large objects / controlled memory usage       |
+| **Smart invalidation**  | `cachelito` (v0.12.0+)           | `#[cache(tags = ["user"])]`     | Tag/event-based cache clearing                |
+| **Conditional caching** | `cachelito` (v0.14.0+)           | `#[cache(cache_if = predicate)]`| Cache only valid results                      |
+| **Time-sensitive data** | `cachelito` (v0.15.0+)           | `#[cache(policy = "tlru")]`     | Data with expiration (weather, prices, etc.)  |
+
+**Eviction Policies (all versions):**
+- `policy = "fifo"` - First In, First Out (simple, O(1))
+- `policy = "lru"` - Least Recently Used (default, good for most cases)
+- `policy = "lfu"` - Least Frequently Used (v0.8.0+, popular items priority)
+- `policy = "arc"` - Adaptive Replacement Cache (v0.9.0+, self-tuning)
+- `policy = "random"` - Random Replacement (v0.11.0+, minimal overhead)
+- `policy = "tlru"` - Time-aware LRU (v0.15.0+, combines time, frequency & recency, customizable with `frequency_weight`)
 
 **Quick Decision:**
 - 🔄 Synchronous code? → Use `cachelito`
 - ⚡ Async/await code? → Use `cachelito-async`
-- 💾 Need memory-based eviction? → Use `cachelito` v0.10.0+
+- 💾 Need memory-based eviction? → Use v0.10.0+
+- 🏷️ Need tag-based invalidation? → Use v0.12.0+
+- 🎯 Cache only valid results? → Use v0.14.0+
+- ⏰ Time-sensitive data with TTL? → Use v0.15.0+ with `policy = "tlru"`
 
 ## Usage
 
@@ -265,6 +326,96 @@ fn expensive_computation(x: i32) -> i32 {
 }
 ```
 
+#### TLRU (Time-aware Least Recently Used)
+
+```rust
+use cachelito::cache;
+
+// Cache with TLRU policy and TTL
+#[cache(limit = 100, policy = "tlru", ttl = 300)]
+fn fetch_weather_data(city: String) -> WeatherData {
+    // Combines recency, frequency, and age factors
+    // Entries approaching TTL expiration are prioritized for eviction
+    // Score: frequency × position_weight × age_factor
+    fetch_from_api(city)
+}
+
+// TLRU without TTL behaves like ARC
+#[cache(limit = 100, policy = "tlru")]
+fn compute_expensive(n: u64) -> u64 {
+    // Without TTL, age_factor = 1.0 (behaves like ARC)
+    // Considers both frequency and recency
+    n * n
+}
+```
+
+#### TLRU with Custom Frequency Weight
+
+The `frequency_weight` parameter allows fine-tuning the balance between **recency** and **frequency** in TLRU eviction decisions:
+
+```rust
+use cachelito::cache;
+
+// Low frequency_weight (< 1.0): Emphasize recency and age
+// Good for time-sensitive data where freshness matters more than popularity
+#[cache(
+    policy = "tlru",
+    limit = 100,
+    ttl = 300,
+    frequency_weight = 0.3
+)]
+fn fetch_realtime_stock_prices(symbol: String) -> StockPrice {
+    // Recent entries are prioritized over frequently accessed ones
+    // Fresh data is more important than popular data
+    // Use case: Real-time data, news feeds, live scores
+    api_client.get_current_price(symbol)
+}
+
+// High frequency_weight (> 1.0): Emphasize frequency
+// Good for popular content that should stay cached despite age
+#[cache(
+    policy = "tlru",
+    limit = 100,
+    ttl = 300,
+    frequency_weight = 1.5
+)]
+fn fetch_popular_articles(article_id: u64) -> Article {
+    // Frequently accessed entries remain cached longer
+    // Popular content is protected from eviction
+    // Use case: Popular posts, trending items, hot products
+    database.fetch_article(article_id)
+}
+
+// Default behavior (balanced): Omit frequency_weight
+#[cache(policy = "tlru", limit = 100, ttl = 300)]
+fn fetch_user_profile(user_id: u64) -> Profile {
+    // Balanced approach between recency and frequency
+    // Neither recency nor frequency dominates
+    // Use case: General-purpose caching
+    database.get_profile(user_id)
+}
+```
+
+**Frequency Weight Guidelines:**
+
+| Weight Value | Behavior | Best For | Example Use Cases |
+|--------------|----------|----------|-------------------|
+| **< 1.0** (e.g., 0.3) | Emphasize **recency & age** | Time-sensitive data | Real-time prices, news feeds, weather |
+| **1.0** (default/omit) | **Balanced** approach | General-purpose | User profiles, generic queries |
+| **> 1.0** (e.g., 1.5) | Emphasize **frequency** | Popular content | Trending items, hot products, viral posts |
+
+**Formula:** `eviction_score = frequency^weight × position × age_factor`
+
+- **Values < 1.0**: Reduce frequency impact → recent entries preferred
+- **Values > 1.0**: Amplify frequency impact → popular entries protected
+- **Only for TLRU**: Ignored by other policies
+
+**When to Use:**
+
+- ✅ **Use low weight (0.3)** for data where **freshness > popularity** (e.g., stock prices, live sports)
+- ✅ **Use high weight (1.5-2.0)** for data where **popularity > freshness** (e.g., trending content)
+- ✅ **Omit (default)** for balanced behavior when both matter equally
+
 **Policy Comparison:**
 
 | Policy | Evicts                            | Best For                                  | Performance     |
@@ -274,6 +425,7 @@ fn expensive_computation(x: i32) -> i32 {
 | **LFU** | Least frequently accessed        | Frequency patterns (popular items matter) | O(n) on evict   |
 | **ARC** | Adaptive (recency + frequency)   | Mixed workloads, self-tuning              | O(n) on evict/hit |
 | **Random** | Randomly selected              | Baseline benchmarks, random access        | O(1)            |
+| **TLRU** | Low score (freq^weight × recency × age) | Time-sensitive data, customizable with `frequency_weight` | O(n) on evict/hit |
 
 **Choosing the Right Policy:**
 
@@ -282,6 +434,7 @@ fn expensive_computation(x: i32) -> i32 {
 - **LFU**: Best when certain items are accessed much more frequently (like "hot" products in e-commerce).
 - **ARC**: Best for workloads with mixed patterns - automatically adapts between recency and frequency.
 - **Random**: Best for baseline benchmarks, truly random access patterns, or when minimizing overhead is critical.
+- **TLRU**: Best for time-sensitive data with TTL. Prioritizes fresh, frequently-accessed entries. Use `frequency_weight` to fine-tune recency vs frequency balance. Without TTL, behaves like ARC.
 
 ### Time-To-Live (TTL) Expiration
 
@@ -761,10 +914,14 @@ cargo run --example ttl
 # Global scope cache (shared across threads)
 cargo run --example global_scope
 
+# TLRU (Time-aware LRU) eviction policy with frequency_weight examples
+cargo run --example tlru
+
 # Async examples (requires cachelito-async)
 cargo run --example async_basic --manifest-path cachelito-async/Cargo.toml
 cargo run --example async_lru --manifest-path cachelito-async/Cargo.toml
 cargo run --example async_concurrent --manifest-path cachelito-async/Cargo.toml
+cargo run --example async_tlru --manifest-path cachelito-async/Cargo.toml  # Includes frequency_weight demos
 ```
 
 ### Example Output (LRU Policy):
@@ -1562,7 +1719,61 @@ cargo doc --no-deps --open
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-### Latest Release: Version 0.14.0
+### Latest Release: Version 0.15.0
+
+**⏰ TLRU (Time-aware Least Recently Used) Policy!**
+
+Version 0.15.0 introduces the TLRU eviction policy, combining recency, frequency, and time-based factors for intelligent cache management:
+
+**New Features:**
+
+- ⏰ **TLRU Policy** - Time-aware LRU that considers age, frequency, and recency
+- 🎯 **Smart Eviction** - Prioritizes entries approaching TTL expiration
+- 📊 **Triple Scoring** - Combines `frequency × position_weight × age_factor`
+- 🎚️ **Frequency Weight** - NEW: `frequency_weight` parameter to fine-tune recency vs frequency balance
+- 🔄 **Automatic Aging** - Entries close to TTL get lower priority
+- 💡 **Backward Compatible** - Without TTL, behaves like ARC
+- ⚡ **Optimal for Time-Sensitive Data** - Perfect for caches with expiring content
+
+**Quick Start:**
+
+```rust
+use cachelito::cache;
+
+// Time-aware caching with TLRU
+#[cache(policy = "tlru", limit = 100, ttl = 300)]
+fn fetch_weather(city: String) -> WeatherData {
+    // Entries approaching 5-minute TTL are prioritized for eviction
+    fetch_from_api(city)
+}
+
+// TLRU without TTL behaves like ARC
+#[cache(policy = "tlru", limit = 50)]
+fn compute_expensive(n: u64) -> u64 {
+    // Considers both frequency and recency
+    expensive_calculation(n)
+}
+
+// NEW: Fine-tune with frequency_weight
+#[cache(policy = "tlru", limit = 100, ttl = 300, frequency_weight = 1.5)]
+fn fetch_popular_content(id: u64) -> Content {
+    // frequency_weight > 1.0 emphasizes frequency over recency
+    // Popular entries stay cached longer
+    database.fetch(id)
+}
+```
+
+**How TLRU Works:**
+
+- **Score Formula**: `frequency^weight × position_weight × age_factor`
+- **Frequency Weight**: Control balance between recency and frequency (default = 1.0)
+  - `< 1.0`: Emphasize recency (good for time-sensitive data)
+  - `> 1.0`: Emphasize frequency (good for popular content)
+- **Age Factor**: Decreases as entry approaches TTL expiration (0.0 = expired, 1.0 = fresh)
+- **Eviction**: Lowest score = first to evict
+- **Best For**: Time-sensitive data, mixed access patterns, expiring content
+
+### Previous Release: Version 0.14.0
 
 **🎯 Conditional Caching with `cache_if`!**
 
@@ -1755,43 +1966,6 @@ fn random_with_memory(key: String) -> Vec<u8> {
 - Reducing lock contention vs LRU/LFU
 
 See the [Cache Limits and Eviction Policies](#cache-limits-and-eviction-policies) section for complete details.
-
----
-
-### Previous Release: Version 0.10.0
-
-**💾 Memory-Based Limits!**
-
-Version 0.10.0 introduces memory-aware caching controls:
-
-**New Features:**
-
-- 💾 **Memory-Based Limits** - Control cache size by memory footprint
-- 📏 **`max_memory` Attribute** - Specify memory limit (e.g. `max_memory = "100MB"`)
-- 🔄 **Combined Limits** - Use both entry count and memory limits together
-- ⚙️ **Custom Memory Estimation** - Implement `MemoryEstimator` for precise control
-- 📊 **Improved Statistics** - Monitor memory usage and hit/miss rates together
-
-**Breaking Changes:**
-
-- **Default policy remains LRU** - No change, but now with memory limits!
-- **MemoryEstimator usage** - Custom types with heap allocations must implement `MemoryEstimator`
-
-**Quick Start:**
-
-```rust
-// Memory limit - eviction when total size exceeds 100MB
-#[cache(max_memory = "100MB")]
-fn large_object(id: u32) -> Vec<u8> {
-    vec![0u8; 512 * 1024] // 512KB object
-}
-
-// Combined limits - max 500 entries OR 128MB
-#[cache(limit = 500, max_memory = "128MB")]
-fn compute(x: u64) -> u64 { x * x }
-```
-
-See the Memory-Based Limits section above for complete details.
 
 ---
 

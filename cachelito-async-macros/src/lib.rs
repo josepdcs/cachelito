@@ -40,6 +40,7 @@ fn generate_cache_logic_block(
     max_memory_expr: &TokenStream2,
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
+    frequency_weight_expr: &TokenStream2,
     invalidation_check: &TokenStream2,
     block: &syn::Block,
     cache_insert: &TokenStream2,
@@ -56,6 +57,7 @@ fn generate_cache_logic_block(
             #max_memory_expr,
             #policy_expr,
             #ttl_expr,
+            #frequency_weight_expr,
             &*#stats_ident,
         );
 
@@ -98,8 +100,17 @@ fn generate_cache_logic_block(
 ///   - `"lfu"` - Least Frequently Used
 ///   - `"arc"` - Adaptive Replacement Cache
 ///   - `"random"` - Random Replacement
+///   - `"tlru"` - Time-aware Least Recently Used (combines recency, frequency, and age)
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
+/// - `frequency_weight` (optional): Weight factor for frequency in TLRU policy.
+///   Controls the balance between recency and frequency in eviction decisions.
+///   - Values < 1.0: Emphasize recency and age over frequency (good for time-sensitive data)
+///   - Value = 1.0 (or omitted): Balanced approach (default TLRU behavior)
+///   - Values > 1.0: Emphasize frequency over recency (good for popular content)
+///   - Formula: `score = frequency^weight × position × age_factor`
+///   - Only applicable when `policy = "tlru"`. Ignored for other policies.
+///   - Example: `frequency_weight = 1.5` makes frequently accessed entries more resistant to eviction
 /// - `name` (optional): Custom identifier for the cache. Default: the function name.
 /// - `max_memory` (optional): Maximum memory usage (e.g., "100MB", "1GB"). Requires
 ///   the return type to implement `MemoryEstimator`.
@@ -158,6 +169,45 @@ fn generate_cache_logic_block(
 ///
 /// // Or invalidate by event
 /// invalidate_by_event("user_updated");
+/// ```
+///
+/// ## TLRU with Custom Frequency Weight
+///
+/// ```ignore
+/// use cachelito_async::cache_async;
+///
+/// // Low frequency_weight (0.3) - emphasizes recency and age
+/// // Good for time-sensitive data where freshness matters more than popularity
+/// #[cache_async(
+///     policy = "tlru",
+///     limit = 100,
+///     ttl = 300,
+///     frequency_weight = 0.3
+/// )]
+/// async fn fetch_realtime_data(source: String) -> Data {
+///     // Fetch time-sensitive data
+///     api_client.fetch(source).await
+/// }
+///
+/// // High frequency_weight (1.5) - emphasizes access frequency
+/// // Good for popular content that should stay cached despite age
+/// #[cache_async(
+///     policy = "tlru",
+///     limit = 100,
+///     ttl = 300,
+///     frequency_weight = 1.5
+/// )]
+/// async fn fetch_popular_content(id: u64) -> Content {
+///     // Frequently accessed entries remain cached longer
+///     database.fetch_content(id).await
+/// }
+///
+/// // Default behavior (balanced) - omit frequency_weight
+/// #[cache_async(policy = "tlru", limit = 100, ttl = 300)]
+/// async fn fetch_balanced(key: String) -> Value {
+///     // Balanced approach between recency and frequency
+///     expensive_operation(key).await
+/// }
 /// ```
 ///
 /// # Performance Considerations
@@ -236,6 +286,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     let policy_str = &attrs.policy;
     let ttl_expr = &attrs.ttl;
     let max_memory_expr = &attrs.max_memory;
+    let frequency_weight_expr = &attrs.frequency_weight;
 
     // Convert policy string to EvictionPolicy
     let policy_expr = quote! {
@@ -293,6 +344,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             max_memory_expr,
             &policy_expr,
             ttl_expr,
+            frequency_weight_expr,
             &invalidation_check,
             block,
             &cache_insert,
@@ -437,6 +489,7 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
+            &quote! { Option::<f64>::None },
             &invalidation_check,
             &block,
             &cache_insert,
@@ -481,6 +534,7 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
+            &quote! { Option::<f64>::None },
             &invalidation_check,
             &block,
             &cache_insert,
@@ -547,6 +601,7 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
+            &quote! { Option::<f64>::None },
             &custom_invalidation,
             &block,
             &cache_insert,
@@ -585,6 +640,7 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
+            &quote! { Option::<f64>::None },
             &invalidation_check,
             &block,
             &conditional_insert,
@@ -660,6 +716,7 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
+            &quote! { Option::<f64>::None },
             &invalidation_check,
             &block,
             &cache_insert,
@@ -696,6 +753,7 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
+            &quote! { Option::<f64>::None },
             &invalidation_check,
             &block,
             &cache_insert,
