@@ -148,7 +148,7 @@ pub struct ThreadLocalCache<R: 'static> {
     pub policy: EvictionPolicy,
     /// Optional TTL (in seconds) for cache entries
     pub ttl: Option<u64>,
-    /// Frequency weight for TLRU policy (0.0 to 1.0). Only used when policy is TLRU.
+    /// Frequency weight for TLRU policy (non-negative, >= 0.0). Only used when policy is TLRU.
     pub frequency_weight: Option<f64>,
     /// Cache statistics (when stats feature is enabled)
     #[cfg(feature = "stats")]
