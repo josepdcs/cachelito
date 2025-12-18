@@ -568,7 +568,8 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     /// TLRU (Time-aware Least Recently Used) combines recency, frequency, and age factors
     /// to determine which entry should be evicted.
     ///
-    /// Score formula: `frequency × position_weight × age_factor`
+    /// Score formula: `frequency^weight × position_weight × age_factor` (when `frequency_weight` is set;
+    /// otherwise `frequency × position_weight × age_factor`)
     ///
     /// Where:
     /// - `frequency`: Access count for the entry
