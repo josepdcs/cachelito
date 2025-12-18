@@ -728,7 +728,6 @@ mod tests {
         assert!(result_str.contains("(async"));
         assert!(result_str.contains(") . await"));
         assert!(result_str.contains("tokio :: time :: sleep"));
-        assert!(result_str.contains("tokio :: time :: sleep"));
     }
 
     #[test]
