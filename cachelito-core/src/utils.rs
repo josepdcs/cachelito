@@ -493,15 +493,11 @@ where
             };
 
             // Apply frequency weight if provided
-            // frequency_weight allows balancing between frequency and other factors
-            let frequency_component = if let Some(weight) = frequency_weight {
-                if frequency > 0.0 {
-                    frequency.powf(weight)
-                } else {
-                    0.0
-                }
-            } else {
-                frequency
+            // frequency_weight allows balancing between frequency and other factors.
+            // We use a linear scaling to keep the relationship intuitive and monotonic.
+            let frequency_component = match frequency_weight {
+                Some(weight) => frequency * weight,
+                None => frequency,
             };
 
             // Score combines frequency, recency, and age
