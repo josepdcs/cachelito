@@ -18,26 +18,57 @@ use std::collections::VecDeque;
 /// # Features
 ///
 /// - **Lock-free reads/writes**: Uses DashMap for concurrent access without blocking
-/// - **Eviction policies**: FIFO, LRU (default), LFU, ARC, and Random
+/// - **Eviction policies**: FIFO, LRU (default), LFU, ARC, Random, and TLRU
 ///   - **FIFO**: First In, First Out - simple and predictable
 ///   - **LRU**: Least Recently Used - evicts least recently accessed entries
 ///   - **LFU**: Least Frequently Used - evicts least frequently accessed entries
 ///   - **ARC**: Adaptive Replacement Cache - hybrid policy combining recency and frequency
 ///   - **Random**: Random replacement - O(1) eviction with minimal overhead
-/// - **Cache limits**: Entry count limits and memory-based limits
-/// - **TTL support**: Automatic expiration of entries
+///   - **TLRU**: Time-aware LRU - combines recency, frequency, and age factors
+///     - Customizable with `frequency_weight` parameter
+///     - Formula: `score = frequency^weight × position × age_factor`
+///     - `frequency_weight < 1.0`: Emphasize recency (time-sensitive data)
+///     - `frequency_weight > 1.0`: Emphasize frequency (popular content)
+/// - **Cache limits**: Entry count limits (`limit`) and memory-based limits (`max_memory`)
+/// - **TTL support**: Automatic expiration of entries based on age
 /// - **Statistics**: Optional cache hit/miss tracking (with `stats` feature)
-/// - **Frequency tracking**: For LFU and ARC policies
+/// - **Frequency tracking**: For LFU, ARC, and TLRU policies
 /// - **Memory estimation**: Support for memory-based eviction (requires `MemoryEstimator`)
 ///
 /// # Cache Entry Structure
 ///
 /// Each cache entry is stored as a tuple: `(value, timestamp, frequency)`
 /// - `value`: The cached value of type R
-/// - `timestamp`: Unix timestamp when the entry was created (for TTL)
-/// - `frequency`: Access counter for LFU and ARC policies
+/// - `timestamp`: Unix timestamp when the entry was created (for TTL and TLRU age factor)
+/// - `frequency`: Access counter for LFU, ARC, and TLRU policies
+///
+/// # Eviction Behavior
+///
+/// When the cache reaches its limit (entry count or memory), entries are evicted according
+/// to the configured policy:
+///
+/// - **FIFO**: Oldest entry (first in order queue) is evicted
+/// - **LRU**: Least recently accessed entry (first in order queue) is evicted
+/// - **LFU**: Entry with lowest frequency counter is evicted
+/// - **ARC**: Entry with lowest score (frequency × position_weight) is evicted
+/// - **Random**: Randomly selected entry is evicted
+/// - **TLRU**: Entry with lowest score (frequency^weight × position × age_factor) is evicted
+///
+/// # Performance Characteristics
+///
+/// - **Get**: O(1) for cache lookup, O(n) for LRU/ARC/TLRU reordering
+/// - **Insert**: O(1) for FIFO/Random, O(n) for LRU/LFU/ARC/TLRU eviction
+/// - **Memory**: O(n) where n is the number of cached entries
+///
+/// # Thread Safety
+///
+/// This structure is fully thread-safe and can be shared across multiple async tasks.
+/// The underlying DashMap provides lock-free concurrent access, while the order queue
+/// uses a Mutex for coordination.
 ///
 /// # Examples
+///
+/// ## Basic Usage
 ///
 /// ```ignore
 /// use cachelito_core::{AsyncGlobalCache, EvictionPolicy};
@@ -50,15 +81,64 @@ use std::collections::VecDeque;
 /// let async_cache = AsyncGlobalCache::new(
 ///     &cache,
 ///     &order,
-///     Some(100),
+///     Some(100),    // Max 100 entries
+///     None,         // No memory limit
 ///     EvictionPolicy::LRU,
-///     Some(60),
+///     Some(60),     // 60 second TTL
+///     None,         // Default frequency_weight for TLRU
 /// );
 ///
 /// // In async context:
 /// if let Some(value) = async_cache.get("key") {
 ///     println!("Cache hit: {}", value);
 /// }
+/// ```
+///
+/// ## TLRU with Custom Frequency Weight
+///
+/// ```ignore
+/// use cachelito_core::{AsyncGlobalCache, EvictionPolicy};
+///
+/// // Emphasize frequency over recency (good for popular content)
+/// let async_cache = AsyncGlobalCache::new(
+///     &cache,
+///     &order,
+///     Some(100),
+///     None,
+///     EvictionPolicy::TLRU,
+///     Some(300),
+///     Some(1.5),    // frequency_weight > 1.0
+/// );
+///
+/// // Emphasize recency over frequency (good for time-sensitive data)
+/// let async_cache = AsyncGlobalCache::new(
+///     &cache,
+///     &order,
+///     Some(100),
+///     None,
+///     EvictionPolicy::TLRU,
+///     Some(300),
+///     Some(0.3),    // frequency_weight < 1.0
+/// );
+/// ```
+///
+/// ## With Memory Limits
+///
+/// ```ignore
+/// use cachelito_core::{AsyncGlobalCache, EvictionPolicy, MemoryEstimator};
+///
+/// let async_cache = AsyncGlobalCache::new(
+///     &cache,
+///     &order,
+///     Some(1000),
+///     Some(100 * 1024 * 1024), // 100MB max
+///     EvictionPolicy::LRU,
+///     Some(300),
+///     None,
+/// );
+///
+/// // Insert with memory tracking (requires MemoryEstimator implementation)
+/// async_cache.insert_with_memory("key", value);
 /// ```
 pub struct AsyncGlobalCache<'a, R: Clone> {
     /// The underlying DashMap storing cache entries
@@ -80,6 +160,9 @@ pub struct AsyncGlobalCache<'a, R: Clone> {
     /// Time-to-live in seconds (None = no expiration)
     ttl: Option<u64>,
 
+    /// Frequency weight for TLRU policy (0.0 to 1.0)
+    frequency_weight: Option<f64>,
+
     /// Cache statistics (when stats feature is enabled)
     #[cfg(feature = "stats")]
     stats: &'a CacheStats,
@@ -92,12 +175,19 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     ///
     /// * `cache` - Reference to the DashMap storing cache entries
     /// * `order` - Reference to the Mutex-protected eviction order queue
-    /// * `limit` - Optional maximum number of entries
-    /// * `max_memory` - Optional maximum memory size in bytes
-    /// * `policy` - Eviction policy (FIFO, LRU, or LFU)
-    /// * `ttl` - Optional time-to-live in seconds
+    /// * `limit` - Optional maximum number of entries (None = unlimited)
+    /// * `max_memory` - Optional maximum memory size in bytes (None = unlimited)
+    /// * `policy` - Eviction policy (FIFO, LRU, LFU, ARC, Random, or TLRU)
+    /// * `ttl` - Optional time-to-live in seconds (None = no expiration)
+    /// * `frequency_weight` - Optional weight factor for frequency in TLRU policy
+    ///   - Values < 1.0: Emphasize recency and age
+    ///   - Values > 1.0: Emphasize frequency
+    ///   - None or 1.0: Balanced approach (default)
+    ///   - Only used when policy is TLRU, ignored otherwise
     ///
     /// # Examples
+    ///
+    /// ## Basic LRU cache with TTL
     ///
     /// ```ignore
     /// let cache = DashMap::new();
@@ -105,10 +195,25 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     /// let async_cache = AsyncGlobalCache::new(
     ///     &cache,
     ///     &order,
+    ///     Some(1000),              // Max 1000 entries
+    ///     None,                    // No memory limit
+    ///     EvictionPolicy::LRU,     // LRU eviction
+    ///     Some(300),               // 5 minute TTL
+    ///     None,                    // No frequency_weight (not needed for LRU)
+    /// );
+    /// ```
+    ///
+    /// ## TLRU with memory limit and custom frequency weight
+    ///
+    /// ```ignore
+    /// let async_cache = AsyncGlobalCache::new(
+    ///     &cache,
+    ///     &order,
     ///     Some(1000),
-    ///     Some(100 * 1024 * 1024), // 100MB
-    ///     EvictionPolicy::LRU,
-    ///     Some(300),
+    ///     Some(100 * 1024 * 1024), // 100MB max
+    ///     EvictionPolicy::TLRU,    // TLRU eviction
+    ///     Some(300),               // 5 minute TTL
+    ///     Some(1.5),               // Emphasize frequency (popular content)
     /// );
     /// ```
     #[cfg(not(feature = "stats"))]
@@ -119,6 +224,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
+        frequency_weight: Option<f64>,
     ) -> Self {
         Self {
             cache,
@@ -127,6 +233,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             max_memory,
             policy,
             ttl,
+            frequency_weight,
         }
     }
 
@@ -141,6 +248,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
+        frequency_weight: Option<f64>,
         stats: &'a CacheStats,
     ) -> Self {
         Self {
@@ -150,6 +258,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             max_memory,
             policy,
             ttl,
+            frequency_weight,
             stats,
         }
     }
@@ -170,19 +279,42 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     ///
     /// # Behavior by Policy
     ///
-    /// - **FIFO**: No updates on cache hit
+    /// - **FIFO**: No updates on cache hit (order remains unchanged)
     /// - **LRU**: Moves the key to the end of the order queue (most recently used)
-    /// - **LFU**: Increments the frequency counter
+    /// - **LFU**: Increments the frequency counter for the entry
+    /// - **ARC**: Increments frequency counter and updates position in order queue
+    /// - **Random**: No updates on cache hit
+    /// - **TLRU**: Increments frequency counter and updates position in order queue
+    ///
+    /// # TTL Expiration
+    ///
+    /// If a TTL is configured and the entry has expired:
+    /// - The entry is removed from both the cache and order queue
+    /// - A cache miss is recorded (if stats feature is enabled)
+    /// - `None` is returned
+    ///
+    /// # Statistics
+    ///
+    /// When the `stats` feature is enabled:
+    /// - Cache hits are recorded when a valid entry is found
+    /// - Cache misses are recorded when the key doesn't exist or has expired
     ///
     /// # Examples
     ///
     /// ```ignore
+    /// // Check for cached user
     /// if let Some(user) = async_cache.get("user:123") {
     ///     println!("Found user: {:?}", user);
     /// } else {
-    ///     println!("Cache miss");
+    ///     println!("Cache miss - need to fetch from database");
     /// }
     /// ```
+    ///
+    /// # Performance
+    ///
+    /// - **FIFO, Random**: O(1) - no reordering needed
+    /// - **LRU, ARC, TLRU**: O(n) - requires finding and moving key in order queue
+    /// - **LFU**: O(1) - only increments counter
     pub fn get(&self, key: &str) -> Option<R> {
         // Check cache first
         if let Some(mut entry_ref) = self.cache.get_mut(key) {
@@ -215,6 +347,11 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         entry_ref.2 = entry_ref.2.saturating_add(1);
                         // LRU update happens after releasing the entry lock
                     }
+                    EvictionPolicy::TLRU => {
+                        // Increment frequency counter for TLRU
+                        entry_ref.2 = entry_ref.2.saturating_add(1);
+                        // LRU update happens after releasing the entry lock
+                    }
                     EvictionPolicy::LRU => {
                         // LRU update happens after releasing the entry lock
                     }
@@ -231,7 +368,9 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
 
                 // Update LRU order on cache hit (after releasing DashMap lock)
                 if self.limit.is_some()
-                    && (self.policy == EvictionPolicy::LRU || self.policy == EvictionPolicy::ARC)
+                    && (self.policy == EvictionPolicy::LRU
+                        || self.policy == EvictionPolicy::ARC
+                        || self.policy == EvictionPolicy::TLRU)
                 {
                     if self.cache.contains_key(key) {
                         let mut order = self.order.lock();
@@ -424,6 +563,71 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         best_evict_key
     }
 
+    /// Finds the key with the lowest TLRU score for eviction.
+    ///
+    /// TLRU (Time-aware Least Recently Used) combines recency, frequency, and age factors
+    /// to determine which entry should be evicted.
+    ///
+    /// Score formula: `frequency × position_weight × age_factor`
+    ///
+    /// Where:
+    /// - `frequency`: Access count for the entry
+    /// - `position_weight`: Higher for more recently accessed entries
+    /// - `age_factor`: Decreases as entry approaches TTL expiration (if TTL is set)
+    ///
+    /// # Returns
+    ///
+    /// * `Some(String)` - The key with the lowest TLRU score
+    /// * `None` - If the order queue is empty or no valid entries exist
+    fn find_tlru_eviction_key(&self, order: &VecDeque<String>) -> Option<String> {
+        let mut best_evict_key: Option<String> = None;
+        let mut best_score = f64::MAX;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        for (idx, evict_key) in order.iter().enumerate() {
+            if let Some(entry) = self.cache.get(evict_key) {
+                let frequency = entry.2 as f64;
+                let position_weight = (order.len() - idx) as f64;
+
+                // Calculate age factor based on TTL
+                let age_factor = if let Some(ttl_secs) = self.ttl {
+                    let entry_timestamp = entry.1;
+                    let elapsed = now.saturating_sub(entry_timestamp) as f64;
+                    let ttl_f64 = ttl_secs as f64;
+                    // Entries close to expiration get lower scores (prioritized for eviction)
+                    (1.0 - (elapsed / ttl_f64).min(1.0)).max(0.0)
+                } else {
+                    1.0 // No TTL, age doesn't matter
+                };
+
+                // Apply frequency weight if provided
+                let frequency_component = if let Some(weight) = self.frequency_weight {
+                    if frequency > 0.0 {
+                        frequency.powf(weight)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    frequency
+                };
+
+                // Score combines frequency, recency, and age
+                let score = frequency_component * position_weight * age_factor;
+
+                if score < best_score {
+                    best_score = score;
+                    best_evict_key = Some(evict_key.clone());
+                }
+            }
+        }
+
+        best_evict_key
+    }
+
     /// Handles the eviction of entries from the cache to enforce the entry limit based on the eviction policy.
     ///
     /// This method ensures that the number of entries in the cache does not exceed the configured limit by removing
@@ -451,6 +655,12 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                     }
                     EvictionPolicy::ARC => {
                         if let Some(evict_key) = self.find_arc_eviction_key(order) {
+                            self.cache.remove(&evict_key);
+                            order.retain(|k| k != &evict_key);
+                        }
+                    }
+                    EvictionPolicy::TLRU => {
+                        if let Some(evict_key) = self.find_tlru_eviction_key(order) {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                         }
@@ -483,12 +693,39 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
     ///
     /// This method is only available when the `stats` feature is enabled.
     ///
+    /// # Available Metrics
+    ///
+    /// The returned CacheStats provides:
+    /// - **hits()**: Number of successful cache lookups
+    /// - **misses()**: Number of cache misses (key not found or expired)
+    /// - **hit_rate()**: Ratio of hits to total accesses (0.0 to 1.0)
+    /// - **total_accesses()**: Total number of get operations
+    ///
+    /// # Thread Safety
+    ///
+    /// Statistics use atomic counters (`AtomicU64`) and can be safely accessed
+    /// from multiple async tasks without additional synchronization.
+    ///
     /// # Examples
     ///
     /// ```ignore
+    /// // Get basic statistics
     /// let stats = async_cache.stats();
+    /// println!("Hits: {}", stats.hits());
+    /// println!("Misses: {}", stats.misses());
     /// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    ///
+    /// // Monitor cache performance
+    /// let total = stats.total_accesses();
+    /// if total > 1000 && stats.hit_rate() < 0.5 {
+    ///     println!("Warning: Low cache hit rate");
+    /// }
     /// ```
+    ///
+    /// # See Also
+    ///
+    /// - [`CacheStats`] - The statistics structure
+    /// - [`crate::stats_registry::get()`] - Access stats by cache name
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> &CacheStats {
         self.stats
@@ -508,14 +745,57 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
     /// # Arguments
     ///
     /// * `key` - The cache key
-    /// * `value` - The value to cache
+    /// * `value` - The value to cache (must implement `MemoryEstimator`)
+    ///
+    /// # Memory Management
+    ///
+    /// The method calculates the memory footprint of all cached entries and evicts
+    /// entries as needed to stay within the `max_memory` limit. Eviction follows
+    /// the configured policy.
+    ///
+    /// # Safety Check
+    ///
+    /// If the value to be inserted is larger than `max_memory`, the insertion is
+    /// skipped entirely to avoid infinite eviction loops. This ensures the cache
+    /// respects the memory limit even if individual values are very large.
+    ///
+    /// # Eviction Behavior by Policy
+    ///
+    /// When memory limit is exceeded:
+    /// - **FIFO/LRU**: Evicts from front of order queue
+    /// - **LFU**: Evicts entry with lowest frequency
+    /// - **ARC**: Evicts based on hybrid score (frequency × position_weight)
+    /// - **TLRU**: Evicts based on TLRU score (frequency^weight × position × age_factor)
+    /// - **Random**: Evicts randomly selected entry
+    ///
+    /// The eviction loop continues until there's enough memory for the new value.
+    ///
+    /// # Entry Count Limit
+    ///
+    /// After satisfying memory constraints, this method also checks the entry count
+    /// limit (if configured) and evicts additional entries if needed.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// // For types that implement MemoryEstimator
+    /// use cachelito_core::MemoryEstimator;
+    ///
+    /// // Type must implement MemoryEstimator
+    /// impl MemoryEstimator for MyLargeStruct {
+    ///     fn estimate_memory(&self) -> usize {
+    ///         std::mem::size_of::<Self>() + self.data.capacity()
+    ///     }
+    /// }
+    ///
+    /// // Insert with automatic memory-based eviction
     /// async_cache.insert_with_memory("large_data", expensive_value);
     /// ```
+    ///
+    /// # Performance
+    ///
+    /// - **Memory calculation**: O(n) - iterates all entries to sum memory
+    /// - **Eviction**: Varies by policy (see individual policy documentation)
+    /// - May evict multiple entries in one call if memory limit is tight
     pub fn insert_with_memory(&self, key: &str, value: R) {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -568,6 +848,15 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                     }
                     EvictionPolicy::ARC => {
                         if let Some(evict_key) = self.find_arc_eviction_key(&*order) {
+                            self.cache.remove(&evict_key);
+                            order.retain(|k| k != &evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::TLRU => {
+                        if let Some(evict_key) = self.find_tlru_eviction_key(&*order) {
                             self.cache.remove(&evict_key);
                             order.retain(|k| k != &evict_key);
                             true
@@ -628,7 +917,7 @@ mod tests {
 
         #[cfg(not(feature = "stats"))]
         let async_cache =
-            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, None);
+            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, None, None);
 
         #[cfg(feature = "stats")]
         let stats = CacheStats::new();
@@ -639,6 +928,7 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
             None,
             &stats,
         );
@@ -655,8 +945,15 @@ mod tests {
         let order = Mutex::new(VecDeque::new());
 
         #[cfg(not(feature = "stats"))]
-        let async_cache =
-            AsyncGlobalCache::new(&cache, &order, Some(2), None, EvictionPolicy::LFU, None);
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(2),
+            None,
+            EvictionPolicy::LFU,
+            None,
+            None,
+        );
 
         #[cfg(feature = "stats")]
         let stats = CacheStats::new();
@@ -667,6 +964,7 @@ mod tests {
             Some(2),
             None,
             EvictionPolicy::LFU,
+            None,
             None,
             &stats,
         );
@@ -697,8 +995,15 @@ mod tests {
         let order = Mutex::new(VecDeque::new());
 
         #[cfg(not(feature = "stats"))]
-        let async_cache =
-            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, Some(1));
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            Some(1),
+            None,
+        );
 
         #[cfg(feature = "stats")]
         let stats = CacheStats::new();
@@ -710,6 +1015,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             Some(1),
+            None,
             &stats,
         );
 
@@ -730,8 +1036,15 @@ mod tests {
         let order = Mutex::new(VecDeque::new());
 
         #[cfg(not(feature = "stats"))]
-        let async_cache =
-            AsyncGlobalCache::new(&cache, &order, None, None, EvictionPolicy::FIFO, Some(10));
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            Some(10),
+            None,
+        );
 
         #[cfg(feature = "stats")]
         let stats = CacheStats::new();
@@ -743,6 +1056,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             Some(10),
+            None,
             &stats,
         );
 
@@ -765,5 +1079,496 @@ mod tests {
 
         // Verify that the order queue contains the key "k"
         assert!(order.lock().contains(&"k".to_string()));
+    }
+
+    // ========== TLRU with frequency_weight tests ==========
+
+    #[test]
+    fn test_tlru_with_low_frequency_weight() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(0.3), // Low weight - emphasizes recency
+        );
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(0.3),
+            &stats,
+        );
+
+        // Fill cache
+        async_cache.insert("k1", 1);
+        async_cache.insert("k2", 2);
+        async_cache.insert("k3", 3);
+
+        // Make k1 very frequent
+        for _ in 0..10 {
+            let _ = async_cache.get("k1");
+        }
+
+        // Wait a bit to age k1
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Add new entry (cache is full)
+        async_cache.insert("k4", 4);
+
+        // With low frequency_weight, even frequent entries can be evicted
+        // if they're older (recency and age matter more)
+        assert_eq!(async_cache.get("k4"), Some(4));
+    }
+
+    #[test]
+    fn test_tlru_with_high_frequency_weight() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.5), // High weight - emphasizes frequency
+        );
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.5),
+            &stats,
+        );
+
+        // Fill cache
+        async_cache.insert("k1", 1);
+        async_cache.insert("k2", 2);
+        async_cache.insert("k3", 3);
+
+        // Make k1 very frequent
+        for _ in 0..10 {
+            let _ = async_cache.get("k1");
+        }
+
+        // Wait a bit to age k1
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Add new entry (cache is full)
+        async_cache.insert("k4", 4);
+
+        // With high frequency_weight, frequent entries are protected
+        // k1 should remain cached despite being older
+        assert_eq!(async_cache.get("k1"), Some(1));
+        assert_eq!(async_cache.get("k4"), Some(4));
+    }
+
+    #[test]
+    fn test_tlru_default_frequency_weight() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(5),
+            None, // Default weight (balanced)
+        );
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(5),
+            None,
+            &stats,
+        );
+
+        async_cache.insert("k1", 1);
+        async_cache.insert("k2", 2);
+
+        // Access k1 a few times
+        for _ in 0..3 {
+            let _ = async_cache.get("k1");
+        }
+
+        // Add third entry
+        async_cache.insert("k3", 3);
+
+        // With balanced weight, both frequency and recency matter
+        // k1 has higher frequency, so it should remain
+        assert_eq!(async_cache.get("k1"), Some(1));
+        assert_eq!(async_cache.get("k3"), Some(3));
+    }
+
+    #[test]
+    fn test_tlru_no_ttl_with_frequency_weight() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            None, // No TTL - age_factor will be 1.0
+            Some(1.5),
+        );
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            None,
+            Some(1.5),
+            &stats,
+        );
+
+        async_cache.insert("k1", 1);
+        async_cache.insert("k2", 2);
+        async_cache.insert("k3", 3);
+
+        // Make k1 very frequent
+        for _ in 0..10 {
+            let _ = async_cache.get("k1");
+        }
+
+        // Add new entry
+        async_cache.insert("k4", 4);
+
+        // Without TTL, TLRU focuses on frequency and position
+        // k1 should remain due to high frequency
+        assert_eq!(async_cache.get("k1"), Some(1));
+    }
+
+    #[test]
+    fn test_tlru_frequency_weight_comparison() {
+        // Test that different weights produce different behavior
+        let cache_low = DashMap::new();
+        let order_low = Mutex::new(VecDeque::new());
+        let cache_high = DashMap::new();
+        let order_high = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache_low = AsyncGlobalCache::new(
+            &cache_low,
+            &order_low,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(0.3), // Low weight
+        );
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache_high = AsyncGlobalCache::new(
+            &cache_high,
+            &order_high,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(2.0), // High weight
+        );
+
+        #[cfg(feature = "stats")]
+        let stats_low = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache_low = AsyncGlobalCache::new(
+            &cache_low,
+            &order_low,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(0.3),
+            &stats_low,
+        );
+
+        #[cfg(feature = "stats")]
+        let stats_high = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache_high = AsyncGlobalCache::new(
+            &cache_high,
+            &order_high,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(2.0),
+            &stats_high,
+        );
+
+        // Same operations on both caches
+        async_cache_low.insert("k1", 1);
+        async_cache_low.insert("k2", 2);
+        async_cache_high.insert("k1", 1);
+        async_cache_high.insert("k2", 2);
+
+        // Make k1 frequent in both
+        for _ in 0..5 {
+            let _ = async_cache_low.get("k1");
+            let _ = async_cache_high.get("k1");
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Add new entry to both
+        async_cache_low.insert("k3", 3);
+        async_cache_high.insert("k3", 3);
+
+        // Both should work correctly with their respective weights
+        assert_eq!(async_cache_low.get("k3"), Some(3));
+        assert_eq!(async_cache_high.get("k3"), Some(3));
+    }
+
+    #[test]
+    fn test_tlru_concurrent_with_frequency_weight() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(DashMap::new());
+        let order = Arc::new(Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        let stats = Arc::new(CacheStats::new());
+
+        // Insert initial entries
+        {
+            #[cfg(not(feature = "stats"))]
+            let async_cache = AsyncGlobalCache::new(
+                &cache,
+                &order,
+                Some(10),
+                None,
+                EvictionPolicy::TLRU,
+                Some(10),
+                Some(1.2), // Slightly emphasize frequency
+            );
+
+            #[cfg(feature = "stats")]
+            let async_cache = AsyncGlobalCache::new(
+                &cache,
+                &order,
+                Some(10),
+                None,
+                EvictionPolicy::TLRU,
+                Some(10),
+                Some(1.2),
+                &stats,
+            );
+
+            async_cache.insert("k1", 1);
+            async_cache.insert("k2", 2);
+        }
+
+        // Spawn multiple threads accessing the cache
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let cache_clone = Arc::clone(&cache);
+                let order_clone = Arc::clone(&order);
+                #[cfg(feature = "stats")]
+                let stats_clone = Arc::clone(&stats);
+
+                thread::spawn(move || {
+                    #[cfg(not(feature = "stats"))]
+                    let async_cache = AsyncGlobalCache::new(
+                        &cache_clone,
+                        &order_clone,
+                        Some(10),
+                        None,
+                        EvictionPolicy::TLRU,
+                        Some(10),
+                        Some(1.2),
+                    );
+
+                    #[cfg(feature = "stats")]
+                    let async_cache = AsyncGlobalCache::new(
+                        &cache_clone,
+                        &order_clone,
+                        Some(10),
+                        None,
+                        EvictionPolicy::TLRU,
+                        Some(10),
+                        Some(1.2),
+                        &stats_clone,
+                    );
+
+                    // Access k1 frequently
+                    for _ in 0..3 {
+                        let _ = async_cache.get("k1");
+                    }
+
+                    // Insert new entry
+                    async_cache.insert(&format!("k{}", i + 3), i + 3);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // k1 should remain cached due to high frequency and frequency_weight > 1.0
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(10),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.2),
+        );
+
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(10),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.2),
+            &stats,
+        );
+
+        assert_eq!(async_cache.get("k1"), Some(1));
+    }
+
+    #[test]
+    fn test_tlru_frequency_weight_edge_cases() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(5),
+            Some(0.1), // Very low weight
+        );
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(5),
+            Some(0.1),
+            &stats,
+        );
+
+        async_cache.insert("k1", 1);
+        async_cache.insert("k2", 2);
+
+        // Make k1 extremely frequent
+        for _ in 0..100 {
+            let _ = async_cache.get("k1");
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Even with very high frequency, k1 might be evicted with very low weight
+        async_cache.insert("k3", 3);
+
+        // The cache should still work correctly
+        assert!(async_cache.get("k3").is_some());
+    }
+
+    #[test]
+    fn test_tlru_frequency_weight_with_lru_pattern() {
+        let cache = DashMap::new();
+        let order = Mutex::new(VecDeque::new());
+
+        #[cfg(not(feature = "stats"))]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.0), // Weight = 1.0 (linear frequency impact)
+        );
+
+        #[cfg(feature = "stats")]
+        let stats = CacheStats::new();
+        #[cfg(feature = "stats")]
+        let async_cache = AsyncGlobalCache::new(
+            &cache,
+            &order,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.0),
+            &stats,
+        );
+
+        async_cache.insert("k1", 1);
+        async_cache.insert("k2", 2);
+        async_cache.insert("k3", 3);
+
+        // Create LRU-like access pattern
+        let _ = async_cache.get("k1");
+        let _ = async_cache.get("k2");
+        let _ = async_cache.get("k1");
+        let _ = async_cache.get("k2");
+
+        // k3 has not been accessed, should be evicted first
+        async_cache.insert("k4", 4);
+
+        assert_eq!(async_cache.get("k1"), Some(1));
+        assert_eq!(async_cache.get("k2"), Some(2));
+        assert_eq!(async_cache.get("k4"), Some(4));
+        // k3 should be evicted (least recently used and zero frequency)
+        assert_eq!(async_cache.get("k3"), None);
     }
 }

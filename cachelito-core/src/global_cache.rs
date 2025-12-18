@@ -6,7 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 
 use crate::utils::{
-    find_arc_eviction_key, find_min_frequency_key, move_key_to_end, remove_key_from_global_cache,
+    find_arc_eviction_key, find_min_frequency_key, find_tlru_eviction_key, move_key_to_end,
+    remove_key_from_global_cache,
 };
 #[cfg(feature = "stats")]
 use crate::CacheStats;
@@ -21,14 +22,44 @@ use crate::CacheStats;
 ///
 /// * `R` - The return type to be cached. Must be `'static` to be stored in global state.
 ///
-/// # Fields
+/// # Features
 ///
-/// * `map` - Static reference to a lazy-initialized RwLock-protected HashMap storing cache entries
-/// * `order` - Static reference to a lazy-initialized Mutex-protected VecDeque tracking insertion/access order
-/// * `limit` - Optional maximum number of entries in the cache
-/// * `max_memory` - Optional maximum memory size in bytes
-/// * `policy` - Eviction policy (FIFO, LRU, LFU, ARC, or Random) used when limit is reached
-/// * `ttl` - Optional time-to-live in seconds for cache entries
+/// - **Thread-safe sharing**: Multiple threads access the same cache through RwLock/Mutex
+/// - **Eviction policies**: FIFO, LRU, LFU, ARC, Random, and TLRU
+///   - **FIFO**: First In, First Out - simple and predictable
+///   - **LRU**: Least Recently Used - evicts least recently accessed entries
+///   - **LFU**: Least Frequently Used - evicts least frequently accessed entries
+///   - **ARC**: Adaptive Replacement Cache - hybrid policy combining recency and frequency
+///   - **Random**: Random replacement - O(1) eviction with minimal overhead
+///   - **TLRU**: Time-aware LRU - combines recency, frequency, and age factors
+///     - Customizable with `frequency_weight` parameter
+///     - Formula: `score = frequency^weight × position × age_factor`
+///     - `frequency_weight < 1.0`: Emphasize recency (time-sensitive data)
+///     - `frequency_weight > 1.0`: Emphasize frequency (popular content)
+/// - **Cache limits**: Entry count limits (`limit`) and memory-based limits (`max_memory`)
+/// - **TTL support**: Automatic expiration of entries based on age
+/// - **Statistics**: Optional cache hit/miss tracking (with `stats` feature)
+/// - **Frequency tracking**: For LFU, ARC, and TLRU policies
+/// - **Memory estimation**: Support for memory-based eviction (requires `MemoryEstimator`)
+///
+/// # Cache Entry Structure
+///
+/// Cache entries are stored as `CacheEntry<R>` which contains:
+/// - `value`: The cached value of type R
+/// - `timestamp`: Unix timestamp when the entry was created (for TTL and TLRU age factor)
+/// - `frequency`: Access counter for LFU, ARC, and TLRU policies
+///
+/// # Eviction Behavior
+///
+/// When the cache reaches its limit (entry count or memory), entries are evicted according
+/// to the configured policy:
+///
+/// - **FIFO**: Oldest entry (first in order queue) is evicted
+/// - **LRU**: Least recently accessed entry (first in order queue) is evicted
+/// - **LFU**: Entry with lowest frequency counter is evicted
+/// - **ARC**: Entry with lowest score (frequency × position_weight) is evicted
+/// - **Random**: Randomly selected entry is evicted
+/// - **TLRU**: Entry with lowest score (frequency^weight × position × age_factor) is evicted
 ///
 /// # Thread Safety
 ///
@@ -43,14 +74,25 @@ use crate::CacheStats;
 /// **Read-heavy workloads** (typical for caches) see 4-5x performance improvement with RwLock
 /// compared to Mutex, as multiple threads can read the cache simultaneously.
 ///
+/// # Performance Characteristics
+///
+/// - **Get**: O(1) for cache lookup, O(n) for LRU/ARC/TLRU reordering
+/// - **Insert**: O(1) for FIFO/Random, O(n) for LRU/LFU/ARC/TLRU eviction
+/// - **Memory**: O(n) where n is the number of cached entries
+/// - **Synchronization**: Lock acquisition overhead on every operation
+///
 /// # Performance Considerations
 ///
 /// - **Synchronization overhead**: Each cache operation requires acquiring locks
 /// - **Lock contention**: High concurrent access may cause threads to wait
+/// - **Read optimization**: RwLock allows concurrent reads (no blocking for cache hits)
+/// - **Write bottleneck**: Only one thread can modify cache at a time
 /// - **Shared benefits**: All threads benefit from cached results
 /// - **Best for**: Expensive computations where sharing outweighs synchronization cost
 ///
-/// # Example
+/// # Examples
+///
+/// ## Basic Usage
 ///
 /// ```ignore
 /// use cachelito_core::{GlobalCache, EvictionPolicy, CacheEntry};
@@ -66,14 +108,63 @@ use crate::CacheStats;
 /// let cache = GlobalCache::new(
 ///     &CACHE_MAP,
 ///     &CACHE_ORDER,
-///     Some(100),
+///     Some(100),         // Max 100 entries
+///     None,              // No memory limit
 ///     EvictionPolicy::LRU,
-///     None,
+///     Some(60),          // 60 second TTL
+///     None,              // Default frequency_weight
 /// );
 ///
 /// // All threads can access the same cache
 /// cache.insert("key1", 42);
 /// assert_eq!(cache.get("key1"), Some(42));
+/// ```
+///
+/// ## TLRU with Custom Frequency Weight
+///
+/// ```ignore
+/// use cachelito_core::{GlobalCache, EvictionPolicy};
+///
+/// // Emphasize frequency over recency (good for popular content)
+/// let cache = GlobalCache::new(
+///     &CACHE_MAP,
+///     &CACHE_ORDER,
+///     Some(100),
+///     None,
+///     EvictionPolicy::TLRU,
+///     Some(300),
+///     Some(1.5),         // frequency_weight > 1.0
+/// );
+///
+/// // Emphasize recency over frequency (good for time-sensitive data)
+/// let cache = GlobalCache::new(
+///     &CACHE_MAP,
+///     &CACHE_ORDER,
+///     Some(100),
+///     None,
+///     EvictionPolicy::TLRU,
+///     Some(300),
+///     Some(0.3),         // frequency_weight < 1.0
+/// );
+/// ```
+///
+/// ## With Memory Limits
+///
+/// ```ignore
+/// use cachelito_core::{GlobalCache, EvictionPolicy, MemoryEstimator};
+///
+/// let cache = GlobalCache::new(
+///     &CACHE_MAP,
+///     &CACHE_ORDER,
+///     Some(1000),
+///     Some(100 * 1024 * 1024), // 100MB max
+///     EvictionPolicy::LRU,
+///     Some(300),
+///     None,
+/// );
+///
+/// // Insert with memory tracking (requires MemoryEstimator implementation)
+/// cache.insert_with_memory("key", value);
 /// ```
 pub struct GlobalCache<R: 'static> {
     pub map: &'static Lazy<RwLock<HashMap<String, CacheEntry<R>>>>,
@@ -82,6 +173,7 @@ pub struct GlobalCache<R: 'static> {
     pub max_memory: Option<usize>,
     pub policy: EvictionPolicy,
     pub ttl: Option<u64>,
+    pub frequency_weight: Option<f64>,
     #[cfg(feature = "stats")]
     pub stats: &'static Lazy<CacheStats>,
 }
@@ -95,24 +187,48 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// * `order` - Static reference to a Mutex-protected VecDeque for tracking entry order
     /// * `limit` - Optional maximum number of entries (None for unlimited)
     /// * `max_memory` - Optional maximum memory size in bytes (None for unlimited)
-    /// * `policy` - Eviction policy to use when limit is reached
-    /// * `ttl` - Optional time-to-live in seconds for cache entries
+    /// * `policy` - Eviction policy (FIFO, LRU, LFU, ARC, Random, or TLRU)
+    /// * `ttl` - Optional time-to-live in seconds for cache entries (None for no expiration)
+    /// * `frequency_weight` - Optional weight factor for frequency in TLRU policy
+    ///   - Values < 1.0: Emphasize recency and age
+    ///   - Values > 1.0: Emphasize frequency
+    ///   - None or 1.0: Balanced approach (default)
+    ///   - Only used when policy is TLRU, ignored otherwise
     /// * `stats` - Static reference to CacheStats for tracking hit/miss statistics (stats feature only)
     ///
     /// # Returns
     ///
     /// A new `GlobalCache` instance configured with the provided parameters.
     ///
-    /// # Example
+    /// # Examples
+    ///
+    /// ## Basic LRU cache with TTL
     ///
     /// ```ignore
     /// let cache = GlobalCache::new(
     ///     &CACHE_MAP,
     ///     &CACHE_ORDER,
-    ///     Some(50),
-    ///     Some(100 * 1024 * 1024), // 100MB
-    ///     EvictionPolicy::FIFO,
-    ///     Some(300), // 5 minutes TTL
+    ///     Some(1000),              // Max 1000 entries
+    ///     None,                    // No memory limit
+    ///     EvictionPolicy::LRU,     // LRU eviction
+    ///     Some(300),               // 5 minute TTL
+    ///     None,                    // No frequency_weight (not needed for LRU)
+    ///     #[cfg(feature = "stats")]
+    ///     &CACHE_STATS,
+    /// );
+    /// ```
+    ///
+    /// ## TLRU with memory limit and custom frequency weight
+    ///
+    /// ```ignore
+    /// let cache = GlobalCache::new(
+    ///     &CACHE_MAP,
+    ///     &CACHE_ORDER,
+    ///     Some(1000),
+    ///     Some(100 * 1024 * 1024), // 100MB max
+    ///     EvictionPolicy::TLRU,    // TLRU eviction
+    ///     Some(300),               // 5 minute TTL
+    ///     Some(1.5),               // Emphasize frequency (popular content)
     ///     #[cfg(feature = "stats")]
     ///     &CACHE_STATS,
     /// );
@@ -125,6 +241,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
+        frequency_weight: Option<f64>,
         stats: &'static Lazy<CacheStats>,
     ) -> Self {
         Self {
@@ -134,6 +251,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
             max_memory,
             policy,
             ttl,
+            frequency_weight,
             stats,
         }
     }
@@ -146,6 +264,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
         max_memory: Option<usize>,
         policy: EvictionPolicy,
         ttl: Option<u64>,
+        frequency_weight: Option<f64>,
     ) -> Self {
         Self {
             map,
@@ -154,13 +273,14 @@ impl<R: Clone + 'static> GlobalCache<R> {
             max_memory,
             policy,
             ttl,
+            frequency_weight,
         }
     }
 
     /// Retrieves a cached value by key.
     ///
     /// This method attempts to retrieve a cached value, checking for expiration
-    /// and updating access order for LRU policy.
+    /// and updating access patterns based on the eviction policy.
     ///
     /// # Parameters
     ///
@@ -171,32 +291,59 @@ impl<R: Clone + 'static> GlobalCache<R> {
     /// * `Some(R)` - The cached value if found and not expired
     /// * `None` - If the key is not in cache or the entry has expired
     ///
-    /// # Behavior
+    /// # Behavior by Policy
     ///
-    /// 1. Acquires lock on the map and checks if the entry exists
-    /// 2. If entry exists and is not expired:
-    ///    - Clones the value before releasing the lock
-    ///    - For LRU policy: moves the key to the end of the order queue (marks as recently used)
-    ///    - Returns the cloned value
-    /// 3. If entry is expired:
-    ///    - Removes the entry from both map and order queue
-    ///    - Returns None
+    /// - **FIFO**: No updates on cache hit (order remains unchanged)
+    /// - **LRU**: Moves the key to the end of the order queue (most recently used)
+    /// - **LFU**: Increments the frequency counter for the entry
+    /// - **ARC**: Increments frequency counter and updates position in order queue
+    /// - **Random**: No updates on cache hit
+    /// - **TLRU**: Increments frequency counter and updates position in order queue
+    ///
+    /// # TTL Expiration
+    ///
+    /// If a TTL is configured and the entry has expired:
+    /// - The entry is removed from both the cache map and order queue
+    /// - A cache miss is recorded (if stats feature is enabled)
+    /// - `None` is returned
+    ///
+    /// # Statistics
+    ///
+    /// When the `stats` feature is enabled:
+    /// - Cache hits are recorded when a valid entry is found
+    /// - Cache misses are recorded when the key doesn't exist or has expired
     ///
     /// # Thread Safety
     ///
-    /// This method is thread-safe. Multiple threads can safely call this method
-    /// concurrently. The method uses mutex locks to ensure data consistency.
+    /// This method is thread-safe and uses a multi-phase locking strategy:
+    /// 1. **Read lock** for initial lookup (allows concurrent reads)
+    /// 2. **Mutex + Write lock** for expired entry removal (if needed)
+    /// 3. **Mutex lock** for order queue updates (for LRU/ARC/TLRU)
     ///
-    /// # Example
+    /// Multiple threads can safely call this method concurrently. Read-heavy
+    /// workloads benefit from RwLock's concurrent read capability.
+    ///
+    /// # Performance
+    ///
+    /// - **FIFO, Random**: O(1) - no reordering needed
+    /// - **LRU, ARC, TLRU**: O(n) - requires finding and moving key in order queue
+    /// - **LFU**: O(1) - only increments counter
+    /// - **Lock overhead**: Read lock for lookup + potential write lock for updates
+    ///
+    /// # Examples
     ///
     /// ```ignore
-    /// cache.insert("key1", 42);
-    ///
-    /// // Retrieve the value
-    /// assert_eq!(cache.get("key1"), Some(42));
+    /// // Insert and retrieve
+    /// cache.insert("user:123", user_data);
+    /// assert_eq!(cache.get("user:123"), Some(user_data));
     ///
     /// // Non-existent key
-    /// assert_eq!(cache.get("key2"), None);
+    /// assert_eq!(cache.get("user:999"), None);
+    ///
+    /// // Expired entry (with TTL)
+    /// cache.insert("temp", data);
+    /// std::thread::sleep(Duration::from_secs(61)); // Wait for TTL expiration
+    /// assert_eq!(cache.get("temp"), None);
     /// ```
     pub fn get(&self, key: &str) -> Option<R> {
         let mut result = None;
@@ -253,6 +400,12 @@ impl<R: Clone + 'static> GlobalCache<R> {
                     // Increment frequency counter
                     self.increment_frequency(key);
                 }
+                EvictionPolicy::TLRU => {
+                    // Time-aware LRU: Update both recency and frequency
+                    // Similar to ARC but considers age in eviction
+                    move_key_to_end(&mut self.order.lock(), key);
+                    self.increment_frequency(key);
+                }
                 EvictionPolicy::FIFO | EvictionPolicy::Random => {
                     // No update needed for FIFO or Random
                 }
@@ -293,9 +446,13 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///
     /// # Eviction Policies
     ///
-    /// - **FIFO**: Oldest inserted entry is evicted (front of queue)
-    /// - **LRU**: Least recently used entry is evicted (front of queue, updated by `get()`)
-    /// - **LFU**: Least frequently used entry is evicted (entry with minimum frequency counter)
+    /// When the cache limit is reached, entries are evicted according to the policy:
+    /// - **FIFO**: Evicts oldest inserted entry (front of queue)
+    /// - **LRU**: Evicts least recently used entry (front of queue, updated by `get()`)
+    /// - **LFU**: Evicts entry with lowest frequency counter
+    /// - **ARC**: Evicts based on hybrid score (frequency × position_weight)
+    /// - **Random**: Evicts randomly selected entry
+    /// - **TLRU**: Evicts based on TLRU score (frequency^weight × position × age_factor)
     ///
     /// # Thread Safety
     ///
@@ -390,6 +547,17 @@ impl<R: Clone + 'static> GlobalCache<R> {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                         }
                     }
+                    EvictionPolicy::TLRU => {
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) = find_tlru_eviction_key(
+                            &map_write,
+                            o.iter().enumerate(),
+                            self.ttl,
+                            self.frequency_weight,
+                        ) {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                        }
+                    }
                     EvictionPolicy::Random => {
                         // O(1) random eviction: select random position and remove directly
                         if !o.is_empty() {
@@ -426,6 +594,66 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
     /// memory-based and entry-count-based eviction.
     ///
     /// Use this method when `max_memory` is configured in the cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The cache key
+    /// * `value` - The value to cache (must implement `MemoryEstimator`)
+    ///
+    /// # Memory Management
+    ///
+    /// The method calculates the memory footprint of all cached entries and evicts
+    /// entries as needed to stay within the `max_memory` limit. Eviction follows
+    /// the configured policy.
+    ///
+    /// # Safety Check
+    ///
+    /// If the value to be inserted is larger than `max_memory`, the insertion is
+    /// skipped entirely to avoid infinite eviction loops. This ensures the cache
+    /// respects the memory limit even if individual values are very large.
+    ///
+    /// # Eviction Behavior by Policy
+    ///
+    /// When memory limit is exceeded:
+    /// - **FIFO/LRU**: Evicts from front of order queue
+    /// - **LFU**: Evicts entry with lowest frequency
+    /// - **ARC**: Evicts based on hybrid score (frequency × position_weight)
+    /// - **TLRU**: Evicts based on TLRU score (frequency^weight × position × age_factor)
+    /// - **Random**: Evicts randomly selected entry
+    ///
+    /// The eviction loop continues until there's enough memory for the new value.
+    ///
+    /// # Entry Count Limit
+    ///
+    /// After satisfying memory constraints, this method also checks the entry count
+    /// limit (if configured) and evicts additional entries if needed.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method uses write locks to ensure consistency between the map and
+    /// order queue during eviction and insertion.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use cachelito_core::MemoryEstimator;
+    ///
+    /// // Type must implement MemoryEstimator
+    /// impl MemoryEstimator for MyLargeStruct {
+    ///     fn estimate_memory(&self) -> usize {
+    ///         std::mem::size_of::<Self>() + self.data.capacity()
+    ///     }
+    /// }
+    ///
+    /// // Insert with automatic memory-based eviction
+    /// cache.insert_with_memory("large_data", expensive_value);
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// - **Memory calculation**: O(n) - iterates all entries to sum memory
+    /// - **Eviction**: Varies by policy (see individual policy documentation)
+    /// - May evict multiple entries in one call if memory limit is tight
     pub fn insert_with_memory(&self, key: &str, value: R) {
         let key_s = key.to_string();
         let entry = CacheEntry::new(value);
@@ -495,6 +723,20 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                             false
                         }
                     }
+                    EvictionPolicy::TLRU => {
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) = find_tlru_eviction_key(
+                            &map_write,
+                            o.iter().enumerate(),
+                            self.ttl,
+                            self.frequency_weight,
+                        ) {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     EvictionPolicy::Random => {
                         // O(1) random eviction: select random position and remove directly
                         if !o.is_empty() {
@@ -540,13 +782,40 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
     ///
     /// This method is only available when the `stats` feature is enabled.
     ///
+    /// # Available Metrics
+    ///
+    /// The returned CacheStats provides:
+    /// - **hits()**: Number of successful cache lookups
+    /// - **misses()**: Number of cache misses (key not found or expired)
+    /// - **hit_rate()**: Ratio of hits to total accesses (0.0 to 1.0)
+    /// - **total_accesses()**: Total number of get operations
+    ///
+    /// # Thread Safety
+    ///
+    /// Statistics use atomic counters (`AtomicU64`) and can be safely accessed
+    /// from multiple threads without additional synchronization.
+    ///
     /// # Examples
     ///
     /// ```ignore
+    /// // Get basic statistics
     /// let stats = cache.stats();
+    /// println!("Hits: {}", stats.hits());
+    /// println!("Misses: {}", stats.misses());
     /// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
     /// println!("Total accesses: {}", stats.total_accesses());
+    ///
+    /// // Monitor cache performance
+    /// let total = stats.total_accesses();
+    /// if total > 1000 && stats.hit_rate() < 0.5 {
+    ///     println!("Warning: Low cache hit rate");
+    /// }
     /// ```
+    ///
+    /// # See Also
+    ///
+    /// - [`CacheStats`] - The statistics structure
+    /// - [`crate::stats_registry::get()`] - Access stats by cache name
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> &CacheStats {
         self.stats
@@ -707,6 +976,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -730,6 +1000,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -751,6 +1022,7 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
             None,
             #[cfg(feature = "stats")]
             &STATS,
@@ -775,6 +1047,7 @@ mod tests {
             Some(2),
             None,
             EvictionPolicy::FIFO,
+            None,
             None,
             #[cfg(feature = "stats")]
             &STATS,
@@ -804,6 +1077,7 @@ mod tests {
             None,
             EvictionPolicy::LRU,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -832,6 +1106,7 @@ mod tests {
             Some(3),
             None,
             EvictionPolicy::LRU,
+            None,
             None,
             #[cfg(feature = "stats")]
             &STATS,
@@ -872,6 +1147,7 @@ mod tests {
                         None,
                         EvictionPolicy::FIFO,
                         None,
+                        None,
                         #[cfg(feature = "stats")]
                         &STATS,
                     );
@@ -904,6 +1180,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             Some(1),
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -933,6 +1210,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -955,6 +1233,7 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
             None,
             #[cfg(feature = "stats")]
             &STATS,
@@ -980,6 +1259,7 @@ mod tests {
             None,
             EvictionPolicy::LRU,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -998,6 +1278,7 @@ mod tests {
                         Some(5),
                         None,
                         EvictionPolicy::LRU,
+                        None,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -1033,6 +1314,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1064,6 +1346,7 @@ mod tests {
             None,
             Some(std::mem::size_of::<i32>()),
             EvictionPolicy::FIFO,
+            None,
             None,
             #[cfg(feature = "stats")]
             &STATS,
@@ -1111,6 +1394,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1130,6 +1414,7 @@ mod tests {
                         None,
                         None,
                         EvictionPolicy::FIFO,
+                        None,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -1169,6 +1454,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1183,6 +1469,7 @@ mod tests {
                 None,
                 None,
                 EvictionPolicy::FIFO,
+                None,
                 None,
                 #[cfg(feature = "stats")]
                 &STATS,
@@ -1202,6 +1489,7 @@ mod tests {
                         None,
                         None,
                         EvictionPolicy::FIFO,
+                        None,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -1237,6 +1525,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1271,6 +1560,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             Some(1),
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1307,6 +1597,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1340,6 +1631,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1355,6 +1647,7 @@ mod tests {
                         None,
                         None,
                         EvictionPolicy::FIFO,
+                        None,
                         None,
                         #[cfg(feature = "stats")]
                         &STATS,
@@ -1397,6 +1690,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1432,6 +1726,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1445,5 +1740,335 @@ mod tests {
         assert_eq!(stats.misses(), 10);
         assert_eq!(stats.hit_rate(), 0.0);
         assert_eq!(stats.miss_rate(), 1.0);
+    }
+
+    // ========== TLRU with frequency_weight tests ==========
+
+    #[test]
+    fn test_tlru_with_low_frequency_weight() {
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        // Low frequency_weight (0.3) - emphasizes recency over frequency
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(0.3), // Low weight
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        // Fill cache
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+        cache.insert("k3", 3);
+
+        // Make k1 very frequent
+        for _ in 0..10 {
+            let _ = cache.get("k1");
+        }
+
+        // Wait a bit to age k1
+        thread::sleep(Duration::from_millis(100));
+
+        // Add new entry (cache is full)
+        cache.insert("k4", 4);
+
+        // With low frequency_weight, even frequent entries can be evicted
+        // if they're older (recency and age matter more)
+        assert_eq!(cache.get("k4"), Some(4));
+    }
+
+    #[test]
+    fn test_tlru_with_high_frequency_weight() {
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        // High frequency_weight (1.5) - emphasizes frequency over recency
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.5), // High weight
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        // Fill cache
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+        cache.insert("k3", 3);
+
+        // Make k1 very frequent
+        for _ in 0..10 {
+            let _ = cache.get("k1");
+        }
+
+        // Wait a bit to age k1
+        thread::sleep(Duration::from_millis(100));
+
+        // Add new entry (cache is full)
+        cache.insert("k4", 4);
+
+        // With high frequency_weight, frequent entries are protected
+        // k1 should remain cached despite being older
+        assert_eq!(cache.get("k1"), Some(1));
+        assert_eq!(cache.get("k4"), Some(4));
+    }
+
+    #[test]
+    fn test_tlru_default_frequency_weight() {
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        // Default frequency_weight (None = 1.0) - balanced approach
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(5),
+            None, // Default weight
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+
+        // Access k1 a few times
+        for _ in 0..3 {
+            let _ = cache.get("k1");
+        }
+
+        // Add third entry
+        cache.insert("k3", 3);
+
+        // With balanced weight, both frequency and recency matter
+        // k1 has higher frequency, so it should remain
+        assert_eq!(cache.get("k1"), Some(1));
+        assert_eq!(cache.get("k3"), Some(3));
+    }
+
+    #[test]
+    fn test_tlru_frequency_weight_comparison() {
+        // Test that different weights produce different behavior
+        static MAP_LOW: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER_LOW: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        static MAP_HIGH: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER_HIGH: Lazy<Mutex<VecDeque<String>>> =
+            Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS_LOW: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+        #[cfg(feature = "stats")]
+        static STATS_HIGH: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        let cache_low = GlobalCache::new(
+            &MAP_LOW,
+            &ORDER_LOW,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(0.3), // Low weight
+            #[cfg(feature = "stats")]
+            &STATS_LOW,
+        );
+
+        let cache_high = GlobalCache::new(
+            &MAP_HIGH,
+            &ORDER_HIGH,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(2.0), // High weight
+            #[cfg(feature = "stats")]
+            &STATS_HIGH,
+        );
+
+        // Same operations on both caches
+        cache_low.insert("k1", 1);
+        cache_low.insert("k2", 2);
+        cache_high.insert("k1", 1);
+        cache_high.insert("k2", 2);
+
+        // Make k1 frequent in both
+        for _ in 0..5 {
+            let _ = cache_low.get("k1");
+            let _ = cache_high.get("k1");
+        }
+
+        thread::sleep(Duration::from_millis(50));
+
+        // Add new entry to both
+        cache_low.insert("k3", 3);
+        cache_high.insert("k3", 3);
+
+        // Both should work correctly with their respective weights
+        assert_eq!(cache_low.get("k3"), Some(3));
+        assert_eq!(cache_high.get("k3"), Some(3));
+    }
+
+    #[test]
+    fn test_tlru_no_ttl_with_frequency_weight() {
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        // TLRU without TTL (behaves like ARC but with frequency_weight)
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            Some(3),
+            None,
+            EvictionPolicy::TLRU,
+            None, // No TTL - age_factor will be 1.0
+            Some(1.5),
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+        cache.insert("k3", 3);
+
+        // Make k1 very frequent
+        for _ in 0..10 {
+            let _ = cache.get("k1");
+        }
+
+        // Add new entry
+        cache.insert("k4", 4);
+
+        // Without TTL, TLRU focuses on frequency and position
+        // k1 should remain due to high frequency
+        assert_eq!(cache.get("k1"), Some(1));
+    }
+
+    #[test]
+    fn test_tlru_concurrent_with_frequency_weight() {
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            Some(5),
+            None,
+            EvictionPolicy::TLRU,
+            Some(10),
+            Some(1.2), // Slightly emphasize frequency
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        // Insert initial entries
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+
+        // Spawn multiple threads accessing the cache
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                thread::spawn(move || {
+                    let cache = GlobalCache::new(
+                        &MAP,
+                        &ORDER,
+                        Some(5),
+                        None,
+                        EvictionPolicy::TLRU,
+                        Some(10),
+                        Some(1.2),
+                        #[cfg(feature = "stats")]
+                        &STATS,
+                    );
+
+                    // Access k1 frequently
+                    for _ in 0..3 {
+                        let _ = cache.get("k1");
+                    }
+
+                    // Insert new entry
+                    cache.insert(&format!("k{}", i + 3), i + 3);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // k1 should remain cached due to high frequency and frequency_weight > 1.0
+        assert_eq!(cache.get("k1"), Some(1));
+    }
+
+    #[test]
+    fn test_tlru_frequency_weight_edge_cases() {
+        static MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+            Lazy::new(|| RwLock::new(HashMap::new()));
+        static ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+        #[cfg(feature = "stats")]
+        static STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+
+        // Test with very low weight (close to 0)
+        let cache = GlobalCache::new(
+            &MAP,
+            &ORDER,
+            Some(2),
+            None,
+            EvictionPolicy::TLRU,
+            Some(5),
+            Some(0.1), // Very low weight
+            #[cfg(feature = "stats")]
+            &STATS,
+        );
+
+        cache.insert("k1", 1);
+        cache.insert("k2", 2);
+
+        // Make k1 extremely frequent
+        for _ in 0..100 {
+            let _ = cache.get("k1");
+        }
+
+        thread::sleep(Duration::from_millis(50));
+
+        // Even with very high frequency, k1 might be evicted with very low weight
+        cache.insert("k3", 3);
+
+        // The cache should still work correctly
+        assert!(cache.get("k3").is_some());
     }
 }

@@ -47,7 +47,7 @@ static RANDOM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static MEM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
-// Helper macro to create GlobalCache with or without stats (updated signature: + max_memory)
+// Helper macro to create GlobalCache with or without stats (updated signature: + max_memory + frequency_weight)
 macro_rules! new_fifo_cache {
     ($limit:expr) => {
         GlobalCache::new(
@@ -57,6 +57,7 @@ macro_rules! new_fifo_cache {
             None, // max_memory
             EvictionPolicy::FIFO,
             None, // ttl
+            None, // frequency_weight
             #[cfg(feature = "stats")]
             &FIFO_STATS,
         )
@@ -72,6 +73,7 @@ macro_rules! new_lru_cache {
             None, // max_memory
             EvictionPolicy::LRU,
             None, // ttl
+            None, // frequency_weight
             #[cfg(feature = "stats")]
             &LRU_STATS,
         )
@@ -87,6 +89,7 @@ macro_rules! new_lfu_cache {
             None,
             EvictionPolicy::LFU,
             None,
+            None, // frequency_weight
             #[cfg(feature = "stats")]
             &LFU_STATS,
         )
@@ -102,6 +105,7 @@ macro_rules! new_arc_cache {
             None,
             EvictionPolicy::ARC,
             None,
+            None, // frequency_weight
             #[cfg(feature = "stats")]
             &ARC_STATS,
         )
@@ -117,6 +121,7 @@ macro_rules! new_random_cache {
             None,
             EvictionPolicy::Random,
             None,
+            None, // frequency_weight
             #[cfg(feature = "stats")]
             &RANDOM_STATS,
         )
@@ -132,6 +137,7 @@ macro_rules! new_mem_cache {
             $max_mem, // max_memory in bytes
             EvictionPolicy::LRU,
             None,
+            None, // frequency_weight
             #[cfg(feature = "stats")]
             &MEM_STATS,
         )

@@ -49,6 +49,7 @@ fn generate_thread_local_branch(
     max_memory_expr: &TokenStream2,
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
+    frequency_weight_expr: &TokenStream2,
     key_expr: &TokenStream2,
     block: &syn::Block,
     is_result: bool,
@@ -73,7 +74,8 @@ fn generate_thread_local_branch(
             #limit_expr,
             #max_memory_expr,
             #policy_expr,
-            #ttl_expr
+            #ttl_expr,
+            #frequency_weight_expr
         );
 
         let __key = #key_expr;
@@ -145,23 +147,26 @@ fn generate_global_branch(
     max_memory_expr: &TokenStream2,
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
+    frequency_weight_expr: &TokenStream2,
     key_expr: &TokenStream2,
     block: &syn::Block,
     fn_name_str: &str,
     is_result: bool,
     attrs: &SyncCacheAttributes,
 ) -> TokenStream2 {
-    // Check if max_memory is None by comparing the token stream
+    // ...existing code...
     let has_max_memory = has_max_memory(max_memory_expr);
 
     let invalidation_check = generate_invalidation_check(&attrs.invalidate_on);
     let cache_condition = generate_cache_condition(&attrs.cache_if, has_max_memory, is_result);
 
-    // Generate invalidation registration code
+    // ...existing code...
+
     let invalidation_registration = if !attrs.tags.is_empty()
         || !attrs.events.is_empty()
         || !attrs.dependencies.is_empty()
     {
+        // ...existing code...
         let tags = &attrs.tags;
         let events = &attrs.events;
         let deps = &attrs.dependencies;
@@ -194,7 +199,7 @@ fn generate_global_branch(
         quote! {}
     };
 
-    // Always register invalidation callback for global caches
+    // ...existing code...
     let invalidation_callback_registration = quote! {
         // Register callback for runtime invalidation checks
         {
@@ -228,6 +233,7 @@ fn generate_global_branch(
     };
 
     quote! {
+        // ...existing code...
         static #cache_ident: once_cell::sync::Lazy<parking_lot::RwLock<std::collections::HashMap<String, CacheEntry<#ret_type>>>> =
             once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(std::collections::HashMap::new()));
         static #order_ident: once_cell::sync::Lazy<parking_lot::Mutex<VecDeque<String>>> =
@@ -257,6 +263,7 @@ fn generate_global_branch(
             #max_memory_expr,
             #policy_expr,
             #ttl_expr,
+            #frequency_weight_expr,
             &#stats_ident,
         );
         #[cfg(not(feature = "stats"))]
@@ -267,6 +274,7 @@ fn generate_global_branch(
             #max_memory_expr,
             #policy_expr,
             #ttl_expr,
+            #frequency_weight_expr,
         );
 
         let __key = #key_expr;
@@ -307,8 +315,17 @@ fn generate_global_branch(
 ///   - `"lfu"` - Least Frequently Used
 ///   - `"arc"` - Adaptive Replacement Cache (hybrid LRU/LFU)
 ///   - `"random"` - Random Replacement
+///   - `"tlru"` - Time-aware Least Recently Used (combines recency, frequency, and age)
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
+/// - `frequency_weight` (optional): Weight factor for frequency in TLRU policy.
+///   Controls the balance between recency and frequency in eviction decisions.
+///   - Values < 1.0: Emphasize recency and age over frequency (good for time-sensitive data)
+///   - Value = 1.0 (or omitted): Balanced approach (default TLRU behavior)
+///   - Values > 1.0: Emphasize frequency over recency (good for popular content)
+///   - Formula: `score = frequency^weight × position × age_factor`
+///   - Only applicable when `policy = "tlru"`. Ignored for other policies.
+///   - Example: `frequency_weight = 1.5` makes frequently accessed entries more resistant to eviction
 /// - `scope` (optional): Cache scope - where the cache is stored. Options:
 ///   - `"global"` - Global storage shared across all threads (default, uses RwLock)
 ///   - `"thread"` - Thread-local storage (no synchronization overhead)
@@ -496,6 +513,48 @@ fn generate_global_branch(
 /// }
 /// ```
 ///
+/// ## TLRU with Custom Frequency Weight
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// // Low frequency_weight (0.3) - emphasizes recency and age
+/// // Good for time-sensitive data where freshness matters more than popularity
+/// #[cache(
+///     policy = "tlru",
+///     limit = 100,
+///     ttl = 300,
+///     frequency_weight = 0.3
+/// )]
+/// fn fetch_realtime_data(source: String) -> Data {
+///     // Fetch time-sensitive data
+///     // Recent entries are preferred even if less frequently accessed
+///     api_client.fetch(source)
+/// }
+///
+/// // High frequency_weight (1.5) - emphasizes access frequency
+/// // Good for popular content that should stay cached despite age
+/// #[cache(
+///     policy = "tlru",
+///     limit = 100,
+///     ttl = 300,
+///     frequency_weight = 1.5
+/// )]
+/// fn fetch_popular_content(id: u64) -> Content {
+///     // Frequently accessed entries remain cached longer
+///     // Popular content is protected from eviction
+///     database.fetch_content(id)
+/// }
+///
+/// // Default behavior (balanced) - omit frequency_weight
+/// #[cache(policy = "tlru", limit = 100, ttl = 300)]
+/// fn fetch_balanced(key: String) -> Value {
+///     // Balanced approach between recency and frequency
+///     // Neither recency nor frequency dominates eviction decisions
+///     expensive_operation(key)
+/// }
+/// ```
+///
 /// # Performance Considerations
 ///
 /// - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method
@@ -579,6 +638,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &attrs.max_memory,
         &attrs.policy,
         &attrs.ttl,
+        &attrs.frequency_weight,
         &key_expr,
         block,
         is_result,
@@ -595,6 +655,7 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &attrs.max_memory,
         &attrs.policy,
         &attrs.ttl,
+        &attrs.frequency_weight,
         &key_expr,
         block,
         &fn_name_str,

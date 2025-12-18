@@ -6,9 +6,18 @@
 //! ## Features
 //!
 //! - **Easy to use**: Simply add `#[cache]` attribute to any function or method
-//! - **Thread-safe**: Uses `thread_local!` storage for cache isolation
+//! - **Global scope by default**: Cache shared across all threads (use `scope = "thread"` for thread-local)
+//! - **High-performance synchronization**: Uses `parking_lot::RwLock` for global caches
+//! - **Thread-local option**: Optional thread-local storage for maximum performance
+//! - **Multiple eviction policies**: FIFO, LRU, LFU, ARC, Random, and TLRU
+//! - **TLRU with frequency_weight**: Fine-tune recency vs frequency balance (v0.15.0)
 //! - **Flexible key generation**: Supports custom cache key implementations
 //! - **Result-aware**: Intelligently caches only successful `Result::Ok` values
+//! - **Cache limits**: Control size with `limit` (entry count) or `max_memory` (memory-based)
+//! - **TTL support**: Time-to-live expiration for automatic cache invalidation
+//! - **Statistics**: Track hit/miss rates via `stats` feature
+//! - **Smart invalidation**: Tag-based, event-driven, and conditional invalidation
+//! - **Conditional caching**: Cache only valid results with `cache_if` predicates
 //! - **Type-safe**: Full compile-time type checking
 //!
 //! ## Quick Start
@@ -119,4 +128,3 @@
 
 pub use cachelito_core::*;
 pub use cachelito_macros::cache;
-

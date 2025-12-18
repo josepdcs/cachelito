@@ -43,6 +43,15 @@ use std::cmp::PartialEq;
 ///   - Useful as a baseline for benchmarks
 ///   - Simple and predictable performance characteristics
 ///
+/// * `TLRU` - **Time-aware Least Recently Used** eviction policy
+///   - Hybrid policy that combines LRU with time-based expiration and frequency awareness
+///   - Elements are evicted based on a weighted score considering recency, frequency, and age
+///   - Score formula: `frequency × position_weight × age_factor`
+///   - Age factor penalizes entries approaching TTL expiration
+///   - Better for time-sensitive data with varying access patterns
+///   - O(n) operations for eviction due to scoring
+///   - Requires TTL to be configured for optimal behavior
+///
 /// # Examples
 ///
 /// ```
@@ -54,6 +63,7 @@ use std::cmp::PartialEq;
 /// let lfu = EvictionPolicy::LFU;
 /// let arc = EvictionPolicy::ARC;
 /// let random = EvictionPolicy::Random;
+/// let tlru = EvictionPolicy::TLRU;
 ///
 /// // Using default (LRU)
 /// let default_policy = EvictionPolicy::default();
@@ -73,6 +83,7 @@ use std::cmp::PartialEq;
 /// | LFU    | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
 /// | ARC    | O(n)     | O(n)      | O(1)       | Mixed workloads, self-tuning |
 /// | Random | O(1)     | O(1)      | O(1)       | Baseline, unpredictable patterns |
+/// | TLRU   | O(n)     | O(n)      | O(1)       | Time-sensitive, mixed access patterns |
 ///
 /// # Derives
 ///
@@ -89,6 +100,7 @@ pub enum EvictionPolicy {
     LFU,
     ARC,
     Random,
+    TLRU,
 }
 
 impl EvictionPolicy {
@@ -127,7 +139,7 @@ impl EvictionPolicy {
     pub fn is_valid(p: &str) -> bool {
         matches!(
             p.to_lowercase().as_str(),
-            "fifo" | "lru" | "lfu" | "arc" | "random"
+            "fifo" | "lru" | "lfu" | "arc" | "random" | "tlru"
         )
     }
 }
@@ -175,6 +187,7 @@ impl From<&str> for EvictionPolicy {
             "lfu" => EvictionPolicy::LFU,
             "arc" => EvictionPolicy::ARC,
             "random" => EvictionPolicy::Random,
+            "tlru" => EvictionPolicy::TLRU,
             _ => EvictionPolicy::LRU,
         }
     }
@@ -188,6 +201,7 @@ impl PartialEq for EvictionPolicy {
             (EvictionPolicy::LFU, EvictionPolicy::LFU) => true,
             (EvictionPolicy::ARC, EvictionPolicy::ARC) => true,
             (EvictionPolicy::Random, EvictionPolicy::Random) => true,
+            (EvictionPolicy::TLRU, EvictionPolicy::TLRU) => true,
             _ => false,
         }
     }

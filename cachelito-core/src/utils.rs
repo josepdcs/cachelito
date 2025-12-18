@@ -389,6 +389,135 @@ where
     best_evict_key
 }
 
+/// Finds the key with the lowest TLRU (Time-aware Least Recently Used) score for eviction.
+///
+/// The TLRU policy combines recency, frequency, and time-based expiration by calculating a score:
+/// - **Frequency**: How many times the entry has been accessed
+/// - **Recency**: Position in the access order (more recent = higher weight)
+/// - **Age Factor**: Penalizes entries approaching their TTL expiration (if TTL is configured)
+/// - **Score**: `frequency × position_weight × age_factor`
+///
+/// The key with the **lowest score** is chosen for eviction. This means:
+/// - Old entries approaching expiration are prioritized for removal
+/// - Infrequently accessed entries are more likely to be evicted
+/// - Recently accessed entries are protected
+///
+/// # Arguments
+///
+/// * `map` - Reference to the HashMap containing cache entries with frequency and timestamp data
+/// * `keys_iter` - Iterator over (index, key) tuples representing the access order
+/// * `ttl` - Optional time-to-live in seconds. If None, only frequency and recency are considered
+///
+/// # Returns
+///
+/// * `Some(K)` - The key with the lowest TLRU score (candidate for eviction)
+/// * `None` - If the iterator is empty or no valid keys exist in the map
+///
+/// # Age Factor Calculation
+///
+/// When TTL is configured:
+/// - `age_factor = 1.0 - (elapsed_time / ttl_seconds)`
+/// - Values close to expiration get lower scores
+/// - Never expires entries (TTL = None) have age_factor = 1.0
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use std::time::{Duration, Instant};
+/// use std::thread;
+/// use cachelito_core::{CacheEntry, utils::find_tlru_eviction_key};
+///
+/// let mut map = HashMap::new();
+///
+/// // Create an old entry (will sleep to simulate age)
+/// let old_entry = CacheEntry {
+///     value: 1,
+///     inserted_at: Instant::now(),
+///     frequency: 5,
+/// };
+/// map.insert("old_key".to_string(), old_entry);
+///
+/// thread::sleep(Duration::from_millis(100));
+///
+/// // Create a fresh entry
+/// map.insert("fresh_key".to_string(), CacheEntry {
+///     value: 2,
+///     inserted_at: Instant::now(),
+///     frequency: 3,
+/// });
+///
+/// // Order: fresh_key (recent), old_key (older)
+/// let order = vec!["fresh_key".to_string(), "old_key".to_string()];
+///
+/// // With TTL of 1 second
+/// let evict_key = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(1), None);
+///
+/// // old_key should be evicted (older + lower score)
+/// assert_eq!(evict_key, Some("old_key".to_string()));
+/// ```
+///
+/// # Performance
+///
+/// O(n) time complexity where n is the number of keys in the iterator.
+pub fn find_tlru_eviction_key<'a, K, V, I>(
+    map: &HashMap<K, CacheEntry<V>>,
+    keys_iter: I,
+    ttl: Option<u64>,
+    frequency_weight: Option<f64>,
+) -> Option<K>
+where
+    K: std::hash::Hash + Eq + Clone + 'a,
+    V: Clone,
+    I: Iterator<Item = (usize, &'a K)>,
+{
+    let mut best_evict_key: Option<K> = None;
+    let mut best_score = f64::MAX;
+    let keys_vec: Vec<_> = keys_iter.collect();
+    let total_len = keys_vec.len();
+
+    for (idx, evict_key) in keys_vec {
+        if let Some(entry) = map.get(evict_key) {
+            let frequency = entry.frequency as f64;
+            let position_weight = (total_len - idx) as f64;
+
+            // Calculate age factor based on TTL
+            let age_factor = if let Some(ttl_secs) = ttl {
+                let elapsed = entry.inserted_at.elapsed().as_secs_f64();
+                let ttl_f64 = ttl_secs as f64;
+                // Entries close to expiration get lower scores (prioritized for eviction)
+                // age_factor ranges from 1.0 (just inserted) to 0.0 (about to expire)
+                (1.0 - (elapsed / ttl_f64).min(1.0)).max(0.0)
+            } else {
+                1.0 // No TTL, age doesn't matter
+            };
+
+            // Apply frequency weight if provided
+            // frequency_weight allows balancing between frequency and other factors
+            let frequency_component = if let Some(weight) = frequency_weight {
+                if frequency > 0.0 {
+                    frequency.powf(weight)
+                } else {
+                    0.0
+                }
+            } else {
+                frequency
+            };
+
+            // Score combines frequency, recency, and age
+            // Lower scores = more likely to be evicted
+            let score = frequency_component * position_weight * age_factor;
+
+            if score < best_score {
+                best_score = score;
+                best_evict_key = Some(evict_key.clone());
+            }
+        }
+    }
+
+    best_evict_key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1078,5 +1207,228 @@ mod tests {
         // Key 2: 5 * 2 = 10
         // Key 1: 10 * 3 = 30
         assert_eq!(result, Some(2));
+    }
+
+    // Tests for find_tlru_eviction_key
+
+    #[test]
+    fn test_find_tlru_eviction_key_empty_order() {
+        let map: HashMap<String, CacheEntry<i32>> = HashMap::new();
+        let order: Vec<String> = vec![];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_single_entry() {
+        let mut map = HashMap::new();
+        map.insert("key1".to_string(), create_cache_entry(100, 5));
+
+        let order = vec!["key1".to_string()];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        assert_eq!(result, Some("key1".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_no_ttl() {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut map = HashMap::new();
+        // Create entries with different ages
+        map.insert("old".to_string(), create_cache_entry(100, 5));
+
+        thread::sleep(Duration::from_millis(50));
+
+        map.insert("new".to_string(), create_cache_entry(200, 5));
+
+        let order = vec!["new".to_string(), "old".to_string()];
+
+        // Without TTL, only frequency and recency matter
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), None, None);
+
+        // Old entry has lower position_weight, should be evicted
+        assert_eq!(result, Some("old".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_age_matters() {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut map = HashMap::new();
+        // Create an old entry
+        map.insert("old".to_string(), create_cache_entry(100, 10));
+
+        // Sleep to create age difference
+        thread::sleep(Duration::from_millis(100));
+
+        // Create a new entry with lower frequency
+        map.insert("new".to_string(), create_cache_entry(200, 5));
+
+        let order = vec!["new".to_string(), "old".to_string()];
+
+        // With TTL of 1 second, the old entry should have lower age_factor
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(1), None);
+
+        // The old entry should be evicted due to lower age_factor
+        assert_eq!(result, Some("old".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_frequency_matters() {
+        let mut map = HashMap::new();
+        // Recent entry with high frequency
+        map.insert("high_freq".to_string(), create_cache_entry(200, 100));
+        // Old entry with low frequency
+        map.insert("low_freq".to_string(), create_cache_entry(100, 1));
+
+        let order = vec!["high_freq".to_string(), "low_freq".to_string()];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        // Low frequency entry should be evicted
+        assert_eq!(result, Some("low_freq".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_recency_matters() {
+        let mut map = HashMap::new();
+        // Both entries have same frequency
+        map.insert("recent".to_string(), create_cache_entry(200, 5));
+        map.insert("old".to_string(), create_cache_entry(100, 5));
+
+        // Order: recent first (higher position weight), old last (lower position weight)
+        let order = vec!["recent".to_string(), "old".to_string()];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        // Old entry should be evicted (lower position weight)
+        assert_eq!(result, Some("old".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_missing_entries() {
+        let mut map = HashMap::new();
+        map.insert("key2".to_string(), create_cache_entry(200, 5));
+        map.insert("key3".to_string(), create_cache_entry(300, 10));
+
+        // Order has key1 which doesn't exist in map
+        let order = vec![
+            "key1".to_string(), // Orphaned key
+            "key2".to_string(),
+            "key3".to_string(),
+        ];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        // Should skip orphaned key and evaluate only valid ones
+        // key2 has lower frequency (5) vs key3 (10), so key2 should be evicted
+        assert_eq!(result, Some("key2".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_all_missing() {
+        let mut map = HashMap::new();
+        map.insert("key4".to_string(), create_cache_entry(400, 1));
+
+        // None of the keys in order exist in map
+        let order = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_zero_frequency() {
+        let mut map = HashMap::new();
+        map.insert("high_freq".to_string(), create_cache_entry(200, 10));
+        map.insert("zero_freq".to_string(), create_cache_entry(100, 0));
+
+        let order = vec!["high_freq".to_string(), "zero_freq".to_string()];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        // Zero frequency entry has the lowest score (0 * anything = 0)
+        assert_eq!(result, Some("zero_freq".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_complex_scenario() {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut map = HashMap::new();
+
+        // Very old entry, low frequency (will have low age_factor)
+        map.insert("very_old".to_string(), create_cache_entry(100, 2));
+
+        thread::sleep(Duration::from_millis(50));
+
+        // Somewhat old, medium frequency
+        map.insert("medium".to_string(), create_cache_entry(200, 5));
+
+        thread::sleep(Duration::from_millis(50));
+
+        // Recent, high frequency
+        map.insert("recent".to_string(), create_cache_entry(300, 10));
+
+        let order = vec![
+            "recent".to_string(),
+            "medium".to_string(),
+            "very_old".to_string(),
+        ];
+
+        // TTL of 1 second
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(1), None);
+
+        // very_old should have lowest score (old age + low freq + low position)
+        assert_eq!(result, Some("very_old".to_string()));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_with_integer_keys() {
+        let mut map = HashMap::new();
+        map.insert(1, create_cache_entry("a", 10));
+        map.insert(2, create_cache_entry("b", 5));
+        map.insert(3, create_cache_entry("c", 20));
+
+        let order = vec![1, 2, 3];
+
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(60), None);
+
+        // Without age differences, TLRU considers frequency * position_weight
+        // Key 2 has lowest frequency (5), so it should be evicted
+        assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn test_find_tlru_eviction_key_approaching_expiration() {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut map = HashMap::new();
+
+        // Create entry that's almost expired
+        map.insert("almost_expired".to_string(), create_cache_entry(100, 10));
+
+        // Sleep close to TTL
+        thread::sleep(Duration::from_millis(900)); // Almost 1 second
+
+        // Create fresh entry with lower frequency
+        map.insert("fresh".to_string(), create_cache_entry(200, 5));
+
+        let order = vec!["fresh".to_string(), "almost_expired".to_string()];
+
+        // TTL of 1 second - almost_expired is very close to expiration
+        let result = find_tlru_eviction_key(&map, order.iter().enumerate(), Some(1), None);
+
+        // almost_expired should be evicted (age_factor approaching 0)
+        assert_eq!(result, Some("almost_expired".to_string()));
     }
 }
