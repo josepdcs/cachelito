@@ -160,7 +160,7 @@ pub struct AsyncGlobalCache<'a, R: Clone> {
     /// Time-to-live in seconds (None = no expiration)
     ttl: Option<u64>,
 
-    /// Frequency weight for TLRU policy (0.0 to 1.0)
+    /// Frequency weight for TLRU policy (>= 0.0)
     frequency_weight: Option<f64>,
 
     /// Cache statistics (when stats feature is enabled)
