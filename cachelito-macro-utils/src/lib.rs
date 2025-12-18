@@ -147,7 +147,8 @@ pub fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
 }
 
 /// Parse the `frequency_weight` attribute
-/// Only valid for TLRU policy. Accepts a float >= 0.0
+/// Accepts a float >= 0.0. The value is parsed for all policies, but is only
+/// used/has effect when the TLRU policy is selected.
 pub fn parse_frequency_weight_attribute(nv: &MetaNameValue) -> TokenStream2 {
     match &nv.value {
         Expr::Lit(expr_lit) => match &expr_lit.lit {
