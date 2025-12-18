@@ -147,8 +147,18 @@ pub fn parse_ttl_attribute(nv: &MetaNameValue) -> TokenStream2 {
 }
 
 /// Parse the `frequency_weight` attribute
-/// Accepts a float >= 0.0. The value is parsed for all policies, but is only
-/// used/has effect when the TLRU policy is selected.
+///
+/// Accepts a float value > 0.0. Values of 0.0 or negative are rejected because:
+/// - frequency_weight = 0.0 would cause `0^0` undefined behavior when frequency is 0
+/// - A weight of 0 has no semantic meaning (would make all frequencies equal to 1)
+///
+/// The value is parsed for all policies, but is only used when the TLRU policy is selected.
+///
+/// # Examples
+/// - `frequency_weight = 0.3` → Valid (low weight, emphasizes recency)
+/// - `frequency_weight = 1.0` → Valid (balanced, default behavior)
+/// - `frequency_weight = 1.5` → Valid (high weight, emphasizes frequency)
+/// - `frequency_weight = 0.0` → **Compile error**
 pub fn parse_frequency_weight_attribute(nv: &MetaNameValue) -> TokenStream2 {
     match &nv.value {
         Expr::Lit(expr_lit) => match &expr_lit.lit {
@@ -156,8 +166,8 @@ pub fn parse_frequency_weight_attribute(nv: &MetaNameValue) -> TokenStream2 {
                 let val = lit_float
                     .base10_parse::<f64>()
                     .expect("frequency_weight must be a float");
-                if val < 0.0 {
-                    quote! { compile_error!("frequency_weight must be >= 0.0") }
+                if val <= 0.0 {
+                    quote! { compile_error!("frequency_weight must be > 0.0 (zero would cause 0^0 undefined behavior and has no semantic meaning)") }
                 } else {
                     quote! { Some(#val) }
                 }
@@ -1057,5 +1067,83 @@ mod tests {
             assert!(err_str.contains("Unknown attribute"));
             assert!(err_str.contains("event"));
         }
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_valid_float() {
+        // Test valid float values
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.3 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (0.3f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 1.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        // Note: TokenStream may omit .0 for whole numbers
+        assert!(result.to_string() == "Some (1f64)" || result.to_string() == "Some (1.0f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 1.5 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (1.5f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 2.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert!(result.to_string() == "Some (2f64)" || result.to_string() == "Some (2.0f64)");
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_valid_int() {
+        // Test that integer literals are accepted and converted to float
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 1 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (1f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 2 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (2f64)");
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_rejects_zero() {
+        // Test that 0.0 is rejected (would cause 0^0 undefined behavior)
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        let result_str = result.to_string();
+        assert!(result_str.contains("compile_error"));
+        assert!(result_str.contains("must be > 0.0"));
+        assert!(result_str.contains("0^0"));
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_rejects_negative() {
+        // Test that negative values are rejected
+        let nv: MetaNameValue = parse_quote! { frequency_weight = -0.5 };
+        let result = parse_frequency_weight_attribute(&nv);
+        let result_str = result.to_string();
+        assert!(result_str.contains("compile_error"));
+        assert!(result_str.contains("must be > 0.0"));
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_very_small_positive() {
+        // Test that very small positive values are accepted
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.01 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (0.01f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 0.001 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert_eq!(result.to_string(), "Some (0.001f64)");
+    }
+
+    #[test]
+    fn test_parse_frequency_weight_large_values() {
+        // Test that large values are accepted
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 10.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert!(result.to_string() == "Some (10f64)" || result.to_string() == "Some (10.0f64)");
+
+        let nv: MetaNameValue = parse_quote! { frequency_weight = 100.0 };
+        let result = parse_frequency_weight_attribute(&nv);
+        assert!(result.to_string() == "Some (100f64)" || result.to_string() == "Some (100.0f64)");
     }
 }
