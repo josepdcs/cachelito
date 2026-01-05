@@ -47,7 +47,7 @@ static RANDOM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static MEM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
-// Helper macro to create GlobalCache with or without stats (updated signature: + max_memory + frequency_weight)
+// Helper macro to create GlobalCache with or without stats (updated signature: + max_memory + frequency_weight + W-TinyLFU params)
 macro_rules! new_fifo_cache {
     ($limit:expr) => {
         GlobalCache::new(
@@ -58,6 +58,10 @@ macro_rules! new_fifo_cache {
             EvictionPolicy::FIFO,
             None, // ttl
             None, // frequency_weight
+            None, // window_ratio
+            None, // sketch_width
+            None, // sketch_depth
+            None, // decay_interval
             #[cfg(feature = "stats")]
             &FIFO_STATS,
         )
@@ -74,6 +78,10 @@ macro_rules! new_lru_cache {
             EvictionPolicy::LRU,
             None, // ttl
             None, // frequency_weight
+            None, // window_ratio
+            None, // sketch_width
+            None, // sketch_depth
+            None, // decay_interval
             #[cfg(feature = "stats")]
             &LRU_STATS,
         )
@@ -86,10 +94,14 @@ macro_rules! new_lfu_cache {
             &LFU_MAP,
             &LFU_ORDER,
             $limit,
-            None,
+            None, // max_memory
             EvictionPolicy::LFU,
-            None,
+            None, // ttl
             None, // frequency_weight
+            None, // window_ratio
+            None, // sketch_width
+            None, // sketch_depth
+            None, // decay_interval
             #[cfg(feature = "stats")]
             &LFU_STATS,
         )
@@ -102,10 +114,14 @@ macro_rules! new_arc_cache {
             &ARC_MAP,
             &ARC_ORDER,
             $limit,
-            None,
+            None, // max_memory
             EvictionPolicy::ARC,
-            None,
+            None, // ttl
             None, // frequency_weight
+            None, // window_ratio
+            None, // sketch_width
+            None, // sketch_depth
+            None, // decay_interval
             #[cfg(feature = "stats")]
             &ARC_STATS,
         )
@@ -118,10 +134,14 @@ macro_rules! new_random_cache {
             &RANDOM_MAP,
             &RANDOM_ORDER,
             $limit,
-            None,
+            None, // max_memory
             EvictionPolicy::Random,
-            None,
+            None, // ttl
             None, // frequency_weight
+            None, // window_ratio
+            None, // sketch_width
+            None, // sketch_depth
+            None, // decay_interval
             #[cfg(feature = "stats")]
             &RANDOM_STATS,
         )
@@ -134,10 +154,14 @@ macro_rules! new_mem_cache {
             &MEM_MAP,
             &MEM_ORDER,
             $limit,
-            $max_mem, // max_memory in bytes
+            $max_mem,
             EvictionPolicy::LRU,
-            None,
+            None, // ttl
             None, // frequency_weight
+            None, // window_ratio
+            None, // sketch_width
+            None, // sketch_depth
+            None, // decay_interval
             #[cfg(feature = "stats")]
             &MEM_STATS,
         )

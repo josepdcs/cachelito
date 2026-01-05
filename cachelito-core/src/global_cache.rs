@@ -174,6 +174,10 @@ pub struct GlobalCache<R: 'static> {
     pub policy: EvictionPolicy,
     pub ttl: Option<u64>,
     pub frequency_weight: Option<f64>,
+    pub window_ratio: Option<f64>,
+    pub sketch_width: Option<usize>,
+    pub sketch_depth: Option<usize>,
+    pub decay_interval: Option<u64>,
     #[cfg(feature = "stats")]
     pub stats: &'static Lazy<CacheStats>,
 }
@@ -194,6 +198,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///   - Values > 1.0: Emphasize frequency
     ///   - None or 1.0: Balanced approach (default)
     ///   - Only used when policy is TLRU, ignored otherwise
+    /// * `window_ratio` - Optional window ratio for W-TinyLFU policy (between 0.0 and 1.0)
+    /// * `sketch_width` - Optional sketch width for W-TinyLFU policy
+    /// * `sketch_depth` - Optional sketch depth for W-TinyLFU policy
+    /// * `decay_interval` - Optional decay interval for W-TinyLFU policy
     /// * `stats` - Static reference to CacheStats for tracking hit/miss statistics (stats feature only)
     ///
     /// # Returns
@@ -213,6 +221,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///     EvictionPolicy::LRU,     // LRU eviction
     ///     Some(300),               // 5 minute TTL
     ///     None,                    // No frequency_weight (not needed for LRU)
+    ///     None,                    // No window_ratio
+    ///     None,                    // No sketch_width
+    ///     None,                    // No sketch_depth
+    ///     None,                    // No decay_interval
     ///     #[cfg(feature = "stats")]
     ///     &CACHE_STATS,
     /// );
@@ -229,6 +241,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
     ///     EvictionPolicy::TLRU,    // TLRU eviction
     ///     Some(300),               // 5 minute TTL
     ///     Some(1.5),               // Emphasize frequency (popular content)
+    ///     None,                    // No window_ratio
+    ///     None,                    // No sketch_width
+    ///     None,                    // No sketch_depth
+    ///     None,                    // No decay_interval
     ///     #[cfg(feature = "stats")]
     ///     &CACHE_STATS,
     /// );
@@ -242,6 +258,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
         policy: EvictionPolicy,
         ttl: Option<u64>,
         frequency_weight: Option<f64>,
+        window_ratio: Option<f64>,
+        sketch_width: Option<usize>,
+        sketch_depth: Option<usize>,
+        decay_interval: Option<u64>,
         stats: &'static Lazy<CacheStats>,
     ) -> Self {
         Self {
@@ -252,6 +272,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
             policy,
             ttl,
             frequency_weight,
+            window_ratio,
+            sketch_width,
+            sketch_depth,
+            decay_interval,
             stats,
         }
     }
@@ -265,6 +289,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
         policy: EvictionPolicy,
         ttl: Option<u64>,
         frequency_weight: Option<f64>,
+        window_ratio: Option<f64>,
+        sketch_width: Option<usize>,
+        sketch_depth: Option<usize>,
+        decay_interval: Option<u64>,
     ) -> Self {
         Self {
             map,
@@ -274,6 +302,10 @@ impl<R: Clone + 'static> GlobalCache<R> {
             policy,
             ttl,
             frequency_weight,
+            window_ratio,
+            sketch_width,
+            sketch_depth,
+            decay_interval,
         }
     }
 
@@ -403,6 +435,13 @@ impl<R: Clone + 'static> GlobalCache<R> {
                 EvictionPolicy::TLRU => {
                     // Time-aware LRU: Update both recency and frequency
                     // Similar to ARC but considers age in eviction
+                    move_key_to_end(&mut self.order.lock(), key);
+                    self.increment_frequency(key);
+                }
+                EvictionPolicy::WTinyLFU => {
+                    // Simplified W-TinyLFU: Behaves like a hybrid of LRU and LFU
+                    // Full implementation with Count-Min Sketch would require additional state
+                    // For now, update both position (LRU) and frequency (LFU)
                     move_key_to_end(&mut self.order.lock(), key);
                     self.increment_frequency(key);
                 }
@@ -555,6 +594,14 @@ impl<R: Clone + 'static> GlobalCache<R> {
                             self.ttl,
                             self.frequency_weight,
                         ) {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                        }
+                    }
+                    EvictionPolicy::WTinyLFU => {
+                        // Simplified W-TinyLFU: Use LFU-like eviction
+                        // Full implementation would use window segment + Count-Min Sketch
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) = find_min_frequency_key(&map_write, &o) {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                         }
                     }
@@ -731,6 +778,17 @@ impl<R: Clone + 'static + crate::MemoryEstimator> GlobalCache<R> {
                             self.ttl,
                             self.frequency_weight,
                         ) {
+                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::WTinyLFU => {
+                        // Simplified W-TinyLFU: Use LFU-like eviction
+                        // Full implementation would use window segment + Count-Min Sketch
+                        let mut map_write = self.map.write();
+                        if let Some(evict_key) = find_min_frequency_key(&map_write, &o) {
                             remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
                             true
                         } else {
@@ -916,7 +974,7 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<
     /// ```
     pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
         if let Ok(v) = value {
-            self.insert(key, Ok(v.clone()));
+            self.insert(key, Ok::<T, E>(v.clone()));
         }
     }
 }
@@ -950,7 +1008,7 @@ impl<
     /// - If `value` is `Err(_)`: Does nothing, no cache entry is created
     pub fn insert_result_with_memory(&self, key: &str, value: &Result<T, E>) {
         if let Ok(v) = value {
-            self.insert_with_memory(key, Ok(v.clone()));
+            self.insert_with_memory(key, Ok::<T, E>(v.clone()));
         }
     }
 }
@@ -977,6 +1035,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -999,6 +1061,10 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1024,6 +1090,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1047,6 +1117,10 @@ mod tests {
             Some(2),
             None,
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1078,6 +1152,10 @@ mod tests {
             EvictionPolicy::LRU,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1106,6 +1184,10 @@ mod tests {
             Some(3),
             None,
             EvictionPolicy::LRU,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1148,7 +1230,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-                        #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                         &STATS,
                     );
                     cache.insert(&format!("key{}", i), i);
@@ -1181,6 +1267,10 @@ mod tests {
             EvictionPolicy::FIFO,
             Some(1),
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1211,6 +1301,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1233,6 +1327,10 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1260,6 +1358,10 @@ mod tests {
             EvictionPolicy::LRU,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1280,7 +1382,11 @@ mod tests {
                         EvictionPolicy::LRU,
                         None,
                         None,
-                        #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                         &STATS,
                     );
                     for _ in 0..10 {
@@ -1315,6 +1421,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1346,6 +1456,10 @@ mod tests {
             None,
             Some(std::mem::size_of::<i32>()),
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1395,6 +1509,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1416,7 +1534,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-                        #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                         &STATS,
                     );
                     let mut results = Vec::new();
@@ -1455,6 +1577,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1471,7 +1597,11 @@ mod tests {
                 EvictionPolicy::FIFO,
                 None,
                 None,
-                #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                 &STATS,
             );
             for i in 0..50 {
@@ -1491,7 +1621,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-                        #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                         &STATS,
                     );
                     for i in 0..50 {
@@ -1524,6 +1658,10 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1560,6 +1698,10 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             Some(1),
+            None,
+            None,
+            None,
+            None,
             None,
             #[cfg(feature = "stats")]
             &STATS,
@@ -1598,6 +1740,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1632,6 +1778,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1649,7 +1799,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-                        #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                         &STATS,
                     );
                     for _ in 0..10 {
@@ -1691,6 +1845,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1725,6 +1883,10 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             #[cfg(feature = "stats")]
@@ -1762,6 +1924,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(0.3), // Low weight
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1805,6 +1971,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.5), // High weight
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1849,6 +2019,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(5),
             None, // Default weight
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1895,6 +2069,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(0.3), // Low weight
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS_LOW,
         );
@@ -1907,6 +2085,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(2.0), // High weight
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS_HIGH,
         );
@@ -1952,6 +2134,10 @@ mod tests {
             EvictionPolicy::TLRU,
             None, // No TTL - age_factor will be 1.0
             Some(1.5),
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -1990,6 +2176,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.2), // Slightly emphasize frequency
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );
@@ -2010,7 +2200,11 @@ mod tests {
                         EvictionPolicy::TLRU,
                         Some(10),
                         Some(1.2),
-                        #[cfg(feature = "stats")]
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "stats")]
                         &STATS,
                     );
 
@@ -2051,6 +2245,10 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(5),
             Some(0.1), // Very low weight
+            None,
+            None,
+            None,
+            None,
             #[cfg(feature = "stats")]
             &STATS,
         );

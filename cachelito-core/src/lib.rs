@@ -92,8 +92,13 @@ mod stats;
 #[cfg(feature = "stats")]
 pub mod stats_registry;
 
+pub mod count_min_sketch;
+
+pub mod w_tinylfu;
+
 pub use async_global_cache::AsyncGlobalCache;
 pub use cache_entry::CacheEntry;
+pub use count_min_sketch::CountMinSketch;
 pub use eviction_policy::EvictionPolicy;
 pub use global_cache::GlobalCache;
 pub use invalidation::{
@@ -104,6 +109,7 @@ pub use invalidation::{
 pub use keys::{CacheableKey, DefaultCacheableKey};
 pub use memory_estimator::MemoryEstimator;
 pub use thread_local_cache::ThreadLocalCache;
+pub use w_tinylfu::WTinyLFUConfig;
 
 #[cfg(feature = "stats")]
 pub use stats::CacheStats;

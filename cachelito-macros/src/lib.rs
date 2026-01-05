@@ -50,6 +50,10 @@ fn generate_thread_local_branch(
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
     frequency_weight_expr: &TokenStream2,
+    window_ratio_expr: &TokenStream2,
+    sketch_width_expr: &TokenStream2,
+    sketch_depth_expr: &TokenStream2,
+    decay_interval_expr: &TokenStream2,
     key_expr: &TokenStream2,
     block: &syn::Block,
     is_result: bool,
@@ -75,7 +79,11 @@ fn generate_thread_local_branch(
             #max_memory_expr,
             #policy_expr,
             #ttl_expr,
-            #frequency_weight_expr
+            #frequency_weight_expr,
+            #window_ratio_expr,
+            #sketch_width_expr,
+            #sketch_depth_expr,
+            #decay_interval_expr
         );
 
         let __key = #key_expr;
@@ -148,6 +156,10 @@ fn generate_global_branch(
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
     frequency_weight_expr: &TokenStream2,
+    window_ratio_expr: &TokenStream2,
+    sketch_width_expr: &TokenStream2,
+    sketch_depth_expr: &TokenStream2,
+    decay_interval_expr: &TokenStream2,
     key_expr: &TokenStream2,
     block: &syn::Block,
     fn_name_str: &str,
@@ -264,6 +276,10 @@ fn generate_global_branch(
             #policy_expr,
             #ttl_expr,
             #frequency_weight_expr,
+            #window_ratio_expr,
+            #sketch_width_expr,
+            #sketch_depth_expr,
+            #decay_interval_expr,
             &#stats_ident,
         );
         #[cfg(not(feature = "stats"))]
@@ -275,6 +291,10 @@ fn generate_global_branch(
             #policy_expr,
             #ttl_expr,
             #frequency_weight_expr,
+            #window_ratio_expr,
+            #sketch_width_expr,
+            #sketch_depth_expr,
+            #decay_interval_expr,
         );
 
         let __key = #key_expr;
@@ -639,6 +659,10 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &attrs.policy,
         &attrs.ttl,
         &attrs.frequency_weight,
+        &attrs.window_ratio,
+        &attrs.sketch_width,
+        &attrs.sketch_depth,
+        &attrs.decay_interval,
         &key_expr,
         block,
         is_result,
@@ -656,6 +680,10 @@ pub fn cache(attr: TokenStream, item: TokenStream) -> TokenStream {
         &attrs.policy,
         &attrs.ttl,
         &attrs.frequency_weight,
+        &attrs.window_ratio,
+        &attrs.sketch_width,
+        &attrs.sketch_depth,
+        &attrs.decay_interval,
         &key_expr,
         block,
         &fn_name_str,

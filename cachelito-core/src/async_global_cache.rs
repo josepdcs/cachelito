@@ -352,6 +352,12 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                         entry_ref.2 = entry_ref.2.saturating_add(1);
                         // LRU update happens after releasing the entry lock
                     }
+                    EvictionPolicy::WTinyLFU => {
+                        // Simplified W-TinyLFU: Behaves like a hybrid of LRU and LFU
+                        // Increment frequency counter
+                        entry_ref.2 = entry_ref.2.saturating_add(1);
+                        // LRU update happens after releasing the entry lock
+                    }
                     EvictionPolicy::LRU => {
                         // LRU update happens after releasing the entry lock
                     }
@@ -685,6 +691,16 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                             // Key doesn't exist in cache (already removed), try next one
                         }
                     }
+                    EvictionPolicy::WTinyLFU => {
+                        // TODO: Implement W-TinyLFU eviction
+                        // For now, fallback to LRU behavior
+                        while let Some(evict_key) = order.pop_front() {
+                            if self.cache.contains_key(&evict_key) {
+                                self.cache.remove(&evict_key);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -880,6 +896,16 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::FIFO | EvictionPolicy::LRU => {
+                        if let Some(evict_key) = order.pop_front() {
+                            self.cache.remove(&evict_key);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    EvictionPolicy::WTinyLFU => {
+                        // TODO: Implement W-TinyLFU eviction
+                        // For now, fallback to LRU behavior
                         if let Some(evict_key) = order.pop_front() {
                             self.cache.remove(&evict_key);
                             true

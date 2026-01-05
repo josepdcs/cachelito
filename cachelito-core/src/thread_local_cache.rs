@@ -66,7 +66,7 @@ use crate::utils::{
 ///     static MY_ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// }
 ///
-/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, None, EvictionPolicy::FIFO, None, None);
+/// let cache = ThreadLocalCache::new(&MY_CACHE, &MY_ORDER, None, None, EvictionPolicy::FIFO, None, None, None, None, None, None);
 /// cache.insert("answer", 42);
 /// assert_eq!(cache.get("answer"), Some(42));
 /// ```
@@ -84,7 +84,7 @@ use crate::utils::{
 /// }
 ///
 /// // Cache with limit of 100 entries using LRU eviction
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::LRU, None, None);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::LRU, None, None, None, None, None, None);
 /// cache.insert("key1", "value1".to_string());
 /// cache.insert("key2", "value2".to_string());
 ///
@@ -105,7 +105,7 @@ use crate::utils::{
 /// }
 ///
 /// // Cache with 60 second TTL
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, Some(60), None);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, Some(60), None, None, None, None, None);
 /// cache.insert("key", "value".to_string());
 ///
 /// // Entry will expire after 60 seconds
@@ -126,14 +126,14 @@ use crate::utils::{
 ///
 /// // Low frequency_weight (0.3) - emphasizes recency over frequency
 /// // Good for time-sensitive data where freshness matters more than popularity
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::TLRU, Some(300), Some(0.3));
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::TLRU, Some(300), Some(0.3), None, None, None, None);
 ///
 /// // High frequency_weight (1.5) - emphasizes frequency over recency
 /// // Good for popular content that should stay cached despite age
-/// let cache_popular = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::TLRU, Some(300), Some(1.5));
+/// let cache_popular = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::TLRU, Some(300), Some(1.5), None, None, None, None);
 ///
 /// // Default (omit frequency_weight) - balanced approach
-/// let cache_balanced = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::TLRU, Some(300), None);
+/// let cache_balanced = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::TLRU, Some(300), None, None, None, None, None);
 /// ```
 pub struct ThreadLocalCache<R: 'static> {
     /// Reference to the thread-local storage key for the cache HashMap
@@ -150,6 +150,14 @@ pub struct ThreadLocalCache<R: 'static> {
     pub ttl: Option<u64>,
     /// Frequency weight for TLRU policy (non-negative, >= 0.0). Only used when policy is TLRU.
     pub frequency_weight: Option<f64>,
+    /// Window ratio for W-TinyLFU policy (between 0.0 and 1.0). Only used when policy is WTinyLFU.
+    pub window_ratio: Option<f64>,
+    /// Sketch width for W-TinyLFU policy. Only used when policy is WTinyLFU.
+    pub sketch_width: Option<usize>,
+    /// Sketch depth for W-TinyLFU policy. Only used when policy is WTinyLFU.
+    pub sketch_depth: Option<usize>,
+    /// Decay interval for W-TinyLFU policy. Only used when policy is WTinyLFU.
+    pub decay_interval: Option<u64>,
     /// Cache statistics (when stats feature is enabled)
     #[cfg(feature = "stats")]
     pub stats: CacheStats,
@@ -167,6 +175,10 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// * `policy` - Eviction policy to use when limit is reached
     /// * `ttl` - Optional time-to-live in seconds (None for no expiration)
     /// * `frequency_weight` - Optional frequency weight for TLRU policy (0.0 to 1.0)
+    /// * `window_ratio` - Optional window ratio for W-TinyLFU policy (between 0.0 and 1.0)
+    /// * `sketch_width` - Optional sketch width for W-TinyLFU policy
+    /// * `sketch_depth` - Optional sketch depth for W-TinyLFU policy
+    /// * `decay_interval` - Optional decay interval for W-TinyLFU policy
     ///
     /// # Examples
     ///
@@ -180,7 +192,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     ///     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// }
     ///
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::LRU, Some(60), None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(100), None, EvictionPolicy::LRU, Some(60), None, None, None, None, None);
     /// ```
     pub fn new(
         cache: &'static LocalKey<RefCell<HashMap<String, CacheEntry<R>>>>,
@@ -190,6 +202,10 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
         policy: EvictionPolicy,
         ttl: Option<u64>,
         frequency_weight: Option<f64>,
+        window_ratio: Option<f64>,
+        sketch_width: Option<usize>,
+        sketch_depth: Option<usize>,
+        decay_interval: Option<u64>,
     ) -> Self {
         Self {
             cache,
@@ -199,6 +215,10 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
             policy,
             ttl,
             frequency_weight,
+            window_ratio,
+            sketch_width,
+            sketch_depth,
+            decay_interval,
             #[cfg(feature = "stats")]
             stats: CacheStats::new(),
         }
@@ -225,7 +245,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None, None, None, None, None);
     /// cache.insert("key", 100);
     /// assert_eq!(cache.get("key"), Some(100));
     /// assert_eq!(cache.get("missing"), None);
@@ -288,6 +308,13 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                     self.move_to_end(key);
                     self.increment_frequency(key);
                 }
+                EvictionPolicy::WTinyLFU => {
+                    // Simplified W-TinyLFU: Behaves like a hybrid of LRU and LFU
+                    // Full implementation with Count-Min Sketch would require additional state
+                    // For now, update both position (LRU) and frequency (LFU)
+                    self.move_to_end(key);
+                    self.increment_frequency(key);
+                }
                 EvictionPolicy::FIFO | EvictionPolicy::Random => {
                     // No update needed for FIFO or Random
                 }
@@ -334,7 +361,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None, None, None, None, None);
     /// cache.insert("first", 1);
     /// cache.insert("first", 2); // Replaces previous value
     /// assert_eq!(cache.get("first"), Some(2));
@@ -381,7 +408,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
     /// #     static CACHE: RefCell<HashMap<String, CacheEntry<i32>>> = RefCell::new(HashMap::new());
     /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
     /// # }
-    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None);
+    /// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None, None, None, None, None);
     /// cache.insert("key1", 100);
     /// let _ = cache.get("key1");
     /// let _ = cache.get("key2");
@@ -479,6 +506,17 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                                 self.frequency_weight,
                             )
                         });
+
+                        if let Some(key) = evict_key {
+                            self.remove_key(&key);
+                        }
+                    }
+                    EvictionPolicy::WTinyLFU => {
+                        // Simplified W-TinyLFU: Use LFU-like eviction
+                        // Full implementation would use window segment + Count-Min Sketch
+                        let evict_key = self
+                            .cache
+                            .with(|c| find_min_frequency_key(&c.borrow(), order));
 
                         if let Some(key) = evict_key {
                             self.remove_key(&key);
@@ -615,6 +653,19 @@ impl<R: Clone + 'static + crate::MemoryEstimator> ThreadLocalCache<R> {
                                 false
                             }
                         }
+                        EvictionPolicy::WTinyLFU => {
+                            // Simplified W-TinyLFU: Use LFU-like eviction
+                            // Full implementation would use window segment + Count-Min Sketch
+                            let evict_key = self
+                                .cache
+                                .with(|c| find_min_frequency_key(&c.borrow(), &order));
+                            if let Some(key) = evict_key {
+                                self.remove_key(&key);
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         EvictionPolicy::Random => {
                             // O(1) random eviction: select random position and remove directly
                             if !order.is_empty() {
@@ -677,7 +728,7 @@ impl<R: Clone + 'static + crate::MemoryEstimator> ThreadLocalCache<R> {
 /// #     static CACHE: RefCell<HashMap<String, CacheEntry<Result<i32, String>>>> = RefCell::new(HashMap::new());
 /// #     static ORDER: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
 /// # }
-/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None);
+/// let cache = ThreadLocalCache::new(&CACHE, &ORDER, None, None, EvictionPolicy::FIFO, None, None, None, None, None, None);
 ///
 /// // Ok values are cached
 /// cache.insert_result("success", &Ok(42));
@@ -746,7 +797,19 @@ mod tests {
     ) -> ThreadLocalCache<i32> {
         TEST_CACHE.with(|c| c.borrow_mut().clear());
         TEST_ORDER.with(|o| o.borrow_mut().clear());
-        ThreadLocalCache::new(&TEST_CACHE, &TEST_ORDER, limit, None, policy, ttl, None)
+        ThreadLocalCache::new(
+            &TEST_CACHE,
+            &TEST_ORDER,
+            limit,
+            None,
+            policy,
+            ttl,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     fn setup_cache_with_weight(
@@ -765,6 +828,10 @@ mod tests {
             policy,
             ttl,
             frequency_weight,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -849,6 +916,10 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         );
         let ok_result = Ok(100);
         cache.insert_result("success", &ok_result);
@@ -868,6 +939,10 @@ mod tests {
             None,
             None,
             EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
         );

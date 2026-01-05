@@ -22,7 +22,19 @@ fn main() {
     }
 
     // Create a thread-local cache
-    let cache = ThreadLocalCache::new(&CACHE, &ORDER, Some(5), None, EvictionPolicy::LRU, None, None);
+    let cache = ThreadLocalCache::new(
+        &CACHE,
+        &ORDER,
+        Some(5),
+        None,
+        EvictionPolicy::LRU,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
 
     println!("Making cache calls...\n");
 
@@ -94,8 +106,19 @@ fn main() {
             static ORDER2: RefCell<VecDeque<String>> = RefCell::new(VecDeque::new());
         }
 
-        let cache2 =
-            ThreadLocalCache::new(&CACHE2, &ORDER2, None, None, EvictionPolicy::FIFO, None, None);
+        let cache2 = ThreadLocalCache::new(
+            &CACHE2,
+            &ORDER2,
+            None,
+            None,
+            EvictionPolicy::FIFO,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
 
         cache2.insert("thread2_key", 999);
         cache2.get("thread2_key");
