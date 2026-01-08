@@ -512,14 +512,65 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                         }
                     }
                     EvictionPolicy::WTinyLFU => {
-                        // Simplified W-TinyLFU: Use LFU-like eviction
-                        // Full implementation would use window segment + Count-Min Sketch
-                        let evict_key = self
-                            .cache
-                            .with(|c| find_min_frequency_key(&c.borrow(), order));
+                        // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
+                        // Window ratio determines split point
+                        let window_ratio = self.window_ratio.unwrap_or(0.01); // Default 1%
+                        let window_size = crate::utils::calculate_window_size(limit, window_ratio);
 
-                        if let Some(key) = evict_key {
-                            self.remove_key(&key);
+                        if order.len() <= window_size {
+                            // Everything is in window segment - evict FIFO
+                            while let Some(evict_key) = order.pop_front() {
+                                let mut removed = false;
+                                self.cache.with(|c| {
+                                    let mut cache = c.borrow_mut();
+                                    if cache.contains_key(&evict_key) {
+                                        cache.remove(&evict_key);
+                                        removed = true;
+                                    }
+                                });
+                                if removed {
+                                    break;
+                                }
+                            }
+                        } else {
+                            // We have both window and protected segments
+                            // Try to evict from window first (FIFO)
+                            let mut evicted = false;
+
+                            // Evict from window (first window_size entries)
+                            for i in 0..window_size.min(order.len()) {
+                                if let Some(evict_key) = order.get(i) {
+                                    let mut removed = false;
+                                    self.cache.with(|c| {
+                                        let mut cache = c.borrow_mut();
+                                        if cache.contains_key(evict_key) {
+                                            cache.remove(evict_key);
+                                            removed = true;
+                                        }
+                                    });
+
+                                    if removed {
+                                        order.remove(i);
+                                        evicted = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // If window eviction failed, evict from protected (LFU)
+                            if !evicted {
+                                // Protected segment is from window_size to end
+                                let protected_keys: VecDeque<String> =
+                                    order.iter().skip(window_size).cloned().collect();
+
+                                let evict_key = self
+                                    .cache
+                                    .with(|c| find_min_frequency_key(&c.borrow(), &protected_keys));
+
+                                if let Some(key) = evict_key {
+                                    self.remove_key(&key);
+                                }
+                            }
                         }
                     }
                     EvictionPolicy::Random => {

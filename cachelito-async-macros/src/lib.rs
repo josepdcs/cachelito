@@ -58,6 +58,7 @@ fn generate_cache_logic_block(
             #policy_expr,
             #ttl_expr,
             #frequency_weight_expr,
+            None, // window_ratio for W-TinyLFU (could be made configurable)
             &*#stats_ident,
         );
 

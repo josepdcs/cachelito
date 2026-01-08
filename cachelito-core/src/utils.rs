@@ -1428,3 +1428,219 @@ mod tests {
         assert_eq!(result, Some("almost_expired".to_string()));
     }
 }
+
+/// Calculates the window size based on window ratio and total limit.
+///
+/// W-TinyLFU divides the cache into two segments:
+/// - **Window segment**: New entries (recency-based)
+/// - **Protected segment**: Frequently accessed entries (frequency-based)
+///
+/// # Arguments
+///
+/// * `limit` - Total cache size limit
+/// * `window_ratio` - Percentage of cache allocated to window segment (0.0 to 1.0)
+///
+/// # Returns
+///
+/// The number of entries that should be in the window segment.
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::utils::calculate_window_size;
+///
+/// // 20% window for cache of 100 entries = 20 entries
+/// assert_eq!(calculate_window_size(100, 0.2), 20);
+///
+/// // 10% window for cache of 1000 entries = 100 entries
+/// assert_eq!(calculate_window_size(1000, 0.1), 100);
+///
+/// // Minimum 1 entry for small caches
+/// assert_eq!(calculate_window_size(5, 0.1), 1);
+/// ```
+pub fn calculate_window_size(limit: usize, window_ratio: f64) -> usize {
+    let window_size = (limit as f64 * window_ratio) as usize;
+    window_size.max(1) // At least 1 entry in window
+}
+
+/// Determines if an eviction candidate should be admitted based on W-TinyLFU admission policy.
+///
+/// The admission policy compares the frequency of the new entry against the frequency
+/// of the victim (entry to be evicted). The new entry is admitted only if its frequency
+/// is higher than or equal to the victim's frequency.
+///
+/// # Arguments
+///
+/// * `new_freq` - Estimated frequency of the new entry (from Count-Min Sketch)
+/// * `victim_freq` - Frequency of the entry that would be evicted
+///
+/// # Returns
+///
+/// `true` if the new entry should be admitted (frequency >= victim frequency), `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::utils::should_admit;
+///
+/// // New entry has higher frequency - admit
+/// assert_eq!(should_admit(10, 5), true);
+///
+/// // New entry has equal frequency - admit
+/// assert_eq!(should_admit(5, 5), true);
+///
+/// // New entry has lower frequency - reject
+/// assert_eq!(should_admit(3, 10), false);
+/// ```
+pub fn should_admit(new_freq: u32, victim_freq: u32) -> bool {
+    new_freq >= victim_freq
+}
+
+/// Finds the least valuable key in the protected segment for W-TinyLFU eviction.
+///
+/// In W-TinyLFU, when the protected segment is full, we evict the entry with the lowest frequency.
+/// This is similar to LFU but only applies to the protected segment.
+///
+/// # Type Parameters
+///
+/// * `K` - The key type (must implement Clone, Eq, Hash)
+/// * `R` - The value type
+///
+/// # Arguments
+///
+/// * `map` - The cache HashMap containing entries
+/// * `protected_keys` - Iterator over keys in the protected segment
+///
+/// # Returns
+///
+/// * `Some(key)` - The key with minimum frequency in protected segment
+/// * `None` - If protected segment is empty
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use cachelito_core::{CacheEntry, utils::find_w_tinylfu_victim};
+///
+/// let mut map = HashMap::new();
+///
+/// let mut entry1 = CacheEntry::new(100);
+/// entry1.frequency = 10;
+/// map.insert("key1".to_string(), entry1);
+///
+/// let mut entry2 = CacheEntry::new(200);
+/// entry2.frequency = 5;
+/// map.insert("key2".to_string(), entry2);
+///
+/// let mut entry3 = CacheEntry::new(300);
+/// entry3.frequency = 15;
+/// map.insert("key3".to_string(), entry3);
+///
+/// let protected_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+/// let victim = find_w_tinylfu_victim(&map, protected_keys.iter());
+///
+/// // key2 has lowest frequency (5)
+/// assert_eq!(victim, Some("key2".to_string()));
+/// ```
+pub fn find_w_tinylfu_victim<'a, K, R, I>(
+    map: &HashMap<K, CacheEntry<R>>,
+    protected_keys: I,
+) -> Option<K>
+where
+    K: Clone + Eq + std::hash::Hash + 'a,
+    I: Iterator<Item = &'a K>,
+{
+    let mut min_freq = u64::MAX;
+    let mut victim_key: Option<K> = None;
+
+    for key in protected_keys {
+        if let Some(entry) = map.get(key) {
+            if entry.frequency < min_freq {
+                min_freq = entry.frequency;
+                victim_key = Some(key.clone());
+            }
+        }
+    }
+
+    victim_key
+}
+
+#[cfg(test)]
+mod w_tinylfu_tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_window_size() {
+        assert_eq!(calculate_window_size(100, 0.2), 20);
+        assert_eq!(calculate_window_size(1000, 0.1), 100);
+        assert_eq!(calculate_window_size(50, 0.3), 15);
+
+        // Edge cases
+        assert_eq!(calculate_window_size(5, 0.1), 1); // Minimum 1
+        assert_eq!(calculate_window_size(10, 0.0), 1); // Even with 0% ratio, min is 1
+    }
+
+    #[test]
+    fn test_should_admit() {
+        // Higher frequency - admit
+        assert!(should_admit(10, 5));
+
+        // Equal frequency - admit
+        assert!(should_admit(5, 5));
+
+        // Lower frequency - reject
+        assert!(!should_admit(3, 10));
+
+        // Edge case: zero frequencies
+        assert!(should_admit(0, 0));
+        assert!(!should_admit(0, 1));
+    }
+
+    #[test]
+    fn test_find_w_tinylfu_victim() {
+        let mut map = HashMap::new();
+
+        fn create_entry(val: i32, freq: u64) -> CacheEntry<i32> {
+            let mut entry = CacheEntry::new(val);
+            entry.frequency = freq;
+            entry
+        }
+
+        map.insert("key1".to_string(), create_entry(100, 10));
+        map.insert("key2".to_string(), create_entry(200, 5));
+        map.insert("key3".to_string(), create_entry(300, 15));
+
+        let protected_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+        let victim = find_w_tinylfu_victim(&map, protected_keys.iter());
+
+        // key2 has lowest frequency (5)
+        assert_eq!(victim, Some("key2".to_string()));
+    }
+
+    #[test]
+    fn test_find_w_tinylfu_victim_empty() {
+        let map: HashMap<String, CacheEntry<i32>> = HashMap::new();
+        let protected_keys: Vec<String> = vec![];
+
+        let victim = find_w_tinylfu_victim(&map, protected_keys.iter());
+        assert_eq!(victim, None);
+    }
+
+    #[test]
+    fn test_find_w_tinylfu_victim_single_entry() {
+        let mut map = HashMap::new();
+
+        fn create_entry(val: i32, freq: u64) -> CacheEntry<i32> {
+            let mut entry = CacheEntry::new(val);
+            entry.frequency = freq;
+            entry
+        }
+
+        map.insert("only_key".to_string(), create_entry(100, 7));
+
+        let protected_keys = vec!["only_key".to_string()];
+        let victim = find_w_tinylfu_victim(&map, protected_keys.iter());
+
+        assert_eq!(victim, Some("only_key".to_string()));
+    }
+}

@@ -1,183 +1,216 @@
-//! # Count-Min Sketch
-//!
-//! A probabilistic data structure for estimating frequencies with low memory overhead.
-//! Used by W-TinyLFU policy for approximate frequency counting.
-//!
-//! ## Algorithm
-//!
-//! - Uses `depth` hash functions and `width` counters per row
-//! - Increment: hash key with each function, increment corresponding counters
-//! - Estimate: return minimum of all counters for that key
-//! - Decay: periodically halve all counters to prevent saturation
-//!
-//! ## Complexity
-//!
-//! - Space: O(width × depth)
-//! - Increment: O(depth)
-//! - Estimate: O(depth)
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Count-Min Sketch for approximate frequency counting
-#[derive(Clone)]
+/// Count-Min Sketch - Probabilistic data structure for frequency estimation.
+///
+/// This implementation provides approximate frequency counting with configurable
+/// accuracy and memory efficiency. It's used in W-TinyLFU for admission control.
+///
+/// # Algorithm
+///
+/// The Count-Min Sketch uses multiple hash functions and maintains a 2D array of counters.
+/// When incrementing or querying a key:
+/// 1. Hash the key with each hash function to get `depth` positions
+/// 2. For increment: increment all counters at those positions
+/// 3. For query: return the minimum value among all positions
+///
+/// # Memory Usage
+///
+/// Total memory: `width × depth × size_of::<u32>()` bytes
+///
+/// # Examples
+///
+/// ```
+/// use cachelito_core::CountMinSketch;
+///
+/// let mut sketch = CountMinSketch::new(2048, 4);
+/// sketch.increment(&"key1");
+/// sketch.increment(&"key1");
+/// sketch.increment(&"key2");
+///
+/// assert_eq!(sketch.estimate(&"key1"), 2);
+/// assert_eq!(sketch.estimate(&"key2"), 1);
+/// assert_eq!(sketch.estimate(&"key3"), 0);
+/// ```
+#[derive(Clone, Debug)]
 pub struct CountMinSketch {
-    /// 2D array of counters: depth rows × width columns
+    /// 2D array of counters: [depth][width]
     counters: Vec<Vec<u32>>,
     /// Number of hash functions (rows)
     depth: usize,
-    /// Number of counters per hash function (columns)
+    /// Size of each counter array (columns)
     width: usize,
-    /// Total number of items added (for decay logic)
+    /// Total increments (for decay)
     total_count: u64,
 }
 
 impl CountMinSketch {
-    /// Creates a new Count-Min Sketch
+    /// Creates a new Count-Min Sketch with the specified dimensions.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
-    /// * `width` - Number of counters per row (affects accuracy)
-    /// * `depth` - Number of rows/hash functions (affects collision probability)
-    ///
-    /// # Recommended values
-    ///
-    /// - width: 2048-8192 (higher = more accurate)
-    /// - depth: 4-8 (diminishing returns after 4)
+    /// * `width` - Number of buckets per hash function (columns). Larger values reduce collision probability.
+    /// * `depth` - Number of hash functions (rows). Typical values: 4-8.
     ///
     /// # Examples
     ///
     /// ```
     /// use cachelito_core::CountMinSketch;
     ///
+    /// // Create sketch with 2048 buckets and 4 hash functions
     /// let sketch = CountMinSketch::new(2048, 4);
     /// ```
     pub fn new(width: usize, depth: usize) -> Self {
-        assert!(width > 0, "Width must be greater than 0");
-        assert!(depth > 0, "Depth must be greater than 0");
-
         Self {
-            counters: vec![vec![0; width]; depth],
+            counters: vec![vec![0u32; width]; depth],
             depth,
             width,
             total_count: 0,
         }
     }
 
-    /// Increments the frequency estimate for a key
+    /// Increments the frequency counter for the given key.
+    ///
+    /// # Parameters
+    ///
+    /// * `key` - The key to increment
     ///
     /// # Examples
     ///
     /// ```
     /// use cachelito_core::CountMinSketch;
     ///
-    /// let mut sketch = CountMinSketch::new(2048, 4);
-    /// sketch.increment(&"key1");
-    /// sketch.increment(&"key1");
-    /// assert!(sketch.estimate(&"key1") >= 2);
+    /// let mut sketch = CountMinSketch::new(1024, 4);
+    /// sketch.increment(&"my_key");
+    /// assert_eq!(sketch.estimate(&"my_key"), 1);
     /// ```
     pub fn increment<K: Hash>(&mut self, key: &K) {
         for i in 0..self.depth {
-            let hash = self.hash(key, i);
-            let idx = (hash % self.width as u64) as usize;
-
-            // Prevent overflow by capping at u32::MAX
-            if self.counters[i][idx] < u32::MAX {
-                self.counters[i][idx] += 1;
-            }
+            let index = self.hash(key, i);
+            self.counters[i][index] = self.counters[i][index].saturating_add(1);
         }
-
-        self.total_count += 1;
+        self.total_count = self.total_count.saturating_add(1);
     }
 
-    /// Estimates the frequency of a key
+    /// Estimates the frequency of the given key.
     ///
-    /// Returns the minimum counter value across all hash functions.
+    /// Returns the minimum count across all hash functions, which is the
+    /// conservative estimate (guarantees we never underestimate).
+    ///
+    /// # Parameters
+    ///
+    /// * `key` - The key to query
+    ///
+    /// # Returns
+    ///
+    /// The estimated frequency (minimum of all counters)
     ///
     /// # Examples
     ///
     /// ```
     /// use cachelito_core::CountMinSketch;
     ///
-    /// let mut sketch = CountMinSketch::new(2048, 4);
+    /// let mut sketch = CountMinSketch::new(1024, 4);
     /// sketch.increment(&"key1");
     /// sketch.increment(&"key1");
     /// sketch.increment(&"key1");
+    ///
     /// assert_eq!(sketch.estimate(&"key1"), 3);
     /// ```
     pub fn estimate<K: Hash>(&self, key: &K) -> u32 {
-        let mut min = u32::MAX;
-
+        let mut min_count = u32::MAX;
         for i in 0..self.depth {
-            let hash = self.hash(key, i);
-            let idx = (hash % self.width as u64) as usize;
-            min = min.min(self.counters[i][idx]);
+            let index = self.hash(key, i);
+            min_count = min_count.min(self.counters[i][index]);
         }
-
-        min
+        min_count
     }
 
-    /// Decays all counters by halving them
+    /// Decays all counters by dividing them by 2.
     ///
-    /// This prevents counter saturation and allows the sketch to adapt
-    /// to changing access patterns.
+    /// This is called periodically to:
+    /// - Prevent counter saturation
+    /// - Give more weight to recent accesses
+    /// - Adapt to changing access patterns
     ///
     /// # Examples
     ///
     /// ```
     /// use cachelito_core::CountMinSketch;
     ///
-    /// let mut sketch = CountMinSketch::new(2048, 4);
+    /// let mut sketch = CountMinSketch::new(1024, 4);
     /// sketch.increment(&"key1");
     /// sketch.increment(&"key1");
     /// sketch.increment(&"key1");
     /// sketch.increment(&"key1");
+    ///
     /// assert_eq!(sketch.estimate(&"key1"), 4);
     ///
     /// sketch.decay();
     /// assert_eq!(sketch.estimate(&"key1"), 2);
+    ///
+    /// sketch.decay();
+    /// assert_eq!(sketch.estimate(&"key1"), 1);
     /// ```
     pub fn decay(&mut self) {
         for row in &mut self.counters {
-            for counter in row {
+            for counter in row.iter_mut() {
                 *counter /= 2;
             }
         }
         self.total_count /= 2;
     }
 
-    /// Returns the total count of increments
-    pub fn total_count(&self) -> u64 {
-        self.total_count
-    }
-
-    /// Resets all counters to zero
+    /// Resets all counters to zero.
     ///
     /// # Examples
     ///
     /// ```
     /// use cachelito_core::CountMinSketch;
     ///
-    /// let mut sketch = CountMinSketch::new(2048, 4);
+    /// let mut sketch = CountMinSketch::new(1024, 4);
     /// sketch.increment(&"key1");
+    /// assert_eq!(sketch.estimate(&"key1"), 1);
+    ///
     /// sketch.reset();
     /// assert_eq!(sketch.estimate(&"key1"), 0);
     /// ```
     pub fn reset(&mut self) {
         for row in &mut self.counters {
-            for counter in row {
+            for counter in row.iter_mut() {
                 *counter = 0;
             }
         }
         self.total_count = 0;
     }
 
-    /// Hash function with seed for different rows
-    fn hash<K: Hash>(&self, key: &K, seed: usize) -> u64 {
+    /// Returns the total number of increments performed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cachelito_core::CountMinSketch;
+    ///
+    /// let mut sketch = CountMinSketch::new(1024, 4);
+    /// sketch.increment(&"key1");
+    /// sketch.increment(&"key2");
+    /// sketch.increment(&"key1");
+    ///
+    /// assert_eq!(sketch.total_count(), 3);
+    /// ```
+    pub fn total_count(&self) -> u64 {
+        self.total_count
+    }
+
+    /// Hash function that generates a bucket index for a given key and hash function index.
+    ///
+    /// Uses DefaultHasher with different seeds for each hash function.
+    fn hash<K: Hash>(&self, key: &K, hash_index: usize) -> usize {
         let mut hasher = DefaultHasher::new();
-        seed.hash(&mut hasher);
+        // Use hash_index as a seed to generate different hash functions
+        hash_index.hash(&mut hasher);
         key.hash(&mut hasher);
-        hasher.finish()
+        (hasher.finish() as usize) % self.width
     }
 }
 
@@ -186,104 +219,135 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_sketch() {
-        let sketch = CountMinSketch::new(100, 4);
-        assert_eq!(sketch.width, 100);
-        assert_eq!(sketch.depth, 4);
-        assert_eq!(sketch.total_count, 0);
-    }
-
-    #[test]
-    fn test_increment_and_estimate() {
-        let mut sketch = CountMinSketch::new(1000, 4);
+    fn test_basic_increment_and_estimate() {
+        let mut sketch = CountMinSketch::new(1024, 4);
 
         sketch.increment(&"key1");
         assert_eq!(sketch.estimate(&"key1"), 1);
 
         sketch.increment(&"key1");
-        sketch.increment(&"key1");
-        assert_eq!(sketch.estimate(&"key1"), 3);
+        assert_eq!(sketch.estimate(&"key1"), 2);
+
+        sketch.increment(&"key2");
+        assert_eq!(sketch.estimate(&"key2"), 1);
+        assert_eq!(sketch.estimate(&"key1"), 2);
     }
 
     #[test]
-    fn test_multiple_keys() {
-        let mut sketch = CountMinSketch::new(1000, 4);
-
-        sketch.increment(&"key1");
-        sketch.increment(&"key1");
-        sketch.increment(&"key2");
-
-        assert_eq!(sketch.estimate(&"key1"), 2);
-        assert_eq!(sketch.estimate(&"key2"), 1);
-        assert_eq!(sketch.estimate(&"key3"), 0);
+    fn test_estimate_nonexistent_key() {
+        let sketch = CountMinSketch::new(1024, 4);
+        assert_eq!(sketch.estimate(&"nonexistent"), 0);
     }
 
     #[test]
     fn test_decay() {
-        let mut sketch = CountMinSketch::new(1000, 4);
+        let mut sketch = CountMinSketch::new(1024, 4);
 
-        for _ in 0..10 {
-            sketch.increment(&"key1");
-        }
-        assert_eq!(sketch.estimate(&"key1"), 10);
+        sketch.increment(&"key1");
+        sketch.increment(&"key1");
+        sketch.increment(&"key1");
+        sketch.increment(&"key1");
 
-        sketch.decay();
-        assert_eq!(sketch.estimate(&"key1"), 5);
+        assert_eq!(sketch.estimate(&"key1"), 4);
 
         sketch.decay();
         assert_eq!(sketch.estimate(&"key1"), 2);
+
+        sketch.decay();
+        assert_eq!(sketch.estimate(&"key1"), 1);
+
+        sketch.decay();
+        assert_eq!(sketch.estimate(&"key1"), 0);
     }
 
     #[test]
     fn test_reset() {
-        let mut sketch = CountMinSketch::new(1000, 4);
+        let mut sketch = CountMinSketch::new(1024, 4);
 
         sketch.increment(&"key1");
         sketch.increment(&"key2");
-        assert_eq!(sketch.total_count(), 2);
+        sketch.increment(&"key3");
+
+        assert_eq!(sketch.total_count(), 3);
+        assert!(sketch.estimate(&"key1") > 0);
 
         sketch.reset();
+
+        assert_eq!(sketch.total_count(), 0);
         assert_eq!(sketch.estimate(&"key1"), 0);
         assert_eq!(sketch.estimate(&"key2"), 0);
-        assert_eq!(sketch.total_count(), 0);
+        assert_eq!(sketch.estimate(&"key3"), 0);
     }
 
     #[test]
     fn test_total_count() {
-        let mut sketch = CountMinSketch::new(1000, 4);
+        let mut sketch = CountMinSketch::new(1024, 4);
+
+        assert_eq!(sketch.total_count(), 0);
 
         sketch.increment(&"key1");
-        sketch.increment(&"key1");
+        assert_eq!(sketch.total_count(), 1);
+
         sketch.increment(&"key2");
-
+        sketch.increment(&"key1");
         assert_eq!(sketch.total_count(), 3);
+
+        sketch.decay();
+        assert_eq!(sketch.total_count(), 1); // 3 / 2 = 1
     }
 
     #[test]
-    fn test_over_estimation() {
-        // With small width, we expect over-estimation due to collisions
-        let mut sketch = CountMinSketch::new(10, 4);
+    fn test_multiple_keys() {
+        let mut sketch = CountMinSketch::new(2048, 4);
 
-        // Add many different keys
         for i in 0..100 {
             sketch.increment(&format!("key{}", i));
         }
 
-        // Each key should have count >= 1 (may be higher due to collisions)
         for i in 0..100 {
-            assert!(sketch.estimate(&format!("key{}", i)) >= 1);
+            assert_eq!(sketch.estimate(&format!("key{}", i)), 1);
         }
+
+        // Add more to specific keys
+        for _ in 0..10 {
+            sketch.increment(&"key5");
+        }
+
+        assert_eq!(sketch.estimate(&"key5"), 11);
+        assert_eq!(sketch.estimate(&"key10"), 1);
     }
 
     #[test]
-    #[should_panic(expected = "Width must be greater than 0")]
-    fn test_invalid_width() {
-        CountMinSketch::new(0, 4);
+    fn test_saturation() {
+        let mut sketch = CountMinSketch::new(1024, 4);
+
+        // Manually set counters to near saturation point to test saturating_add behavior
+        // We need to set the counters at the positions where "key1" hashes to
+        let test_key = "key1";
+        for i in 0..sketch.depth {
+            let index = sketch.hash(&test_key, i);
+            sketch.counters[i][index] = u32::MAX - 1;
+        }
+
+        // Increment a few more times - should saturate at u32::MAX, not overflow
+        sketch.increment(&test_key);
+        sketch.increment(&test_key);
+        sketch.increment(&test_key);
+
+        let estimate = sketch.estimate(&test_key);
+        assert_eq!(estimate, u32::MAX);
     }
 
     #[test]
-    #[should_panic(expected = "Depth must be greater than 0")]
-    fn test_invalid_depth() {
-        CountMinSketch::new(100, 0);
+    fn test_different_types() {
+        let mut sketch = CountMinSketch::new(1024, 4);
+
+        sketch.increment(&42u32);
+        sketch.increment(&"string_key");
+        sketch.increment(&(1, 2, 3));
+
+        assert_eq!(sketch.estimate(&42u32), 1);
+        assert_eq!(sketch.estimate(&"string_key"), 1);
+        assert_eq!(sketch.estimate(&(1, 2, 3)), 1);
     }
 }

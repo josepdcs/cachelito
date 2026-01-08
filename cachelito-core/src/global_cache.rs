@@ -598,11 +598,53 @@ impl<R: Clone + 'static> GlobalCache<R> {
                         }
                     }
                     EvictionPolicy::WTinyLFU => {
-                        // Simplified W-TinyLFU: Use LFU-like eviction
-                        // Full implementation would use window segment + Count-Min Sketch
+                        // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
+                        let window_ratio = self.window_ratio.unwrap_or(0.01); // Default 1%
+                        let window_size = crate::utils::calculate_window_size(limit, window_ratio);
+
                         let mut map_write = self.map.write();
-                        if let Some(evict_key) = find_min_frequency_key(&map_write, &o) {
-                            remove_key_from_global_cache(&mut map_write, &mut o, &evict_key);
+
+                        if o.len() <= window_size {
+                            // Everything is in window segment - evict FIFO
+                            while let Some(evict_key) = o.pop_front() {
+                                if map_write.contains_key(&evict_key) {
+                                    map_write.remove(&evict_key);
+                                    break;
+                                }
+                            }
+                        } else {
+                            // We have both window and protected segments
+                            let mut evicted = false;
+
+                            // Try to evict from window first (first window_size entries)
+                            for i in 0..window_size.min(o.len()) {
+                                if let Some(evict_key) = o.get(i) {
+                                    if map_write.contains_key(evict_key) {
+                                        let key_to_remove = evict_key.clone();
+                                        map_write.remove(&key_to_remove);
+                                        o.remove(i);
+                                        evicted = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // If window eviction failed, evict from protected (LFU)
+                            if !evicted {
+                                // Protected segment is from window_size to end
+                                let protected_keys: VecDeque<String> =
+                                    o.iter().skip(window_size).cloned().collect();
+
+                                if let Some(evict_key) =
+                                    find_min_frequency_key(&map_write, &protected_keys)
+                                {
+                                    remove_key_from_global_cache(
+                                        &mut map_write,
+                                        &mut o,
+                                        &evict_key,
+                                    );
+                                }
+                            }
                         }
                     }
                     EvictionPolicy::Random => {
@@ -1230,11 +1272,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                        None,
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
                         &STATS,
                     );
                     cache.insert(&format!("key{}", i), i);
@@ -1382,11 +1424,11 @@ mod tests {
                         EvictionPolicy::LRU,
                         None,
                         None,
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                        None,
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
                         &STATS,
                     );
                     for _ in 0..10 {
@@ -1534,11 +1576,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                        None,
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
                         &STATS,
                     );
                     let mut results = Vec::new();
@@ -1597,11 +1639,11 @@ mod tests {
                 EvictionPolicy::FIFO,
                 None,
                 None,
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                None,
+                None,
+                None,
+                None,
+                #[cfg(feature = "stats")]
                 &STATS,
             );
             for i in 0..50 {
@@ -1621,11 +1663,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                        None,
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
                         &STATS,
                     );
                     for i in 0..50 {
@@ -1799,11 +1841,11 @@ mod tests {
                         EvictionPolicy::FIFO,
                         None,
                         None,
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                        None,
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
                         &STATS,
                     );
                     for _ in 0..10 {
@@ -2200,11 +2242,11 @@ mod tests {
                         EvictionPolicy::TLRU,
                         Some(10),
                         Some(1.2),
-            None,
-            None,
-            None,
-            None,
-            #[cfg(feature = "stats")]
+                        None,
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
                         &STATS,
                     );
 
