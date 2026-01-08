@@ -8,7 +8,44 @@ use quote::quote;
 use syn::{punctuated::Punctuated, Expr, MetaNameValue, Token};
 
 /// List of supported eviction policies
-static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc", "random", "tlru"];
+static POLICIES: &[&str] = &["fifo", "lru", "lfu", "arc", "random", "tlru", "w_tinylfu"];
+
+/// Helper struct to group common attributes and avoid excessive function parameters
+#[derive(Default)]
+pub struct CommonAttributes {
+    pub custom_name: Option<String>,
+    pub max_memory: TokenStream2,
+    pub tags: Vec<String>,
+    pub events: Vec<String>,
+    pub dependencies: Vec<String>,
+    pub invalidate_on: Option<syn::Path>,
+    pub cache_if: Option<syn::Path>,
+    pub frequency_weight: TokenStream2,
+    pub window_ratio: TokenStream2,
+    pub sketch_width: TokenStream2,
+    pub sketch_depth: TokenStream2,
+    pub decay_interval: TokenStream2,
+}
+
+impl CommonAttributes {
+    /// Creates a new CommonAttributes with default token streams
+    pub fn new() -> Self {
+        Self {
+            custom_name: None,
+            max_memory: quote! { None },
+            tags: Vec::new(),
+            events: Vec::new(),
+            dependencies: Vec::new(),
+            invalidate_on: None,
+            cache_if: None,
+            frequency_weight: quote! { None },
+            window_ratio: quote! { None },
+            sketch_width: quote! { None },
+            sketch_depth: quote! { None },
+            decay_interval: quote! { None },
+        }
+    }
+}
 
 pub fn policies_str_with_separator(separator: &str) -> String {
     POLICIES
@@ -31,6 +68,10 @@ pub struct AsyncCacheAttributes {
     pub invalidate_on: Option<syn::Path>,
     pub cache_if: Option<syn::Path>,
     pub frequency_weight: TokenStream2,
+    pub window_ratio: TokenStream2,
+    pub sketch_width: TokenStream2,
+    pub sketch_depth: TokenStream2,
+    pub decay_interval: TokenStream2,
 }
 
 impl Default for AsyncCacheAttributes {
@@ -47,7 +88,133 @@ impl Default for AsyncCacheAttributes {
             invalidate_on: None,
             cache_if: None,
             frequency_weight: quote! { Option::<f64>::None },
+            window_ratio: quote! { Option::<f64>::None },
+            sketch_width: quote! { Option::<usize>::None },
+            sketch_depth: quote! { Option::<usize>::None },
+            decay_interval: quote! { Option::<u64>::None },
         }
+    }
+}
+
+impl AsyncCacheAttributes {
+    /// Create a new builder for AsyncCacheAttributes
+    pub fn builder() -> AsyncCacheAttributesBuilder {
+        AsyncCacheAttributesBuilder::new()
+    }
+}
+
+/// Builder for AsyncCacheAttributes following the Builder pattern
+pub struct AsyncCacheAttributesBuilder {
+    attrs: AsyncCacheAttributes,
+}
+
+impl AsyncCacheAttributesBuilder {
+    pub fn new() -> Self {
+        Self {
+            attrs: AsyncCacheAttributes::default(),
+        }
+    }
+
+    pub fn limit(mut self, limit: TokenStream2) -> Self {
+        self.attrs.limit = limit;
+        self
+    }
+
+    pub fn policy(mut self, policy: TokenStream2) -> Self {
+        self.attrs.policy = policy;
+        self
+    }
+
+    pub fn ttl(mut self, ttl: TokenStream2) -> Self {
+        self.attrs.ttl = ttl;
+        self
+    }
+
+    pub fn custom_name(mut self, name: Option<String>) -> Self {
+        self.attrs.custom_name = name;
+        self
+    }
+
+    pub fn max_memory(mut self, max_memory: TokenStream2) -> Self {
+        self.attrs.max_memory = max_memory;
+        self
+    }
+
+    pub fn tags(mut self, tags: Vec<String>) -> Self {
+        self.attrs.tags = tags;
+        self
+    }
+
+    pub fn events(mut self, events: Vec<String>) -> Self {
+        self.attrs.events = events;
+        self
+    }
+
+    pub fn dependencies(mut self, dependencies: Vec<String>) -> Self {
+        self.attrs.dependencies = dependencies;
+        self
+    }
+
+    pub fn invalidate_on(mut self, invalidate_on: Option<syn::Path>) -> Self {
+        self.attrs.invalidate_on = invalidate_on;
+        self
+    }
+
+    pub fn cache_if(mut self, cache_if: Option<syn::Path>) -> Self {
+        self.attrs.cache_if = cache_if;
+        self
+    }
+
+    pub fn frequency_weight(mut self, frequency_weight: TokenStream2) -> Self {
+        self.attrs.frequency_weight = frequency_weight;
+        self
+    }
+
+    pub fn window_ratio(mut self, window_ratio: TokenStream2) -> Self {
+        self.attrs.window_ratio = window_ratio;
+        self
+    }
+
+    pub fn sketch_width(mut self, sketch_width: TokenStream2) -> Self {
+        self.attrs.sketch_width = sketch_width;
+        self
+    }
+
+    pub fn sketch_depth(mut self, sketch_depth: TokenStream2) -> Self {
+        self.attrs.sketch_depth = sketch_depth;
+        self
+    }
+
+    pub fn decay_interval(mut self, decay_interval: TokenStream2) -> Self {
+        self.attrs.decay_interval = decay_interval;
+        self
+    }
+
+    /// Apply common attributes from CommonAttributes struct
+    pub fn with_common(mut self, common: CommonAttributes) -> Self {
+        self.attrs.custom_name = common.custom_name;
+        self.attrs.max_memory = common.max_memory;
+        self.attrs.tags = common.tags;
+        self.attrs.events = common.events;
+        self.attrs.dependencies = common.dependencies;
+        self.attrs.invalidate_on = common.invalidate_on;
+        self.attrs.cache_if = common.cache_if;
+        self.attrs.frequency_weight = common.frequency_weight;
+        self.attrs.window_ratio = common.window_ratio;
+        self.attrs.sketch_width = common.sketch_width;
+        self.attrs.sketch_depth = common.sketch_depth;
+        self.attrs.decay_interval = common.decay_interval;
+        self
+    }
+
+    pub fn build(self) -> AsyncCacheAttributes {
+        self.attrs
+    }
+}
+
+impl Default for AsyncCacheAttributesBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -65,6 +232,10 @@ pub struct SyncCacheAttributes {
     pub invalidate_on: Option<syn::Path>,
     pub cache_if: Option<syn::Path>,
     pub frequency_weight: TokenStream2,
+    pub window_ratio: TokenStream2,
+    pub sketch_width: TokenStream2,
+    pub sketch_depth: TokenStream2,
+    pub decay_interval: TokenStream2,
 }
 
 impl Default for SyncCacheAttributes {
@@ -82,7 +253,138 @@ impl Default for SyncCacheAttributes {
             invalidate_on: None,
             cache_if: None,
             frequency_weight: quote! { None },
+            window_ratio: quote! { None },
+            sketch_width: quote! { None },
+            sketch_depth: quote! { None },
+            decay_interval: quote! { None },
         }
+    }
+}
+
+impl SyncCacheAttributes {
+    /// Create a new builder for SyncCacheAttributes
+    pub fn builder() -> SyncCacheAttributesBuilder {
+        SyncCacheAttributesBuilder::new()
+    }
+}
+
+/// Builder for SyncCacheAttributes following the Builder pattern
+pub struct SyncCacheAttributesBuilder {
+    attrs: SyncCacheAttributes,
+}
+
+impl SyncCacheAttributesBuilder {
+    pub fn new() -> Self {
+        Self {
+            attrs: SyncCacheAttributes::default(),
+        }
+    }
+
+    pub fn limit(mut self, limit: TokenStream2) -> Self {
+        self.attrs.limit = limit;
+        self
+    }
+
+    pub fn policy(mut self, policy: TokenStream2) -> Self {
+        self.attrs.policy = policy;
+        self
+    }
+
+    pub fn ttl(mut self, ttl: TokenStream2) -> Self {
+        self.attrs.ttl = ttl;
+        self
+    }
+
+    pub fn scope(mut self, scope: TokenStream2) -> Self {
+        self.attrs.scope = scope;
+        self
+    }
+
+    pub fn custom_name(mut self, name: Option<String>) -> Self {
+        self.attrs.custom_name = name;
+        self
+    }
+
+    pub fn max_memory(mut self, max_memory: TokenStream2) -> Self {
+        self.attrs.max_memory = max_memory;
+        self
+    }
+
+    pub fn tags(mut self, tags: Vec<String>) -> Self {
+        self.attrs.tags = tags;
+        self
+    }
+
+    pub fn events(mut self, events: Vec<String>) -> Self {
+        self.attrs.events = events;
+        self
+    }
+
+    pub fn dependencies(mut self, dependencies: Vec<String>) -> Self {
+        self.attrs.dependencies = dependencies;
+        self
+    }
+
+    pub fn invalidate_on(mut self, invalidate_on: Option<syn::Path>) -> Self {
+        self.attrs.invalidate_on = invalidate_on;
+        self
+    }
+
+    pub fn cache_if(mut self, cache_if: Option<syn::Path>) -> Self {
+        self.attrs.cache_if = cache_if;
+        self
+    }
+
+    pub fn frequency_weight(mut self, frequency_weight: TokenStream2) -> Self {
+        self.attrs.frequency_weight = frequency_weight;
+        self
+    }
+
+    pub fn window_ratio(mut self, window_ratio: TokenStream2) -> Self {
+        self.attrs.window_ratio = window_ratio;
+        self
+    }
+
+    pub fn sketch_width(mut self, sketch_width: TokenStream2) -> Self {
+        self.attrs.sketch_width = sketch_width;
+        self
+    }
+
+    pub fn sketch_depth(mut self, sketch_depth: TokenStream2) -> Self {
+        self.attrs.sketch_depth = sketch_depth;
+        self
+    }
+
+    pub fn decay_interval(mut self, decay_interval: TokenStream2) -> Self {
+        self.attrs.decay_interval = decay_interval;
+        self
+    }
+
+    /// Apply common attributes from CommonAttributes struct
+    pub fn with_common(mut self, common: CommonAttributes) -> Self {
+        self.attrs.custom_name = common.custom_name;
+        self.attrs.max_memory = common.max_memory;
+        self.attrs.tags = common.tags;
+        self.attrs.events = common.events;
+        self.attrs.dependencies = common.dependencies;
+        self.attrs.invalidate_on = common.invalidate_on;
+        self.attrs.cache_if = common.cache_if;
+        self.attrs.frequency_weight = common.frequency_weight;
+        self.attrs.window_ratio = common.window_ratio;
+        self.attrs.sketch_width = common.sketch_width;
+        self.attrs.sketch_depth = common.sketch_depth;
+        self.attrs.decay_interval = common.decay_interval;
+        self
+    }
+
+    pub fn build(self) -> SyncCacheAttributes {
+        self.attrs
+    }
+}
+
+impl Default for SyncCacheAttributesBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -409,42 +711,152 @@ pub fn parse_cache_if_attribute(nv: &MetaNameValue) -> Result<syn::Path, TokenSt
     }
 }
 
+/// Parse the `window_ratio` attribute
+/// Expects a float value between 0.0 and 1.0
+pub fn parse_window_ratio_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Float(lit_float) => {
+                let val = lit_float
+                    .base10_parse::<f64>()
+                    .expect("window_ratio must be a float");
+                if val <= 0.0 || val >= 1.0 {
+                    quote! { compile_error!("window_ratio must be between 0.0 and 1.0 (exclusive)") }
+                } else {
+                    quote! { Some(#val) }
+                }
+            }
+            syn::Lit::Int(lit_int) => {
+                // Allow integer literals like 0 (though not semantically valid)
+                let val = lit_int
+                    .base10_parse::<u64>()
+                    .expect("window_ratio must be a number");
+                if val == 0 {
+                    quote! { compile_error!("window_ratio must be between 0.0 and 1.0 (exclusive)") }
+                } else {
+                    let val_f64 = val as f64;
+                    quote! { Some(#val_f64) }
+                }
+            }
+            _ => {
+                quote! { compile_error!("Invalid literal for `window_ratio`: expected float between 0.0 and 1.0") }
+            }
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `window_ratio`: expected `window_ratio = <float>`") }
+        }
+    }
+}
+
+/// Parse the `sketch_width` attribute
+pub fn parse_sketch_width_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Int(lit_int) => {
+                let val = lit_int
+                    .base10_parse::<usize>()
+                    .expect("sketch_width must be a positive integer");
+                if val == 0 {
+                    quote! { compile_error!("sketch_width must be greater than 0") }
+                } else {
+                    quote! { Some(#val) }
+                }
+            }
+            _ => quote! { compile_error!("Invalid literal for `sketch_width`: expected integer") },
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `sketch_width`: expected `sketch_width = <integer>`") }
+        }
+    }
+}
+
+/// Parse the `sketch_depth` attribute
+pub fn parse_sketch_depth_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Int(lit_int) => {
+                let val = lit_int
+                    .base10_parse::<usize>()
+                    .expect("sketch_depth must be a positive integer");
+                if val == 0 {
+                    quote! { compile_error!("sketch_depth must be greater than 0") }
+                } else {
+                    quote! { Some(#val) }
+                }
+            }
+            _ => quote! { compile_error!("Invalid literal for `sketch_depth`: expected integer") },
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `sketch_depth`: expected `sketch_depth = <integer>`") }
+        }
+    }
+}
+
+/// Parse the `decay_interval` attribute
+pub fn parse_decay_interval_attribute(nv: &MetaNameValue) -> TokenStream2 {
+    match &nv.value {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            syn::Lit::Int(lit_int) => {
+                let val = lit_int
+                    .base10_parse::<u64>()
+                    .expect("decay_interval must be a positive integer (number of operations)");
+                if val == 0 {
+                    quote! { compile_error!("decay_interval must be greater than 0") }
+                } else {
+                    quote! { Some(#val) }
+                }
+            }
+            _ => {
+                quote! { compile_error!("Invalid literal for `decay_interval`: expected integer") }
+            }
+        },
+        _ => {
+            quote! { compile_error!("Invalid syntax for `decay_interval`: expected `decay_interval = <integer>`") }
+        }
+    }
+}
+
 /// Parse common attributes shared between async and sync caches
 /// Returns true if the attribute was recognized and processed
 fn parse_common_attribute(
     nv: &MetaNameValue,
-    custom_name: &mut Option<String>,
-    max_memory: &mut TokenStream2,
-    tags: &mut Vec<String>,
-    events: &mut Vec<String>,
-    dependencies: &mut Vec<String>,
-    invalidate_on: &mut Option<syn::Path>,
-    cache_if: &mut Option<syn::Path>,
-    frequency_weight: &mut TokenStream2,
+    common: &mut CommonAttributes,
 ) -> Result<bool, TokenStream2> {
     if nv.path.is_ident("name") {
-        *custom_name = parse_name_attribute(nv);
+        common.custom_name = parse_name_attribute(nv);
         Ok(true)
     } else if nv.path.is_ident("max_memory") {
-        *max_memory = parse_max_memory_attribute(nv);
+        common.max_memory = parse_max_memory_attribute(nv);
         Ok(true)
     } else if nv.path.is_ident("tags") {
-        *tags = parse_string_array_attribute(nv)?;
+        common.tags = parse_string_array_attribute(nv)?;
         Ok(true)
     } else if nv.path.is_ident("events") {
-        *events = parse_string_array_attribute(nv)?;
+        common.events = parse_string_array_attribute(nv)?;
         Ok(true)
     } else if nv.path.is_ident("dependencies") {
-        *dependencies = parse_string_array_attribute(nv)?;
+        common.dependencies = parse_string_array_attribute(nv)?;
         Ok(true)
     } else if nv.path.is_ident("invalidate_on") {
-        *invalidate_on = Some(parse_invalidate_on_attribute(nv)?);
+        common.invalidate_on = Some(parse_invalidate_on_attribute(nv)?);
         Ok(true)
     } else if nv.path.is_ident("cache_if") {
-        *cache_if = Some(parse_cache_if_attribute(nv)?);
+        common.cache_if = Some(parse_cache_if_attribute(nv)?);
         Ok(true)
     } else if nv.path.is_ident("frequency_weight") {
-        *frequency_weight = parse_frequency_weight_attribute(nv);
+        common.frequency_weight = parse_frequency_weight_attribute(nv);
+        Ok(true)
+    } else if nv.path.is_ident("window_ratio") {
+        common.window_ratio = parse_window_ratio_attribute(nv);
+        Ok(true)
+    } else if nv.path.is_ident("sketch_width") {
+        common.sketch_width = parse_sketch_width_attribute(nv);
+        Ok(true)
+    } else if nv.path.is_ident("sketch_depth") {
+        common.sketch_depth = parse_sketch_depth_attribute(nv);
+        Ok(true)
+    } else if nv.path.is_ident("decay_interval") {
+        common.decay_interval = parse_decay_interval_attribute(nv);
         Ok(true)
     } else {
         Ok(false)
@@ -461,31 +873,22 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
         quote! { compile_error!(#msg) }
     })?;
 
-    let mut attrs = AsyncCacheAttributes::default();
+    let mut builder = AsyncCacheAttributes::builder();
+    let mut common = CommonAttributes::new();
 
     for nv in parsed_args {
         if nv.path.is_ident("limit") {
-            attrs.limit = parse_limit_attribute(&nv);
+            builder = builder.limit(parse_limit_attribute(&nv));
         } else if nv.path.is_ident("policy") {
             match parse_policy_attribute(&nv) {
-                Ok(policy_str) => attrs.policy = quote! { #policy_str },
+                Ok(policy_str) => builder = builder.policy(quote! { #policy_str }),
                 Err(err) => return Err(err),
             }
         } else if nv.path.is_ident("ttl") {
-            attrs.ttl = parse_ttl_attribute(&nv);
+            builder = builder.ttl(parse_ttl_attribute(&nv));
         } else {
             // Try to parse as common attribute
-            if !parse_common_attribute(
-                &nv,
-                &mut attrs.custom_name,
-                &mut attrs.max_memory,
-                &mut attrs.tags,
-                &mut attrs.events,
-                &mut attrs.dependencies,
-                &mut attrs.invalidate_on,
-                &mut attrs.cache_if,
-                &mut attrs.frequency_weight,
-            )? {
+            if !parse_common_attribute(&nv, &mut common)? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
                     .path
@@ -493,7 +896,7 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on, cache_if, frequency_weight",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, name, max_memory, tags, events, dependencies, invalidate_on, cache_if, frequency_weight, window_ratio, sketch_width, sketch_depth, decay_interval",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -501,7 +904,8 @@ pub fn parse_async_attributes(attr: TokenStream2) -> Result<AsyncCacheAttributes
         }
     }
 
-    Ok(attrs)
+    // Apply common attributes using the builder
+    Ok(builder.with_common(common).build())
 }
 
 /// Parse sync cache attributes from a token stream
@@ -514,15 +918,16 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
         quote! { compile_error!(#msg) }
     })?;
 
-    let mut attrs = SyncCacheAttributes::default();
+    let mut builder = SyncCacheAttributes::builder();
+    let mut common = CommonAttributes::new();
 
     for nv in parsed_args {
         if nv.path.is_ident("limit") {
-            attrs.limit = parse_limit_attribute(&nv);
+            builder = builder.limit(parse_limit_attribute(&nv));
         } else if nv.path.is_ident("policy") {
             match parse_policy_attribute(&nv) {
                 Ok(policy_str) => {
-                    attrs.policy = if policy_str == "fifo" {
+                    let policy_token = if policy_str == "fifo" {
                         quote! { cachelito_core::EvictionPolicy::FIFO }
                     } else if policy_str == "lru" {
                         quote! { cachelito_core::EvictionPolicy::LRU }
@@ -534,20 +939,23 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                         quote! { cachelito_core::EvictionPolicy::Random }
                     } else if policy_str == "tlru" {
                         quote! { cachelito_core::EvictionPolicy::TLRU }
+                    } else if policy_str == "w_tinylfu" {
+                        quote! { cachelito_core::EvictionPolicy::WTinyLFU }
                     } else {
                         let policies = policies_str_with_separator(", ");
                         let err_msg = format!("Invalid policy: expected one of {}", policies);
                         return Err(quote! { compile_error!(#err_msg) });
                     };
+                    builder = builder.policy(policy_token);
                 }
                 Err(err) => return Err(err),
             }
         } else if nv.path.is_ident("ttl") {
-            attrs.ttl = parse_ttl_attribute(&nv);
+            builder = builder.ttl(parse_ttl_attribute(&nv));
         } else if nv.path.is_ident("scope") {
             match parse_scope_attribute(&nv) {
                 Ok(scope_str) => {
-                    attrs.scope = if scope_str == "thread" {
+                    let scope_token = if scope_str == "thread" {
                         quote! { cachelito_core::CacheScope::ThreadLocal }
                     } else if scope_str == "global" {
                         quote! { cachelito_core::CacheScope::Global }
@@ -556,22 +964,13 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                             quote! { compile_error!("Invalid scope: expected \"global\" or \"thread\"") },
                         );
                     };
+                    builder = builder.scope(scope_token);
                 }
                 Err(err) => return Err(err),
             }
         } else {
             // Try to parse as common attribute
-            if !parse_common_attribute(
-                &nv,
-                &mut attrs.custom_name,
-                &mut attrs.max_memory,
-                &mut attrs.tags,
-                &mut attrs.events,
-                &mut attrs.dependencies,
-                &mut attrs.invalidate_on,
-                &mut attrs.cache_if,
-                &mut attrs.frequency_weight,
-            )? {
+            if !parse_common_attribute(&nv, &mut common)? {
                 // Unknown attribute - generate compile error
                 let attr_name = nv
                     .path
@@ -579,7 +978,7 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
                     .map(|i| i.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let err_msg = format!(
-                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on, cache_if, frequency_weight",
+                    "Unknown attribute: `{}`. Valid attributes are: limit, policy, ttl, scope, name, max_memory, tags, events, dependencies, invalidate_on, cache_if, frequency_weight, window_ratio, sketch_width, sketch_depth, decay_interval",
                     attr_name
                 );
                 return Err(quote! { compile_error!(#err_msg) });
@@ -587,7 +986,8 @@ pub fn parse_sync_attributes(attr: TokenStream2) -> Result<SyncCacheAttributes, 
         }
     }
 
-    Ok(attrs)
+    // Apply common attributes using the builder
+    Ok(builder.with_common(common).build())
 }
 
 #[cfg(test)]
@@ -601,13 +1001,13 @@ mod tests {
         let result = policies_str_with_separator(", ");
         assert_eq!(
             result,
-            "\"fifo\", \"lru\", \"lfu\", \"arc\", \"random\", \"tlru\""
+            "\"fifo\", \"lru\", \"lfu\", \"arc\", \"random\", \"tlru\", \"w_tinylfu\""
         );
 
         let result = policies_str_with_separator("|");
         assert_eq!(
             result,
-            "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"|\"random\"|\"tlru\""
+            "\"fifo\"|\"lru\"|\"lfu\"|\"arc\"|\"random\"|\"tlru\"|\"w_tinylfu\""
         );
     }
 
@@ -788,172 +1188,70 @@ mod tests {
     #[test]
     fn test_parse_common_attribute_name() {
         let nv: MetaNameValue = parse_quote! { name = "test_cache" };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
-        assert_eq!(custom_name, Some("test_cache".to_string()));
+        assert_eq!(common.custom_name, Some("test_cache".to_string()));
     }
 
     #[test]
     fn test_parse_common_attribute_max_memory() {
         let nv: MetaNameValue = parse_quote! { max_memory = "100MB" };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
         let expected = 100 * 1024 * 1024;
-        assert_eq!(max_memory.to_string(), format!("Some ({}usize)", expected));
+        assert_eq!(
+            common.max_memory.to_string(),
+            format!("Some ({}usize)", expected)
+        );
     }
 
     #[test]
     fn test_parse_common_attribute_tags() {
         let nv: MetaNameValue = parse_quote! { tags = ["tag1", "tag2"] };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
-        assert_eq!(tags, vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_eq!(common.tags, vec!["tag1".to_string(), "tag2".to_string()]);
     }
 
     #[test]
     fn test_parse_common_attribute_events() {
         let nv: MetaNameValue = parse_quote! { events = ["event1"] };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
-        assert_eq!(events, vec!["event1".to_string()]);
+        assert_eq!(common.events, vec!["event1".to_string()]);
     }
 
     #[test]
     fn test_parse_common_attribute_dependencies() {
         let nv: MetaNameValue = parse_quote! { dependencies = ["dep1", "dep2"] };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
-        assert_eq!(dependencies, vec!["dep1".to_string(), "dep2".to_string()]);
+        assert_eq!(
+            common.dependencies,
+            vec!["dep1".to_string(), "dep2".to_string()]
+        );
     }
 
     #[test]
     fn test_parse_common_attribute_unknown() {
         let nv: MetaNameValue = parse_quote! { unknown = "value" };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), false); // Not recognized
@@ -962,32 +1260,15 @@ mod tests {
     #[test]
     fn test_parse_common_attribute_invalidate_on() {
         let nv: MetaNameValue = parse_quote! { invalidate_on = is_stale };
-        let mut custom_name = None;
-        let mut max_memory = quote! { None };
-        let mut tags = Vec::new();
-        let mut events = Vec::new();
-        let mut dependencies = Vec::new();
-        let mut invalidate_on = None;
-        let mut cache_if = None;
-        let mut frequency_weight = quote! { None };
-
-        let result = parse_common_attribute(
-            &nv,
-            &mut custom_name,
-            &mut max_memory,
-            &mut tags,
-            &mut events,
-            &mut dependencies,
-            &mut invalidate_on,
-            &mut cache_if,
-            &mut frequency_weight,
-        );
+        let mut common = CommonAttributes::new();
+        let result = parse_common_attribute(&nv, &mut common);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
-        assert!(invalidate_on.is_some());
+        assert!(common.invalidate_on.is_some());
         assert_eq!(
-            invalidate_on
+            common
+                .invalidate_on
                 .unwrap()
                 .segments
                 .first()
@@ -1145,5 +1426,59 @@ mod tests {
         let nv: MetaNameValue = parse_quote! { frequency_weight = 100.0 };
         let result = parse_frequency_weight_attribute(&nv);
         assert!(result.to_string() == "Some (100f64)" || result.to_string() == "Some (100.0f64)");
+    }
+
+    #[test]
+    fn test_async_cache_attributes_builder() {
+        let attrs = AsyncCacheAttributes::builder()
+            .limit(quote! { Some(100) })
+            .policy(quote! { "lru" })
+            .ttl(quote! { Some(60) })
+            .custom_name(Some("my_cache".to_string()))
+            .build();
+
+        assert_eq!(attrs.limit.to_string(), "Some (100)");
+        assert_eq!(attrs.policy.to_string(), "\"lru\"");
+        assert_eq!(attrs.ttl.to_string(), "Some (60)");
+        assert_eq!(attrs.custom_name, Some("my_cache".to_string()));
+    }
+
+    #[test]
+    fn test_sync_cache_attributes_builder() {
+        let attrs = SyncCacheAttributes::builder()
+            .limit(quote! { Some(200) })
+            .policy(quote! { cachelito_core::EvictionPolicy::FIFO })
+            .scope(quote! { cachelito_core::CacheScope::ThreadLocal })
+            .ttl(quote! { Some(120) })
+            .build();
+
+        assert_eq!(attrs.limit.to_string(), "Some (200)");
+        assert_eq!(
+            attrs.policy.to_string(),
+            "cachelito_core :: EvictionPolicy :: FIFO"
+        );
+        assert_eq!(
+            attrs.scope.to_string(),
+            "cachelito_core :: CacheScope :: ThreadLocal"
+        );
+        assert_eq!(attrs.ttl.to_string(), "Some (120)");
+    }
+
+    #[test]
+    fn test_builder_with_common_attributes() {
+        let mut common = CommonAttributes::new();
+        common.custom_name = Some("test".to_string());
+        common.tags = vec!["tag1".to_string(), "tag2".to_string()];
+        common.frequency_weight = quote! { Some(1.5) };
+
+        let attrs = AsyncCacheAttributes::builder()
+            .limit(quote! { Some(50) })
+            .with_common(common)
+            .build();
+
+        assert_eq!(attrs.custom_name, Some("test".to_string()));
+        assert_eq!(attrs.tags, vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_eq!(attrs.frequency_weight.to_string(), "Some (1.5)");
+        assert_eq!(attrs.limit.to_string(), "Some (50)");
     }
 }

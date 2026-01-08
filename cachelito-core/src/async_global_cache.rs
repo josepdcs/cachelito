@@ -163,6 +163,9 @@ pub struct AsyncGlobalCache<'a, R: Clone> {
     /// Frequency weight for TLRU policy (>= 0.0)
     frequency_weight: Option<f64>,
 
+    /// Window ratio for W-TinyLFU policy (0.01 to 0.99)
+    window_ratio: Option<f64>,
+
     /// Cache statistics (when stats feature is enabled)
     #[cfg(feature = "stats")]
     stats: &'a CacheStats,
@@ -225,6 +228,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         policy: EvictionPolicy,
         ttl: Option<u64>,
         frequency_weight: Option<f64>,
+        window_ratio: Option<f64>,
     ) -> Self {
         Self {
             cache,
@@ -234,6 +238,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             policy,
             ttl,
             frequency_weight,
+            window_ratio,
         }
     }
 
@@ -249,6 +254,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         policy: EvictionPolicy,
         ttl: Option<u64>,
         frequency_weight: Option<f64>,
+        window_ratio: Option<f64>,
         stats: &'a CacheStats,
     ) -> Self {
         Self {
@@ -259,6 +265,7 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
             policy,
             ttl,
             frequency_weight,
+            window_ratio,
             stats,
         }
     }
@@ -349,6 +356,12 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                     }
                     EvictionPolicy::TLRU => {
                         // Increment frequency counter for TLRU
+                        entry_ref.2 = entry_ref.2.saturating_add(1);
+                        // LRU update happens after releasing the entry lock
+                    }
+                    EvictionPolicy::WTinyLFU => {
+                        // Simplified W-TinyLFU: Behaves like a hybrid of LRU and LFU
+                        // Increment frequency counter
                         entry_ref.2 = entry_ref.2.saturating_add(1);
                         // LRU update happens after releasing the entry lock
                     }
@@ -629,6 +642,63 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         best_evict_key
     }
 
+    /// Finds the key with minimum frequency in the W-TinyLFU protected segment.
+    ///
+    /// This is a helper method to avoid code duplication when implementing W-TinyLFU eviction.
+    /// The protected segment starts at `window_size` position in the order queue.
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - Iterator over the order queue (already skipped to window_size position)
+    ///
+    /// # Returns
+    ///
+    /// The key with the lowest frequency in the protected segment, or `None` if the segment is empty.
+    fn find_min_frequency_in_protected_segment<'b, I>(&self, order: I) -> Option<String>
+    where
+        I: Iterator<Item = &'b String>,
+    {
+        let mut min_freq = u64::MAX;
+        let mut min_freq_key: Option<String> = None;
+
+        for key in order {
+            if let Some(entry) = self.cache.get(key) {
+                if entry.2 < min_freq {
+                    min_freq = entry.2;
+                    min_freq_key = Some(key.clone());
+                }
+            }
+        }
+
+        min_freq_key
+    }
+
+    /// Tries to evict an entry from the W-TinyLFU window segment.
+    ///
+    /// The window segment uses FIFO eviction (first entries in the order queue).
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - Mutable reference to the order queue
+    /// * `window_size` - Size of the window segment
+    ///
+    /// # Returns
+    ///
+    /// `true` if an entry was successfully evicted, `false` otherwise.
+    fn try_evict_from_window(&self, order: &mut VecDeque<String>, window_size: usize) -> bool {
+        for i in 0..window_size.min(order.len()) {
+            if let Some(evict_key) = order.get(i) {
+                if self.cache.contains_key(evict_key) {
+                    let key_to_remove = evict_key.clone();
+                    self.cache.remove(&key_to_remove);
+                    order.remove(i);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Handles the eviction of entries from the cache to enforce the entry limit based on the eviction policy.
     ///
     /// This method ensures that the number of entries in the cache does not exceed the configured limit by removing
@@ -683,6 +753,39 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                                 break;
                             }
                             // Key doesn't exist in cache (already removed), try next one
+                        }
+                    }
+                    EvictionPolicy::WTinyLFU => {
+                        // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
+                        let window_ratio = self.window_ratio.unwrap_or(0.20); // Default 20%
+                        let window_size = crate::utils::calculate_window_size(limit, window_ratio);
+
+                        if order.len() <= window_size {
+                            // Everything is in window segment - evict FIFO
+                            while let Some(evict_key) = order.pop_front() {
+                                if self.cache.contains_key(&evict_key) {
+                                    self.cache.remove(&evict_key);
+                                    break;
+                                }
+                            }
+                        } else {
+                            // We have both window and protected segments
+                            // Try to evict from window first (first window_size entries)
+                            let evicted = self.try_evict_from_window(order, window_size);
+
+                            // If window eviction failed, evict from protected (LFU)
+                            if !evicted {
+                                // Protected segment is from window_size to end
+                                // Find entry with minimum frequency in protected segment
+                                if let Some(evict_key) = self
+                                    .find_min_frequency_in_protected_segment(
+                                        order.iter().skip(window_size),
+                                    )
+                                {
+                                    self.cache.remove(&evict_key);
+                                    order.retain(|k| k != &evict_key);
+                                }
+                            }
                         }
                     }
                 }
@@ -887,6 +990,50 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                             false
                         }
                     }
+                    EvictionPolicy::WTinyLFU => {
+                        // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
+                        let window_ratio = self.window_ratio.unwrap_or(0.20); // Default 20%
+                        let limit = self.limit.unwrap_or(usize::MAX);
+                        let window_size = crate::utils::calculate_window_size(limit, window_ratio);
+
+                        if order.len() <= window_size {
+                            // Everything is in window segment - evict FIFO
+                            if let Some(evict_key) = order.pop_front() {
+                                if self.cache.contains_key(&evict_key) {
+                                    self.cache.remove(&evict_key);
+                                    true
+                                } else {
+                                    // Try next key if this one doesn't exist
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            // We have both window and protected segments
+                            // Try to evict from window first (first window_size entries)
+                            let evicted = self.try_evict_from_window(&mut order, window_size);
+
+                            // If window eviction failed, evict from protected (LFU)
+                            if !evicted {
+                                // Protected segment is from window_size to end
+                                // Find entry with minimum frequency in protected segment
+                                if let Some(evict_key) = self
+                                    .find_min_frequency_in_protected_segment(
+                                        order.iter().skip(window_size),
+                                    )
+                                {
+                                    self.cache.remove(&evict_key);
+                                    order.retain(|k| k != &evict_key);
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                true
+                            }
+                        }
+                    }
                 };
 
                 if !evicted {
@@ -931,6 +1078,7 @@ mod tests {
             EvictionPolicy::FIFO,
             None,
             None,
+            None,
             &stats,
         );
 
@@ -965,6 +1113,7 @@ mod tests {
             Some(2),
             None,
             EvictionPolicy::LFU,
+            None,
             None,
             None,
             &stats,
@@ -1017,6 +1166,7 @@ mod tests {
             EvictionPolicy::FIFO,
             Some(1),
             None,
+            None,
             &stats,
         );
 
@@ -1057,6 +1207,7 @@ mod tests {
             None,
             EvictionPolicy::FIFO,
             Some(10),
+            None,
             None,
             &stats,
         );
@@ -1111,6 +1262,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(0.3),
+            None,
             &stats,
         );
 
@@ -1162,6 +1314,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.5),
+            None,
             &stats,
         );
 
@@ -1214,6 +1367,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(5),
             None,
+            None,
             &stats,
         );
 
@@ -1261,6 +1415,7 @@ mod tests {
             EvictionPolicy::TLRU,
             None,
             Some(1.5),
+            None,
             &stats,
         );
 
@@ -1322,6 +1477,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(0.3),
+            None,
             &stats_low,
         );
 
@@ -1336,6 +1492,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(2.0),
+            None,
             &stats_high,
         );
 
@@ -1395,6 +1552,7 @@ mod tests {
                 EvictionPolicy::TLRU,
                 Some(10),
                 Some(1.2),
+                None,
                 &stats,
             );
 
@@ -1431,6 +1589,7 @@ mod tests {
                         EvictionPolicy::TLRU,
                         Some(10),
                         Some(1.2),
+                        None,
                         &stats_clone,
                     );
 
@@ -1459,6 +1618,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.2),
+            None,
         );
 
         #[cfg(feature = "stats")]
@@ -1470,6 +1630,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.2),
+            None,
             &stats,
         );
 
@@ -1490,6 +1651,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(5),
             Some(0.1), // Very low weight
+            None,
         );
 
         #[cfg(feature = "stats")]
@@ -1503,6 +1665,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(5),
             Some(0.1),
+            None,
             &stats,
         );
 
@@ -1537,6 +1700,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.0), // Weight = 1.0 (linear frequency impact)
+            None,
         );
 
         #[cfg(feature = "stats")]
@@ -1550,6 +1714,7 @@ mod tests {
             EvictionPolicy::TLRU,
             Some(10),
             Some(1.0),
+            None,
             &stats,
         );
 

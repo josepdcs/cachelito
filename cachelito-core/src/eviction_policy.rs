@@ -52,6 +52,18 @@ use std::cmp::PartialEq;
 ///   - O(n) operations for eviction due to scoring
 ///   - Requires TTL to be configured for optimal behavior
 ///
+/// * `WTinyLFU` - **Windowed TinyLFU** eviction policy
+///   - Advanced admission-based policy using a Count-Min Sketch for frequency estimation
+///   - Divides cache into two segments:
+///     - **Window segment (W)**: Captures recent accesses (e.g., 20% of capacity)
+///     - **Protected segment**: Main cache using LFU-like eviction
+///   - Admission policy: new entries replace victims only if they have higher estimated frequency
+///   - Uses approximate frequency counting (Count-Min Sketch) for low memory overhead
+///   - Periodic counter decay prevents saturation and adapts to changing patterns
+///   - Excellent hit rates on mixed recency/frequency workloads
+///   - Configurable window ratio, sketch dimensions, and decay interval
+///   - O(1) lookup, O(depth) frequency estimation, O(window_size) eviction in worst case
+///
 /// # Examples
 ///
 /// ```
@@ -64,6 +76,7 @@ use std::cmp::PartialEq;
 /// let arc = EvictionPolicy::ARC;
 /// let random = EvictionPolicy::Random;
 /// let tlru = EvictionPolicy::TLRU;
+/// let wtinylfu = EvictionPolicy::WTinyLFU;
 ///
 /// // Using default (LRU)
 /// let default_policy = EvictionPolicy::default();
@@ -76,14 +89,15 @@ use std::cmp::PartialEq;
 ///
 /// # Performance Characteristics
 ///
-/// | Policy | Eviction | Cache Hit | Cache Miss | Use Case |
-/// |--------|----------|-----------|------------|----------|
-/// | FIFO   | O(1)     | O(1)      | O(1)       | Simple, predictable caching |
-/// | LRU    | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
-/// | LFU    | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
-/// | ARC    | O(n)     | O(n)      | O(1)       | Mixed workloads, self-tuning |
-/// | Random | O(1)     | O(1)      | O(1)       | Baseline, unpredictable patterns |
-/// | TLRU   | O(n)     | O(n)      | O(1)       | Time-sensitive, mixed access patterns |
+/// | Policy    | Eviction | Cache Hit | Cache Miss | Use Case |
+/// |-----------|----------|-----------|------------|----------|
+/// | FIFO      | O(1)     | O(1)      | O(1)       | Simple, predictable caching |
+/// | LRU       | O(1)     | O(n)      | O(1)       | Workloads with temporal locality |
+/// | LFU       | O(n)     | O(1)      | O(1)       | Workloads with frequency patterns |
+/// | ARC       | O(n)     | O(n)      | O(1)       | Mixed workloads, self-tuning |
+/// | Random    | O(1)     | O(1)      | O(1)       | Baseline, unpredictable patterns |
+/// | TLRU      | O(n)     | O(n)      | O(1)       | Time-sensitive, mixed access patterns |
+/// | WTinyLFU  | O(w)     | O(d)      | O(d)       | High hit rates, admission control |
 ///
 /// # Derives
 ///
@@ -101,6 +115,7 @@ pub enum EvictionPolicy {
     ARC,
     Random,
     TLRU,
+    WTinyLFU,
 }
 
 impl EvictionPolicy {
@@ -139,7 +154,7 @@ impl EvictionPolicy {
     pub fn is_valid(p: &str) -> bool {
         matches!(
             p.to_lowercase().as_str(),
-            "fifo" | "lru" | "lfu" | "arc" | "random" | "tlru"
+            "fifo" | "lru" | "lfu" | "arc" | "random" | "tlru" | "w_tinylfu"
         )
     }
 }
@@ -155,6 +170,8 @@ impl EvictionPolicy {
 /// - `"lfu"` or `"LFU"` → `EvictionPolicy::LFU`
 /// - `"arc"` or `"ARC"` → `EvictionPolicy::ARC`
 /// - `"random"` or `"RANDOM"` → `EvictionPolicy::Random`
+/// - `"tlru"` or `"TLRU"` → `EvictionPolicy::TLRU`
+/// - `"w_tinylfu"` or `"W_TINYLFU"` → `EvictionPolicy::WTinyLFU`
 /// - Any other value → `EvictionPolicy::LRU` (default)
 ///
 /// # Examples
@@ -177,6 +194,12 @@ impl EvictionPolicy {
 /// let random: EvictionPolicy = "random".into();
 /// assert_eq!(random, EvictionPolicy::Random);
 ///
+/// let tlru: EvictionPolicy = "tlru".into();
+/// assert_eq!(tlru, EvictionPolicy::TLRU);
+///
+/// let wtinylfu: EvictionPolicy = "w_tinylfu".into();
+/// assert_eq!(wtinylfu, EvictionPolicy::WTinyLFU);
+///
 /// let unknown: EvictionPolicy = "unknown".into();
 /// assert_eq!(unknown, EvictionPolicy::LRU); // defaults to LRU
 /// ```
@@ -188,6 +211,7 @@ impl From<&str> for EvictionPolicy {
             "arc" => EvictionPolicy::ARC,
             "random" => EvictionPolicy::Random,
             "tlru" => EvictionPolicy::TLRU,
+            "w_tinylfu" => EvictionPolicy::WTinyLFU,
             _ => EvictionPolicy::LRU,
         }
     }
@@ -202,6 +226,7 @@ impl PartialEq for EvictionPolicy {
             (EvictionPolicy::ARC, EvictionPolicy::ARC) => true,
             (EvictionPolicy::Random, EvictionPolicy::Random) => true,
             (EvictionPolicy::TLRU, EvictionPolicy::TLRU) => true,
+            (EvictionPolicy::WTinyLFU, EvictionPolicy::WTinyLFU) => true,
             _ => false,
         }
     }

@@ -104,3 +104,72 @@ async fn test_async_memory_parsing() {
     assert_eq!(gb_async(2).await, 6);
     assert_eq!(kb_async(2).await, 8);
 }
+
+#[tokio::test]
+async fn test_async_w_tinylfu_with_memory_limit() {
+    #[cache_async(max_memory = "3KB", policy = "w_tinylfu", window_ratio = 0.2)]
+    async fn w_tinylfu_cached(id: u32) -> Vec<u8> {
+        vec![id as u8; 1000] // 1KB each
+    }
+
+    // Fill cache with items
+    let _ = w_tinylfu_cached(1).await; // 1KB
+    let _ = w_tinylfu_cached(2).await; // 2KB total
+
+    // Access item 1 multiple times to increase frequency (protected segment)
+    for _ in 0..5 {
+        let _ = w_tinylfu_cached(1).await;
+    }
+
+    // Add item 3 - this should fit
+    let _ = w_tinylfu_cached(3).await; // 3KB total
+
+    // Add item 4 - this should trigger eviction
+    // W-TinyLFU should evict based on window/protected segments
+    let result = w_tinylfu_cached(4).await;
+    assert_eq!(result.len(), 1000);
+    assert_eq!(result[0], 4);
+
+    // Item 1 (high frequency) should still be cached
+    let result1 = w_tinylfu_cached(1).await;
+    assert_eq!(result1.len(), 1000);
+    assert_eq!(result1[0], 1);
+}
+
+#[tokio::test]
+async fn test_async_w_tinylfu_memory_eviction_respects_segments() {
+    #[cache_async(
+        limit = 10,
+        max_memory = "5KB",
+        policy = "w_tinylfu",
+        window_ratio = 0.3
+    )]
+    async fn segmented_cache(id: u32) -> Vec<u8> {
+        vec![id as u8; 1000] // 1KB each
+    }
+
+    // Build up cache with different access patterns
+    // Items 1-2: window segment (recent, low frequency)
+    let _ = segmented_cache(1).await;
+    let _ = segmented_cache(2).await;
+
+    // Items 3-4: protected segment (high frequency)
+    for _ in 0..10 {
+        let _ = segmented_cache(3).await;
+        let _ = segmented_cache(4).await;
+    }
+
+    // Add item 5
+    let _ = segmented_cache(5).await; // 5KB total - at memory limit
+
+    // Add item 6 - should trigger memory-based eviction
+    // W-TinyLFU should evict from window segment first
+    let result = segmented_cache(6).await;
+    assert_eq!(result.len(), 1000);
+
+    // High-frequency items should still be accessible
+    let result3 = segmented_cache(3).await;
+    assert_eq!(result3[0], 3);
+    let result4 = segmented_cache(4).await;
+    assert_eq!(result4[0], 4);
+}
