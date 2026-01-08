@@ -642,6 +642,63 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
         best_evict_key
     }
 
+    /// Finds the key with minimum frequency in the W-TinyLFU protected segment.
+    ///
+    /// This is a helper method to avoid code duplication when implementing W-TinyLFU eviction.
+    /// The protected segment starts at `window_size` position in the order queue.
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - Iterator over the order queue (already skipped to window_size position)
+    ///
+    /// # Returns
+    ///
+    /// The key with the lowest frequency in the protected segment, or `None` if the segment is empty.
+    fn find_min_frequency_in_protected_segment<'b, I>(&self, order: I) -> Option<String>
+    where
+        I: Iterator<Item = &'b String>,
+    {
+        let mut min_freq = u64::MAX;
+        let mut min_freq_key: Option<String> = None;
+
+        for key in order {
+            if let Some(entry) = self.cache.get(key) {
+                if entry.2 < min_freq {
+                    min_freq = entry.2;
+                    min_freq_key = Some(key.clone());
+                }
+            }
+        }
+
+        min_freq_key
+    }
+
+    /// Tries to evict an entry from the W-TinyLFU window segment.
+    ///
+    /// The window segment uses FIFO eviction (first entries in the order queue).
+    ///
+    /// # Parameters
+    ///
+    /// * `order` - Mutable reference to the order queue
+    /// * `window_size` - Size of the window segment
+    ///
+    /// # Returns
+    ///
+    /// `true` if an entry was successfully evicted, `false` otherwise.
+    fn try_evict_from_window(&self, order: &mut VecDeque<String>, window_size: usize) -> bool {
+        for i in 0..window_size.min(order.len()) {
+            if let Some(evict_key) = order.get(i) {
+                if self.cache.contains_key(evict_key) {
+                    let key_to_remove = evict_key.clone();
+                    self.cache.remove(&key_to_remove);
+                    order.remove(i);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Handles the eviction of entries from the cache to enforce the entry limit based on the eviction policy.
     ///
     /// This method ensures that the number of entries in the cache does not exceed the configured limit by removing
@@ -713,38 +770,18 @@ impl<'a, R: Clone> AsyncGlobalCache<'a, R> {
                             }
                         } else {
                             // We have both window and protected segments
-                            let mut evicted = false;
-
                             // Try to evict from window first (first window_size entries)
-                            for i in 0..window_size.min(order.len()) {
-                                if let Some(evict_key) = order.get(i) {
-                                    if self.cache.contains_key(evict_key) {
-                                        let key_to_remove = evict_key.clone();
-                                        self.cache.remove(&key_to_remove);
-                                        order.remove(i);
-                                        evicted = true;
-                                        break;
-                                    }
-                                }
-                            }
+                            let evicted = self.try_evict_from_window(order, window_size);
 
                             // If window eviction failed, evict from protected (LFU)
                             if !evicted {
                                 // Protected segment is from window_size to end
                                 // Find entry with minimum frequency in protected segment
-                                let mut min_freq = u64::MAX;
-                                let mut min_freq_key: Option<String> = None;
-
-                                for key in order.iter().skip(window_size) {
-                                    if let Some(entry) = self.cache.get(key) {
-                                        if entry.2 < min_freq {
-                                            min_freq = entry.2;
-                                            min_freq_key = Some(key.clone());
-                                        }
-                                    }
-                                }
-
-                                if let Some(evict_key) = min_freq_key {
+                                if let Some(evict_key) = self
+                                    .find_min_frequency_in_protected_segment(
+                                        order.iter().skip(window_size),
+                                    )
+                                {
                                     self.cache.remove(&evict_key);
                                     order.retain(|k| k != &evict_key);
                                 }
@@ -954,13 +991,47 @@ impl<'a, R: Clone + crate::MemoryEstimator> AsyncGlobalCache<'a, R> {
                         }
                     }
                     EvictionPolicy::WTinyLFU => {
-                        // TODO: Implement W-TinyLFU eviction
-                        // For now, fallback to LRU behavior
-                        if let Some(evict_key) = order.pop_front() {
-                            self.cache.remove(&evict_key);
-                            true
+                        // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
+                        let window_ratio = self.window_ratio.unwrap_or(0.20); // Default 20%
+                        let limit = self.limit.unwrap_or(usize::MAX);
+                        let window_size = crate::utils::calculate_window_size(limit, window_ratio);
+
+                        if order.len() <= window_size {
+                            // Everything is in window segment - evict FIFO
+                            if let Some(evict_key) = order.pop_front() {
+                                if self.cache.contains_key(&evict_key) {
+                                    self.cache.remove(&evict_key);
+                                    true
+                                } else {
+                                    // Try next key if this one doesn't exist
+                                    false
+                                }
+                            } else {
+                                false
+                            }
                         } else {
-                            false
+                            // We have both window and protected segments
+                            // Try to evict from window first (first window_size entries)
+                            let evicted = self.try_evict_from_window(&mut order, window_size);
+
+                            // If window eviction failed, evict from protected (LFU)
+                            if !evicted {
+                                // Protected segment is from window_size to end
+                                // Find entry with minimum frequency in protected segment
+                                if let Some(evict_key) = self
+                                    .find_min_frequency_in_protected_segment(
+                                        order.iter().skip(window_size),
+                                    )
+                                {
+                                    self.cache.remove(&evict_key);
+                                    order.retain(|k| k != &evict_key);
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                true
+                            }
                         }
                     }
                 };

@@ -514,7 +514,7 @@ impl<R: Clone + 'static> ThreadLocalCache<R> {
                     EvictionPolicy::WTinyLFU => {
                         // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
                         // Window ratio determines split point
-                        let window_ratio = self.window_ratio.unwrap_or(0.01); // Default 1%
+                        let window_ratio = self.window_ratio.unwrap_or(0.20); // Default 20%
                         let window_size = crate::utils::calculate_window_size(limit, window_ratio);
 
                         if order.len() <= window_size {

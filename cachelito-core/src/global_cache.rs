@@ -599,7 +599,7 @@ impl<R: Clone + 'static> GlobalCache<R> {
                     }
                     EvictionPolicy::WTinyLFU => {
                         // W-TinyLFU: Window segment (first entries) + Protected segment (rest)
-                        let window_ratio = self.window_ratio.unwrap_or(0.01); // Default 1%
+                        let window_ratio = self.window_ratio.unwrap_or(0.20); // Default 20%
                         let window_size = crate::utils::calculate_window_size(limit, window_ratio);
 
                         let mut map_write = self.map.write();
@@ -1016,7 +1016,7 @@ impl<T: Clone + Debug + 'static, E: Clone + Debug + 'static> GlobalCache<Result<
     /// ```
     pub fn insert_result(&self, key: &str, value: &Result<T, E>) {
         if let Ok(v) = value {
-            self.insert(key, Ok::<T, E>(v.clone()));
+            self.insert(key, Ok(v.clone()));
         }
     }
 }
@@ -1050,7 +1050,7 @@ impl<
     /// - If `value` is `Err(_)`: Does nothing, no cache entry is created
     pub fn insert_result_with_memory(&self, key: &str, value: &Result<T, E>) {
         if let Ok(v) = value {
-            self.insert_with_memory(key, Ok::<T, E>(v.clone()));
+            self.insert_with_memory(key, Ok(v.clone()));
         }
     }
 }

@@ -41,6 +41,7 @@ fn generate_cache_logic_block(
     policy_expr: &TokenStream2,
     ttl_expr: &TokenStream2,
     frequency_weight_expr: &TokenStream2,
+    window_ratio_expr: &TokenStream2,
     invalidation_check: &TokenStream2,
     block: &syn::Block,
     cache_insert: &TokenStream2,
@@ -58,7 +59,7 @@ fn generate_cache_logic_block(
             #policy_expr,
             #ttl_expr,
             #frequency_weight_expr,
-            None, // window_ratio for W-TinyLFU (could be made configurable)
+            #window_ratio_expr,
             &*#stats_ident,
         );
 
@@ -295,6 +296,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ttl_expr = &attrs.ttl;
     let max_memory_expr = &attrs.max_memory;
     let frequency_weight_expr = &attrs.frequency_weight;
+    let window_ratio_expr = &attrs.window_ratio;
 
     // Convert policy string to EvictionPolicy
     let policy_expr = quote! {
@@ -353,6 +355,7 @@ pub fn cache_async(attr: TokenStream, item: TokenStream) -> TokenStream {
             &policy_expr,
             ttl_expr,
             frequency_weight_expr,
+            window_ratio_expr,
             &invalidation_check,
             block,
             &cache_insert,
@@ -484,6 +487,8 @@ mod tests {
         let max_memory_expr = quote! { None };
         let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
         let ttl_expr = quote! { None };
+        let frequency_weight_expr = quote! { Option::<f64>::None };
+        let window_ratio_expr = quote! { Option::<f64>::None };
         let invalidation_check = quote! { return __cached; };
         let block: syn::Block = syn::parse2(quote! { { 42 } }).unwrap();
         let cache_insert = quote! { __cache.insert(&__key, __result.clone()); };
@@ -497,7 +502,8 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
-            &quote! { Option::<f64>::None },
+            &frequency_weight_expr,
+            &window_ratio_expr,
             &invalidation_check,
             &block,
             &cache_insert,
@@ -525,6 +531,8 @@ mod tests {
         let max_memory_expr = quote! { Some(1024) };
         let policy_expr = quote! { cachelito_core::EvictionPolicy::FIFO };
         let ttl_expr = quote! { Some(60) };
+        let frequency_weight_expr = quote! { Option::<f64>::None };
+        let window_ratio_expr = quote! { Option::<f64>::None };
         let invalidation_check = quote! { if !check_fn(&__key, &__cached) { return __cached; } };
         let block: syn::Block = syn::parse2(quote! { { expensive_computation() } }).unwrap();
         let cache_insert = quote! {
@@ -542,7 +550,8 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
-            &quote! { Option::<f64>::None },
+            &frequency_weight_expr,
+            &window_ratio_expr,
             &invalidation_check,
             &block,
             &cache_insert,
@@ -590,6 +599,8 @@ mod tests {
         let max_memory_expr = quote! { None };
         let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
         let ttl_expr = quote! { None };
+        let frequency_weight_expr = quote! { Option::<f64>::None };
+        let window_ratio_expr = quote! { Option::<f64>::None };
 
         // Test with custom invalidation check
         let custom_invalidation = quote! {
@@ -609,7 +620,8 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
-            &quote! { Option::<f64>::None },
+            &frequency_weight_expr,
+            &window_ratio_expr,
             &custom_invalidation,
             &block,
             &cache_insert,
@@ -629,6 +641,8 @@ mod tests {
         let max_memory_expr = quote! { None };
         let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
         let ttl_expr = quote! { None };
+        let frequency_weight_expr = quote! { Option::<f64>::None };
+        let window_ratio_expr = quote! { Option::<f64>::None };
         let invalidation_check = quote! { return __cached; };
         let block: syn::Block = syn::parse2(quote! { { compute() } }).unwrap();
 
@@ -648,7 +662,8 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
-            &quote! { Option::<f64>::None },
+            &frequency_weight_expr,
+            &window_ratio_expr,
             &invalidation_check,
             &block,
             &conditional_insert,
@@ -705,6 +720,8 @@ mod tests {
         let max_memory_expr = quote! { None };
         let policy_expr = quote! { cachelito_core::EvictionPolicy::LRU };
         let ttl_expr = quote! { None };
+        let frequency_weight_expr = quote! { Option::<f64>::None };
+        let window_ratio_expr = quote! { Option::<f64>::None };
         let invalidation_check = quote! { return __cached; };
         let block: syn::Block = syn::parse2(quote! {
             {
@@ -724,7 +741,8 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
-            &quote! { Option::<f64>::None },
+            &frequency_weight_expr,
+            &window_ratio_expr,
             &invalidation_check,
             &block,
             &cache_insert,
@@ -748,6 +766,8 @@ mod tests {
         let max_memory_expr = quote! { Some(4096) };
         let policy_expr = quote! { cachelito_core::EvictionPolicy::ARC };
         let ttl_expr = quote! { Some(120) };
+        let frequency_weight_expr = quote! { Option::<f64>::None };
+        let window_ratio_expr = quote! { Some(0.3) };
         let invalidation_check = quote! { return __cached; };
         let block: syn::Block = syn::parse2(quote! { { value } }).unwrap();
         let cache_insert = quote! { __cache.insert_with_memory(&__key, __result.clone()); };
@@ -761,7 +781,8 @@ mod tests {
             &max_memory_expr,
             &policy_expr,
             &ttl_expr,
-            &quote! { Option::<f64>::None },
+            &frequency_weight_expr,
+            &window_ratio_expr,
             &invalidation_check,
             &block,
             &cache_insert,
@@ -778,5 +799,6 @@ mod tests {
         assert!(result_str.contains("EvictionPolicy :: ARC"));
         assert!(result_str.contains("Some (120)"));
         assert!(result_str.contains("& * TEST_STATS"));
+        assert!(result_str.contains("Some (0.3)"));
     }
 }
