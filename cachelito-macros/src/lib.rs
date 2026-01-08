@@ -336,6 +336,7 @@ fn generate_global_branch(
 ///   - `"arc"` - Adaptive Replacement Cache (hybrid LRU/LFU)
 ///   - `"random"` - Random Replacement
 ///   - `"tlru"` - Time-aware Least Recently Used (combines recency, frequency, and age)
+///   - `"w_tinylfu"` - Windowed Tiny LFU (two-segment cache with window and protected segments)
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
 /// - `frequency_weight` (optional): Weight factor for frequency in TLRU policy.
@@ -346,6 +347,15 @@ fn generate_global_branch(
 ///   - Formula: `score = frequency^weight × position × age_factor`
 ///   - Only applicable when `policy = "tlru"`. Ignored for other policies.
 ///   - Example: `frequency_weight = 1.5` makes frequently accessed entries more resistant to eviction
+/// - `window_ratio` (optional): Window segment size ratio for W-TinyLFU policy (0.01-0.99, default: 0.20).
+///   Controls the balance between recency (window segment) and frequency (protected segment).
+///   - Values < 0.2 (e.g., 0.1): Emphasize frequency → good for stable workloads, analytics
+///   - Value = 0.2 (default): Balanced approach
+///   - Values > 0.2 (e.g., 0.3-0.4): Emphasize recency → good for trending content, news
+///   - Only applicable when `policy = "w_tinylfu"`. Ignored for other policies.
+/// - `sketch_width` (optional): Count-Min Sketch width for W-TinyLFU (reserved for future use, v0.17.0+).
+/// - `sketch_depth` (optional): Count-Min Sketch depth for W-TinyLFU (reserved for future use, v0.17.0+).
+/// - `decay_interval` (optional): Decay interval for W-TinyLFU counters (reserved for future use, v0.17.0+)
 /// - `scope` (optional): Cache scope - where the cache is stored. Options:
 ///   - `"global"` - Global storage shared across all threads (default, uses RwLock)
 ///   - `"thread"` - Thread-local storage (no synchronization overhead)
@@ -575,6 +585,47 @@ fn generate_global_branch(
 /// }
 /// ```
 ///
+/// ## W-TinyLFU with Custom Window Ratio
+///
+/// ```ignore
+/// use cachelito::cache;
+///
+/// // Basic W-TinyLFU - default window_ratio (0.2 = 20%)
+/// #[cache(limit = 1000, policy = "w_tinylfu")]
+/// fn fetch_user_data(user_id: u64) -> UserData {
+///     // Window segment (20%): Recent items using FIFO
+///     // Protected segment (80%): Frequently accessed items using LFU
+///     // Excellent hit rates on mixed workloads
+///     database.fetch_user(user_id)
+/// }
+///
+/// // Large window_ratio (0.3) - emphasizes recency
+/// // Good for frequently changing data like news or social media
+/// #[cache(
+///     limit = 1000,
+///     policy = "w_tinylfu",
+///     window_ratio = 0.3
+/// )]
+/// fn fetch_trending_content(content_id: u64) -> Content {
+///     // 30% window segment = more emphasis on recent items
+///     // Good for: news, social media feeds, trending topics
+///     api_client.fetch_trending(content_id)
+/// }
+///
+/// // Small window_ratio (0.1) - emphasizes frequency
+/// // Good for stable data with clear access patterns
+/// #[cache(
+///     limit = 1000,
+///     policy = "w_tinylfu",
+///     window_ratio = 0.1
+/// )]
+/// fn fetch_analytics_query(query_id: u64) -> QueryResult {
+///     // 10% window segment = strong frequency protection
+///     // Good for: analytics, reference data, stable workloads
+///     run_expensive_query(query_id)
+/// }
+/// ```
+///
 /// # Performance Considerations
 ///
 /// - **Cache key generation**: Uses `CacheableKey::to_cache_key()` method
@@ -586,6 +637,8 @@ fn generate_global_branch(
 /// - **LFU overhead**: O(n) for eviction (finding minimum frequency)
 /// - **ARC overhead**: O(n) for cache operations (scoring and reordering)
 /// - **Random overhead**: O(1) for eviction selection
+/// - **TLRU overhead**: O(n) for cache operations (scoring with frequency, position, and age)
+/// - **W-TinyLFU overhead**: O(n) for eviction (segment management and LFU in protected segment)
 /// - **TTL overhead**: O(1) expiration check on each get()
 /// - **Memory estimation**: O(1) if `MemoryEstimator` is implemented efficiently
 ///

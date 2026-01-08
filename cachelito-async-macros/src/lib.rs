@@ -102,6 +102,7 @@ fn generate_cache_logic_block(
 ///   - `"arc"` - Adaptive Replacement Cache
 ///   - `"random"` - Random Replacement
 ///   - `"tlru"` - Time-aware Least Recently Used (combines recency, frequency, and age)
+///   - `"w_tinylfu"` - Windowed Tiny LFU (two-segment cache with window and protected segments)
 /// - `ttl` (optional): Time-to-live in seconds. Entries older than this will be
 ///   automatically removed when accessed. Default: None (no expiration).
 /// - `frequency_weight` (optional): Weight factor for frequency in TLRU policy.
@@ -112,6 +113,12 @@ fn generate_cache_logic_block(
 ///   - Formula: `score = frequency^weight × position × age_factor`
 ///   - Only applicable when `policy = "tlru"`. Ignored for other policies.
 ///   - Example: `frequency_weight = 1.5` makes frequently accessed entries more resistant to eviction
+/// - `window_ratio` (optional): Window segment size ratio for W-TinyLFU policy (0.01-0.99, default: 0.20).
+///   Controls the balance between recency (window segment) and frequency (protected segment).
+///   - Values < 0.2 (e.g., 0.1): Emphasize frequency → good for stable workloads
+///   - Value = 0.2 (default): Balanced approach
+///   - Values > 0.2 (e.g., 0.3-0.4): Emphasize recency → good for trending content
+///   - Only applicable when `policy = "w_tinylfu"`. Ignored for other policies.
 /// - `name` (optional): Custom identifier for the cache. Default: the function name.
 /// - `max_memory` (optional): Maximum memory usage (e.g., "100MB", "1GB"). Requires
 ///   the return type to implement `MemoryEstimator`.

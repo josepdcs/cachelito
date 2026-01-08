@@ -29,6 +29,10 @@ static RANDOM_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static RANDOM_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
+static W_TINYLFU_MAP: Lazy<RwLock<HashMap<String, CacheEntry<i32>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static W_TINYLFU_ORDER: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
 // Memory-intensive cache (String values) to benchmark max_memory eviction
 static MEM_MAP: Lazy<RwLock<HashMap<String, CacheEntry<String>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
@@ -44,6 +48,8 @@ static LFU_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 static ARC_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static RANDOM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
+#[cfg(feature = "stats")]
+static W_TINYLFU_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 #[cfg(feature = "stats")]
 static MEM_STATS: Lazy<CacheStats> = Lazy::new(|| CacheStats::new());
 
@@ -148,6 +154,26 @@ macro_rules! new_random_cache {
     };
 }
 
+macro_rules! new_w_tinylfu_cache {
+    ($limit:expr) => {
+        GlobalCache::new(
+            &W_TINYLFU_MAP,
+            &W_TINYLFU_ORDER,
+            $limit,
+            None, // max_memory
+            EvictionPolicy::WTinyLFU,
+            None,       // ttl
+            None,       // frequency_weight
+            Some(0.20), // window_ratio (default 20%)
+            None,       // sketch_width
+            None,       // sketch_depth
+            None,       // decay_interval
+            #[cfg(feature = "stats")]
+            &W_TINYLFU_STATS,
+        )
+    };
+}
+
 macro_rules! new_mem_cache {
     ($limit:expr, $max_mem:expr) => {
         GlobalCache::new(
@@ -188,6 +214,10 @@ fn reset_arc() {
 fn reset_random() {
     RANDOM_MAP.write().clear();
     RANDOM_ORDER.lock().clear();
+}
+fn reset_w_tinylfu() {
+    W_TINYLFU_MAP.write().clear();
+    W_TINYLFU_ORDER.lock().clear();
 }
 fn reset_mem() {
     MEM_MAP.write().clear();
@@ -588,6 +618,149 @@ fn bench_random_eviction(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark W-TinyLFU vs other policies with hot/cold data pattern
+fn bench_w_tinylfu_hot_cold(c: &mut Criterion) {
+    let mut group = c.benchmark_group("w_tinylfu_hot_cold_pattern");
+    let cache_limit = 100;
+    let hot_keys: Vec<String> = (0..10).map(|i| format!("hot_{}", i)).collect();
+    let cold_keys: Vec<String> = (0..200).map(|i| format!("cold_{}", i)).collect();
+
+    // FIFO baseline
+    group.bench_function("FIFO", |b| {
+        b.iter(|| {
+            reset_fifo();
+            let cache = new_fifo_cache!(Some(cache_limit));
+
+            // Access hot keys multiple times
+            for _ in 0..10 {
+                for key in &hot_keys {
+                    cache.insert(key, 1);
+                }
+            }
+
+            // Access cold keys once
+            for key in &cold_keys {
+                cache.insert(key, 1);
+            }
+
+            // Re-access hot keys - measure cache hits
+            for key in &hot_keys {
+                let _ = cache.get(key);
+            }
+        });
+    });
+
+    // LRU
+    group.bench_function("LRU", |b| {
+        b.iter(|| {
+            reset_lru();
+            let cache = new_lru_cache!(Some(cache_limit));
+
+            for _ in 0..10 {
+                for key in &hot_keys {
+                    cache.insert(key, 1);
+                }
+            }
+
+            for key in &cold_keys {
+                cache.insert(key, 1);
+            }
+
+            for key in &hot_keys {
+                let _ = cache.get(key);
+            }
+        });
+    });
+
+    // LFU
+    group.bench_function("LFU", |b| {
+        b.iter(|| {
+            reset_lfu();
+            let cache = new_lfu_cache!(Some(cache_limit));
+
+            for _ in 0..10 {
+                for key in &hot_keys {
+                    cache.insert(key, 1);
+                }
+            }
+
+            for key in &cold_keys {
+                cache.insert(key, 1);
+            }
+
+            for key in &hot_keys {
+                let _ = cache.get(key);
+            }
+        });
+    });
+
+    // W-TinyLFU
+    group.bench_function("W_TinyLFU", |b| {
+        b.iter(|| {
+            reset_w_tinylfu();
+            let cache = new_w_tinylfu_cache!(Some(cache_limit));
+
+            for _ in 0..10 {
+                for key in &hot_keys {
+                    cache.insert(key, 1);
+                }
+            }
+
+            for key in &cold_keys {
+                cache.insert(key, 1);
+            }
+
+            for key in &hot_keys {
+                let _ = cache.get(key);
+            }
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark W-TinyLFU with different window ratios
+fn bench_w_tinylfu_window_ratios(c: &mut Criterion) {
+    let mut group = c.benchmark_group("w_tinylfu_window_ratios");
+    let iterations = 1000;
+
+    for window_ratio in [0.1, 0.2, 0.3, 0.4].iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("ratio_{:.1}", window_ratio)),
+            window_ratio,
+            |b, &ratio| {
+                b.iter(|| {
+                    reset_w_tinylfu();
+                    let cache = GlobalCache::new(
+                        &W_TINYLFU_MAP,
+                        &W_TINYLFU_ORDER,
+                        Some(100),
+                        None,
+                        EvictionPolicy::WTinyLFU,
+                        None,
+                        None,
+                        Some(ratio),
+                        None,
+                        None,
+                        None,
+                        #[cfg(feature = "stats")]
+                        &W_TINYLFU_STATS,
+                    );
+
+                    for i in 0..iterations {
+                        cache.insert(&format!("key{}", i % 150), i);
+                        if i % 10 == 0 {
+                            cache.get(&format!("key{}", i % 50));
+                        }
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert_sequential,
@@ -598,6 +771,8 @@ criterion_group!(
     bench_rwlock_concurrent_reads,
     bench_read_heavy_workload,
     bench_memory_eviction,
-    bench_random_eviction
+    bench_random_eviction,
+    bench_w_tinylfu_hot_cold,
+    bench_w_tinylfu_window_ratios
 );
 criterion_main!(benches);

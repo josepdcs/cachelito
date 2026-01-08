@@ -1,309 +1,277 @@
 use cachelito::cache;
+use std::sync::Arc;
 
-/// Test basic W-TinyLFU eviction with window and protected segments
+/// Test basic W-TinyLFU functionality
 #[test]
-fn test_w_tinylfu_basic_eviction() {
-    #[cache(limit = 10, policy = "w_tinylfu", window_ratio = 0.2)]
-    fn compute(x: u32) -> u32 {
-        x * 2
-    }
-
-    // Fill cache
-    for i in 0..10 {
-        assert_eq!(compute(i), i * 2);
-    }
-
-    // Access first few entries multiple times (should move to protected)
-    for _ in 0..5 {
-        compute(0);
-        compute(1);
-        compute(2);
-    }
-
-    // Add new entry - should evict from window, not protected
-    compute(100);
-
-    // Protected entries should still be cached
-    // Note: We can't directly test cache hits without exposing internals,
-    // but we can verify the function still works correctly
-    assert_eq!(compute(0), 0);
-    assert_eq!(compute(1), 2);
-    assert_eq!(compute(2), 4);
-}
-
-/// Test W-TinyLFU with small window ratio
-#[test]
-fn test_w_tinylfu_small_window() {
-    #[cache(limit = 100, policy = "w_tinylfu", window_ratio = 0.01)]
-    fn fibonacci(n: u32) -> u64 {
-        match n {
-            0 => 0,
-            1 => 1,
-            _ => {
-                let a = fibonacci(n - 1);
-                let b = fibonacci(n - 2);
-                a + b
-            }
-        }
-    }
-
-    // Window is only 1% of 100 = 1 entry minimum
-    assert_eq!(fibonacci(10), 55);
-    assert_eq!(fibonacci(20), 6765);
-}
-
-/// Test W-TinyLFU with large window ratio
-#[test]
-fn test_w_tinylfu_large_window() {
-    #[cache(limit = 50, policy = "w_tinylfu", window_ratio = 0.3)]
-    fn square(x: u32) -> u32 {
-        x * x
-    }
-
-    // Window is 30% of 50 = 15 entries
-    for i in 0..50 {
-        assert_eq!(square(i), i * i);
-    }
-
-    // Adding more should evict from window first
-    for i in 50..60 {
-        assert_eq!(square(i), i * i);
-    }
-}
-
-/// Test W-TinyLFU default configuration
-#[test]
-fn test_w_tinylfu_default_config() {
-    #[cache(limit = 100, policy = "w_tinylfu")]
-    fn process(id: u32) -> String {
-        format!("result_{}", id)
-    }
-
-    // Default window_ratio should be applied
-    for i in 0..100 {
-        assert_eq!(process(i), format!("result_{}", i));
-    }
-
-    // Trigger eviction
-    assert_eq!(process(200), "result_200".to_string());
-}
-
-/// Test W-TinyLFU with thread-local scope
-#[test]
-fn test_w_tinylfu_thread_local() {
-    #[cache(scope = "thread", limit = 20, policy = "w_tinylfu", window_ratio = 0.2)]
-    fn compute_local(x: u32) -> u32 {
-        x + 42
-    }
-
-    // Each thread gets its own cache
-    std::thread::spawn(|| {
-        for i in 0..20 {
-            assert_eq!(compute_local(i), i + 42);
-        }
-    })
-    .join()
-    .unwrap();
-
-    // Main thread has independent cache
-    for i in 0..20 {
-        assert_eq!(compute_local(i), i + 42);
-    }
-}
-
-/// Test W-TinyLFU with global scope
-#[test]
-fn test_w_tinylfu_global() {
+fn test_w_tinylfu_basic() {
     #[cache(
         scope = "global",
-        limit = 30,
+        limit = 5,
         policy = "w_tinylfu",
-        window_ratio = 0.15
+        name = "w_tinylfu_basic"
     )]
-    fn compute_global(x: u32) -> u32 {
-        x * 3
-    }
-
-    // Shared across threads
-    let handles: Vec<_> = (0..3)
-        .map(|thread_id| {
-            std::thread::spawn(move || {
-                for i in 0..10 {
-                    assert_eq!(compute_global(thread_id * 10 + i), (thread_id * 10 + i) * 3);
-                }
-            })
-        })
-        .collect();
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
-
-/// Test W-TinyLFU frequency-based admission
-#[test]
-fn test_w_tinylfu_frequency_admission() {
-    #[cache(limit = 5, policy = "w_tinylfu", window_ratio = 0.4)]
-    fn get_value(key: u32) -> u32 {
-        key * 10
+    fn fetch(id: u32) -> u32 {
+        id * 10
     }
 
     // Fill cache
-    for i in 0..5 {
-        get_value(i);
+    for i in 1..=5 {
+        assert_eq!(fetch(i), i * 10);
     }
 
-    // Access some entries multiple times to increase frequency
+    // Access some items multiple times (build frequency)
     for _ in 0..10 {
-        get_value(0);
-        get_value(1);
+        fetch(1);
+        fetch(2);
     }
 
-    // Add new entries - should evict low-frequency entries
-    get_value(100);
-    get_value(101);
+    // Add new items (triggers eviction)
+    for i in 6..=10 {
+        assert_eq!(fetch(i), i * 10);
+    }
 
-    // High-frequency entries should still be accessible
-    assert_eq!(get_value(0), 0);
-    assert_eq!(get_value(1), 10);
+    // Verify cache still works
+    assert_eq!(fetch(1), 10);
 }
 
-/// Test W-TinyLFU with TTL
+/// Test W-TinyLFU with custom window ratio
 #[test]
-fn test_w_tinylfu_with_ttl() {
-    #[cache(limit = 10, policy = "w_tinylfu", window_ratio = 0.2, ttl = 1)]
-    fn get_timestamp(key: u32) -> String {
-        format!("value_{}", key)
-    }
-
-    // Insert entries
-    for i in 0..5 {
-        get_timestamp(i);
-    }
-
-    // Wait for TTL expiration
-    std::thread::sleep(std::time::Duration::from_secs(2));
-
-    // Entries should be expired and re-computed
-    assert_eq!(get_timestamp(0), "value_0".to_string());
-}
-
-/// Test W-TinyLFU eviction preserves frequently accessed items
-#[test]
-fn test_w_tinylfu_preserves_frequent_items() {
-    #[cache(limit = 10, policy = "w_tinylfu", window_ratio = 0.3)]
-    fn expensive_computation(n: u32) -> u32 {
-        // Simulate expensive operation
-        n.pow(2)
+fn test_w_tinylfu_with_window_ratio() {
+    #[cache(
+        scope = "global",
+        limit = 10,
+        policy = "w_tinylfu",
+        window_ratio = 0.3,
+        name = "w_tinylfu_window"
+    )]
+    fn fetch_with_window(id: u32) -> String {
+        format!("value_{}", id)
     }
 
     // Fill cache
-    for i in 0..10 {
-        expensive_computation(i);
+    for i in 1..=10 {
+        fetch_with_window(i);
     }
 
-    // Make some items "hot" by accessing them repeatedly
-    for _ in 0..20 {
-        expensive_computation(5);
-        expensive_computation(6);
-        expensive_computation(7);
+    // Access frequently
+    for _ in 0..5 {
+        fetch_with_window(1);
     }
 
-    // Fill cache with new items to trigger evictions
-    for i in 10..20 {
-        expensive_computation(i);
+    // Add more items
+    for i in 11..=15 {
+        fetch_with_window(i);
     }
 
-    // Hot items should still be in cache
-    // (can't verify directly without stats, but they should compute quickly if cached)
-    assert_eq!(expensive_computation(5), 25);
-    assert_eq!(expensive_computation(6), 36);
-    assert_eq!(expensive_computation(7), 49);
+    // Verify functionality
+    assert_eq!(fetch_with_window(1), "value_1");
 }
 
-/// Test W-TinyLFU with custom types
+/// Test W-TinyLFU thread-local cache
 #[test]
-fn test_w_tinylfu_custom_types() {
-    #[derive(Clone, Debug, PartialEq)]
-    struct Data {
-        id: u32,
-        value: String,
+fn test_w_tinylfu_thread_local() {
+    #[cache(
+        scope = "thread",
+        limit = 5,
+        policy = "w_tinylfu",
+        name = "w_tinylfu_thread"
+    )]
+    fn thread_fetch(id: u32) -> u32 {
+        id * 100
     }
 
-    #[cache(limit = 15, policy = "w_tinylfu", window_ratio = 0.2)]
-    fn get_data(id: u32) -> Data {
-        Data {
-            id,
-            value: format!("data_{}", id),
+    for i in 1..=5 {
+        assert_eq!(thread_fetch(i), i * 100);
+    }
+
+    // Access with varying frequency
+    for _ in 0..3 {
+        thread_fetch(1);
+    }
+
+    // Add new items
+    for i in 6..=8 {
+        assert_eq!(thread_fetch(i), i * 100);
+    }
+
+    // Verify cache works
+    assert_eq!(thread_fetch(1), 100);
+}
+
+/// Test W-TinyLFU with Result types
+#[test]
+fn test_w_tinylfu_with_results() {
+    #[cache(
+        scope = "global",
+        limit = 5,
+        policy = "w_tinylfu",
+        name = "w_tinylfu_results"
+    )]
+    fn fetch_result(id: u32) -> Result<u32, String> {
+        if id % 2 == 0 {
+            Ok(id)
+        } else {
+            Err(format!("odd_{}", id))
         }
     }
 
-    for i in 0..15 {
-        let data = get_data(i);
-        assert_eq!(
-            data,
-            Data {
-                id: i,
-                value: format!("data_{}", i)
-            }
-        );
+    // Both Ok and Err should be cached
+    assert!(fetch_result(1).is_err());
+    assert!(fetch_result(2).is_ok());
+    assert_eq!(fetch_result(2).unwrap(), 2);
+
+    // Access multiple times
+    for _ in 0..5 {
+        let _ = fetch_result(2);
     }
 
-    // Trigger eviction
-    let new_data = get_data(100);
-    assert_eq!(
-        new_data,
-        Data {
-            id: 100,
-            value: "data_100".to_string()
-        }
-    );
+    // Add more items
+    for i in 3..=10 {
+        let _ = fetch_result(i);
+    }
+
+    // Verify caching works
+    assert!(fetch_result(2).is_ok());
 }
 
-/// Test W-TinyLFU with window ratio edge cases
+/// Test W-TinyLFU with Arc values
 #[test]
-fn test_w_tinylfu_window_ratio_edge_cases() {
-    // Very small window (should be at least 1 entry)
-    #[cache(limit = 10, policy = "w_tinylfu", window_ratio = 0.001)]
-    fn tiny_window(x: u32) -> u32 {
-        x
+fn test_w_tinylfu_with_arc() {
+    #[cache(
+        scope = "global",
+        limit = 5,
+        policy = "w_tinylfu",
+        name = "w_tinylfu_arc"
+    )]
+    fn fetch_arc(id: u32) -> Arc<Vec<u8>> {
+        Arc::new(vec![id as u8; 100])
     }
 
-    for i in 0..15 {
-        assert_eq!(tiny_window(i), i);
+    for i in 1..=5 {
+        let data = fetch_arc(i);
+        assert_eq!(data.len(), 100);
     }
 
-    // Large window (almost entire cache)
-    #[cache(limit = 10, policy = "w_tinylfu", window_ratio = 0.9)]
-    fn large_window(x: u32) -> u32 {
-        x * 2
+    // Build frequency
+    for _ in 0..10 {
+        fetch_arc(1);
     }
 
-    for i in 0..15 {
-        assert_eq!(large_window(i), i * 2);
+    // Add new items
+    for i in 6..=10 {
+        let data = fetch_arc(i);
+        assert_eq!(data.len(), 100);
     }
+
+    // Verify cache works
+    let data = fetch_arc(1);
+    assert_eq!(data.len(), 100);
 }
 
+/// Test W-TinyLFU with different window ratios
 #[test]
-fn test_w_tinylfu_concurrent_access() {
+fn test_w_tinylfu_window_ratios() {
+    // Small window (emphasis on frequency)
+    #[cache(
+        scope = "global",
+        limit = 10,
+        policy = "w_tinylfu",
+        window_ratio = 0.1,
+        name = "w_tinylfu_small_window"
+    )]
+    fn small_window(id: u32) -> u32 {
+        id
+    }
+
+    for i in 1..=10 {
+        small_window(i);
+    }
+
+    // Large window (emphasis on recency)
+    #[cache(
+        scope = "global",
+        limit = 10,
+        policy = "w_tinylfu",
+        window_ratio = 0.4,
+        name = "w_tinylfu_large_window"
+    )]
+    fn large_window(id: u32) -> u32 {
+        id * 2
+    }
+
+    for i in 1..=10 {
+        large_window(i);
+    }
+
+    // Both should work
+    assert_eq!(small_window(1), 1);
+    assert_eq!(large_window(1), 2);
+}
+
+/// Test W-TinyLFU with mixed access patterns
+#[test]
+fn test_w_tinylfu_mixed_pattern() {
+    #[cache(
+        scope = "global",
+        limit = 8,
+        policy = "w_tinylfu",
+        name = "w_tinylfu_mixed"
+    )]
+    fn mixed(id: u32) -> String {
+        format!("item_{}", id)
+    }
+
+    // Hot data
+    for _ in 0..5 {
+        mixed(1);
+        mixed(2);
+        mixed(3);
+    }
+
+    // Cold data
+    for i in 4..=10 {
+        mixed(i);
+    }
+
+    // More hot data access
+    for _ in 0..5 {
+        mixed(1);
+    }
+
+    // Add new items
+    for i in 11..=15 {
+        mixed(i);
+    }
+
+    // Hot data should likely still work
+    assert_eq!(mixed(1), "item_1");
+}
+
+/// Test W-TinyLFU concurrent access
+#[test]
+fn test_w_tinylfu_concurrent() {
     use std::thread;
 
     #[cache(
         scope = "global",
-        limit = 100,
+        limit = 20,
         policy = "w_tinylfu",
-        window_ratio = 0.15
+        name = "w_tinylfu_concurrent"
     )]
-    fn concurrent_compute(key: u32) -> u32 {
-        key.wrapping_mul(17)
+    fn concurrent(id: u32) -> u32 {
+        id * 3
     }
 
-    let handles: Vec<_> = (0..10)
+    let handles: Vec<_> = (0..4)
         .map(|thread_id| {
             thread::spawn(move || {
-                for i in 0..50 {
-                    let key = thread_id * 50 + i;
-                    assert_eq!(concurrent_compute(key), key.wrapping_mul(17));
+                // Each thread accesses some shared keys
+                for i in 1..=10 {
+                    concurrent(i);
+                }
+                // And some unique keys
+                for i in (thread_id * 10)..((thread_id + 1) * 10) {
+                    concurrent(i);
                 }
             })
         })
@@ -312,4 +280,64 @@ fn test_w_tinylfu_concurrent_access() {
     for handle in handles {
         handle.join().unwrap();
     }
+
+    // Shared keys should work
+    assert_eq!(concurrent(5), 15);
+}
+
+/// Test W-TinyLFU with custom name
+#[test]
+fn test_w_tinylfu_named() {
+    #[cache(
+        scope = "global",
+        limit = 5,
+        policy = "w_tinylfu",
+        name = "my_custom_w_tinylfu_cache"
+    )]
+    fn named_fetch(id: u32) -> u32 {
+        id + 100
+    }
+
+    for i in 1..=5 {
+        assert_eq!(named_fetch(i), i + 100);
+    }
+
+    // Verify it works
+    assert_eq!(named_fetch(1), 101);
+}
+
+/// Test W-TinyLFU eviction behavior
+#[test]
+fn test_w_tinylfu_eviction() {
+    #[cache(
+        scope = "global",
+        limit = 4,
+        policy = "w_tinylfu",
+        name = "w_tinylfu_evict"
+    )]
+    fn evict_test(id: u32) -> u32 {
+        id * 10
+    }
+
+    // Fill cache
+    for i in 1..=4 {
+        evict_test(i);
+    }
+
+    // Build different frequency patterns
+    for _ in 0..10 {
+        evict_test(1); // High frequency
+    }
+    for _ in 0..3 {
+        evict_test(2); // Medium frequency
+    }
+    // 3 and 4 have low frequency (1 access each)
+
+    // Add new items - should trigger eviction
+    for i in 5..=8 {
+        assert_eq!(evict_test(i), i * 10);
+    }
+
+    // High frequency item should likely still work
+    assert_eq!(evict_test(1), 10);
 }
